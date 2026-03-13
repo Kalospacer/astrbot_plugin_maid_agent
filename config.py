@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
@@ -61,6 +62,13 @@ def _parse_bool(value: Any, default: bool) -> bool:
     return default
 
 
+def _normalize_xml_tag_name(value: Any, default: str) -> str:
+    candidate = str(value or "").strip()
+    if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_.-]*", candidate):
+        return candidate
+    return default
+
+
 def load_maid_mode_config(config: Mapping[str, Any] | None = None) -> MaidModeConfig:
     """从插件注入配置中读取 maid agent 配置。"""
     cfg = dict(config or {})
@@ -76,13 +84,13 @@ def load_maid_mode_config(config: Mapping[str, Any] | None = None) -> MaidModeCo
     if default_agent_name not in allowed_agent_names:
         allowed_agent_names.append(default_agent_name)
 
-    call_tag_name = (
-        str(cfg.get("call_tag_name", DEFAULT_CALL_MAID_TAG_NAME)).strip()
-        or DEFAULT_CALL_MAID_TAG_NAME
+    call_tag_name = _normalize_xml_tag_name(
+        cfg.get("call_tag_name", DEFAULT_CALL_MAID_TAG_NAME),
+        DEFAULT_CALL_MAID_TAG_NAME,
     )
-    done_tag_name = (
-        str(cfg.get("done_tag_name", DEFAULT_DONE_TAG_NAME)).strip()
-        or DEFAULT_DONE_TAG_NAME
+    done_tag_name = _normalize_xml_tag_name(
+        cfg.get("done_tag_name", DEFAULT_DONE_TAG_NAME),
+        DEFAULT_DONE_TAG_NAME,
     )
     include_raw_user_input = _parse_bool(cfg.get("include_raw_user_input", True), True)
     session_enabled = _parse_bool(cfg.get("session_enabled", True), True)

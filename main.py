@@ -80,6 +80,10 @@ class MaidAgent(Star):
         """以兼容 AstrBot 的方式回写响应文本。"""
         resp.result_chain = MessageChain(chain=[Comp.Plain(text)])
         resp.completion_text = text
+        resp.tools_call_name = []
+        resp.tools_call_args = []
+        resp.tools_call_ids = []
+        resp.tools_call_extra_content = {}
 
     @staticmethod
     def _contains_agent_name(agent_names: list[str] | None, agent_name: str) -> bool:

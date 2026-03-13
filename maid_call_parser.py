@@ -10,6 +10,7 @@ import re
 from dataclasses import dataclass
 
 DEFAULT_CALL_MAID_TAG_NAME = "call_maid"
+DEFAULT_DONE_TAG_NAME = "maid_session"
 DEFAULT_MAID_AGENT_NAME = "butler"
 
 
@@ -20,6 +21,37 @@ class MaidCall:
     agent_name: str
     request_text: str
     raw_block: str
+
+
+def parse_maid_session_done(
+    text: str,
+    done_tag_name: str = DEFAULT_DONE_TAG_NAME,
+) -> bool:
+    """判断文本中是否包含 session 结束标签。"""
+    if not text:
+        return False
+
+    self_closing_pattern = re.compile(
+        rf"<{re.escape(done_tag_name)}(?P<attrs>[^>]*)/>",
+        re.IGNORECASE,
+    )
+    block_pattern = re.compile(
+        rf"<{re.escape(done_tag_name)}(?P<attrs>[^>]*)>(?P<body>[\s\S]*?)</{re.escape(done_tag_name)}>",
+        re.IGNORECASE,
+    )
+
+    for pattern in (self_closing_pattern, block_pattern):
+        for match in pattern.finditer(text):
+            attrs = match.groupdict().get("attrs") or ""
+            status_match = re.search(
+                r'status\s*=\s*["\'](?P<status>[^"\']+)["\']',
+                attrs,
+                re.IGNORECASE,
+            )
+            if status_match and status_match.group("status").strip().casefold() == "done":
+                return True
+
+    return False
 
 
 def parse_maid_call(

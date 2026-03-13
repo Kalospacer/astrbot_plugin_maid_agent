@@ -7,23 +7,29 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from astrbot.api import logger
+from astrbot.core.agent.hooks import BaseAgentRunHooks
 from astrbot.core.agent.message import Message
+from astrbot.core.agent.runners.tool_loop_agent_runner import ToolLoopAgentRunner
 from astrbot.core.astr_agent_context import AgentContextWrapper, AstrAgentContext
 from astrbot.core.astr_agent_tool_exec import FunctionToolExecutor
+from astrbot.core.provider.entities import ProviderRequest
+
+from .session_store import MaidAgentSession, MaidSessionStore
 
 if TYPE_CHECKING:
     from astrbot.api.event import AstrMessageEvent
     from astrbot.core.agent.handoff import HandoffTool
+    from astrbot.core.provider.provider import Provider
     from astrbot.core.star.context import Context
 
 
-def _list_handoffs(context: "Context") -> list["HandoffTool"]:
+def _list_handoffs(context: Context) -> list[HandoffTool]:
     orchestrator = getattr(context, "subagent_orchestrator", None)
     handoffs = getattr(orchestrator, "handoffs", None) or []
     return [handoff for handoff in handoffs if getattr(handoff, "agent", None) is not None]
 
 
-def _find_handoff(context: "Context", agent_name: str) -> "HandoffTool | None":
+def _find_handoff(context: Context, agent_name: str) -> HandoffTool | None:
     target_name = agent_name.strip().casefold()
     for handoff in _list_handoffs(context):
         handoff_name = getattr(getattr(handoff, "agent", None), "name", None)
@@ -32,7 +38,7 @@ def _find_handoff(context: "Context", agent_name: str) -> "HandoffTool | None":
     return None
 
 
-def _resolve_handoff(context: "Context", agent_name: str) -> tuple["HandoffTool", str]:
+def _resolve_handoff(context: Context, agent_name: str) -> tuple[HandoffTool, str]:
     handoff = _find_handoff(context, agent_name)
     if handoff is not None:
         resolved_name = getattr(getattr(handoff, "agent", None), "name", None) or agent_name
@@ -84,7 +90,7 @@ def _normalize_begin_dialogs(dialogs: Any) -> list[Message] | None:
     return contexts or None
 
 
-def _load_provider_settings(context: "Context", event: "AstrMessageEvent") -> dict[str, Any]:
+def _load_provider_settings(context: Context, event: AstrMessageEvent) -> dict[str, Any]:
     root_cfg = context.get_config(umo=event.unified_msg_origin)
     if not isinstance(root_cfg, dict):
         return {}
@@ -92,9 +98,61 @@ def _load_provider_settings(context: "Context", event: "AstrMessageEvent") -> di
     return provider_settings if isinstance(provider_settings, dict) else {}
 
 
+def _build_session_contexts(
+    session: MaidAgentSession | None,
+    begin_dialogs: list[Message] | None,
+) -> list[dict[str, Any]] | list[Message] | None:
+    if session and session.messages:
+        messages = list(session.messages)
+        if messages and messages[0].get("role") == "system":
+            messages = messages[1:]
+        return messages or None
+    return begin_dialogs
+
+
+async def _build_runner(
+    *,
+    context: Context,
+    event: AstrMessageEvent,
+    provider: Provider,
+    prompt: str,
+    image_urls: list[str],
+    system_prompt: str,
+    tools,
+    contexts: list[dict[str, Any]] | list[Message] | None,
+    stream: bool,
+    tool_call_timeout: int,
+) -> ToolLoopAgentRunner:
+    agent_context = AstrAgentContext(context=context, event=event)
+    runner = ToolLoopAgentRunner()
+    request = ProviderRequest(
+        prompt=prompt,
+        image_urls=image_urls,
+        func_tool=tools,
+        contexts=[
+            msg.model_dump() if isinstance(msg, Message) else msg for msg in (contexts or [])
+        ],
+        system_prompt=system_prompt,
+        session_id=event.unified_msg_origin,
+    )
+    await runner.reset(
+        provider=provider,
+        request=request,
+        run_context=AgentContextWrapper(
+            context=agent_context,
+            tool_call_timeout=tool_call_timeout,
+        ),
+        tool_executor=FunctionToolExecutor(),
+        agent_hooks=BaseAgentRunHooks[AstrAgentContext](),
+        streaming=stream,
+    )
+    return runner
+
+
 async def dispatch_to_maid_agent(
-    context: "Context",
-    event: "AstrMessageEvent",
+    context: Context,
+    event: AstrMessageEvent,
+    session_store: MaidSessionStore,
     agent_name: str,
     maid_full_reply: str,
     maid_request: str,
@@ -124,18 +182,53 @@ async def dispatch_to_maid_agent(
     provider_settings = _load_provider_settings(context, event)
     agent_max_step = int(provider_settings.get("max_agent_step", 30))
     stream = bool(provider_settings.get("streaming_response", False))
+    tool_call_timeout = int(provider_settings.get("tool_call_timeout", 60))
 
-    llm_resp = await context.tool_loop_agent(
+    provider = context.get_provider_by_id(provider_id)
+    if provider is None:
+        raise RuntimeError(f"未找到子 agent provider: {provider_id}")
+
+    session: MaidAgentSession | None = None
+    if session_store.config.session_enabled:
+        session, reused = await session_store.get_or_create_active_session(
+            event.unified_msg_origin,
+            resolved_agent_name,
+        )
+        if reused:
+            logger.info(
+                "[大小姐模式] 已续接现有管家 session: umo=%s session_id=%s",
+                event.unified_msg_origin,
+                session.session_id,
+            )
+
+    runner = await _build_runner(
+        context=context,
         event=event,
-        chat_provider_id=provider_id,
+        provider=provider,
         prompt=dispatch_prompt,
         image_urls=image_urls,
         system_prompt=handoff.agent.instructions,
         tools=toolset,
-        contexts=begin_dialogs,
-        max_steps=agent_max_step,
+        contexts=_build_session_contexts(session, begin_dialogs),
         stream=stream,
-        agent_context=agent_context,
-        tool_call_timeout=60,
+        tool_call_timeout=tool_call_timeout,
     )
+    async for _ in runner.step_until_done(agent_max_step):
+        pass
+
+    llm_resp = runner.get_final_llm_resp()
+    if llm_resp is None:
+        raise RuntimeError("子 agent 未返回最终响应")
+
+    if session is not None:
+        session.agent_name = resolved_agent_name
+        session.messages = [msg.model_dump() for msg in runner.run_context.messages]
+        session.last_maid_request = maid_request
+        session.last_agent_result = llm_resp.completion_text or ""
+        await session_store.save_session(session)
+        logger.debug(
+            "[大小姐模式] 已持久化管家 session: session_id=%s messages=%d",
+            session.session_id,
+            len(session.messages),
+        )
     return llm_resp.completion_text or "", resolved_agent_name

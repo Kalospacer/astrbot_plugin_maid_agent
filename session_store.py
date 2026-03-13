@@ -103,16 +103,13 @@ class MaidSessionStore:
         self.sessions_dir = self.data_dir / "sessions"
         self.sessions_dir.mkdir(parents=True, exist_ok=True)
         self._umo_locks: dict[str, asyncio.Lock] = {}
+        self._active_index_lock = asyncio.Lock()
 
     def _session_path(self, session_id: str) -> Path:
         return self.sessions_dir / f"{session_id}.json"
 
     def _get_umo_lock(self, unified_msg_origin: str) -> asyncio.Lock:
-        lock = self._umo_locks.get(unified_msg_origin)
-        if lock is None:
-            lock = asyncio.Lock()
-            self._umo_locks[unified_msg_origin] = lock
-        return lock
+        return self._umo_locks.setdefault(unified_msg_origin, asyncio.Lock())
 
     async def _load_active_index(self) -> dict[str, str]:
         stored = await self.plugin.get_kv_data(ACTIVE_SESSION_INDEX_KEY, {})
@@ -122,15 +119,17 @@ class MaidSessionStore:
         await self.plugin.put_kv_data(ACTIVE_SESSION_INDEX_KEY, index)
 
     async def _set_active_session_id(self, unified_msg_origin: str, session_id: str) -> None:
-        index = await self._load_active_index()
-        index[unified_msg_origin] = session_id
-        await self._save_active_index(index)
+        async with self._active_index_lock:
+            index = await self._load_active_index()
+            index[unified_msg_origin] = session_id
+            await self._save_active_index(index)
 
     async def _clear_active_session_id(self, unified_msg_origin: str) -> None:
-        index = await self._load_active_index()
-        if unified_msg_origin in index:
-            index.pop(unified_msg_origin, None)
-            await self._save_active_index(index)
+        async with self._active_index_lock:
+            index = await self._load_active_index()
+            if unified_msg_origin in index:
+                index.pop(unified_msg_origin, None)
+                await self._save_active_index(index)
 
     def _write_json_atomic(self, path: Path, payload: dict[str, Any]) -> None:
         temp_path = path.with_suffix(f"{path.suffix}.tmp")

@@ -346,9 +346,9 @@ class MaidAgent(Star):
                 )
                 return
 
-            agent_name = str(pending.get("agent_name", "") or cfg.default_agent_name)
-            maid_full_reply = str(pending.get("maid_full_reply", "") or "")
-            maid_request = str(pending.get("maid_request", "") or "")
+            agent_name = pending.get("agent_name") or cfg.default_agent_name
+            maid_full_reply = pending.get("maid_full_reply") or ""
+            maid_request = pending.get("maid_request") or ""
             true_user_input = pending.get("true_user_input")
             image_urls_raw = pending.get("image_urls_raw")
             session_done_requested = bool(pending.get("session_done_requested", False))
@@ -397,7 +397,7 @@ class MaidAgent(Star):
             if sanitized_follow_up != follow_up_completion_text:
                 self._rewrite_response_text(follow_up_resp, sanitized_follow_up)
 
-            if sanitized_follow_up.strip():
+            if follow_up_resp.result_chain is not None or sanitized_follow_up.strip():
                 chain = follow_up_resp.result_chain or MessageChain(
                     chain=[Comp.Plain(sanitized_follow_up)]
                 )
@@ -407,6 +407,8 @@ class MaidAgent(Star):
                 await self.session_store.close_active_session(
                     event.unified_msg_origin, status="done"
                 )
+        except Exception as exc:
+            logger.error("[大小姐模式] after_message_sent 后续追答失败: %s", exc, exc_info=True)
         finally:
             self._clear_pending_follow_up(event)
 

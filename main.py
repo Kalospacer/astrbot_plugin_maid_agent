@@ -23,17 +23,19 @@ from astrbot.core.agent.message import (
     ToolCall,
     ToolCallMessageSegment,
 )
+from astrbot.core.agent.tool import ToolSet
 from astrbot.core.message.message_event_result import MessageChain
 from astrbot.core.provider.entities import ToolCallsResult
 
 from .config import load_maid_mode_config
-from .constants import RAW_INPUT_EXTRA_KEY
+from .constants import RAW_INPUT_EXTRA_KEY, TRUE_USER_INPUT_EXTRA_KEY
 from .context_sanitizer import sanitize_contexts
-from .maid_call_parser import parse_maid_call
+from .maid_call_parser import parse_maid_call, parse_maid_session_done
 from .maid_dispatcher import dispatch_to_maid_agent
 from .output_sanitizer import sanitize_user_visible_output
 from .prompt_injector import inject_maid_system_prompt
 from .response_validator import validate_llm_response
+from .session_store import MaidSessionStore
 
 if TYPE_CHECKING:
     from astrbot.api.event import AstrMessageEvent
@@ -54,21 +56,25 @@ class MaidAgent(Star):
         super().__init__(context)
         self.config = config or {}
         self.maid_mode_config = load_maid_mode_config(self.config)
+        self.session_store: MaidSessionStore | None = None
 
     async def initialize(self) -> None:
         """插件初始化"""
+        self.session_store = MaidSessionStore(self, self.maid_mode_config)
         logger.info(
-            "[MaidAgent] 已加载 | default_agent=%s | allowed_agents=%s | call_tag=%s | include_raw_user_input=%s",
+            "[MaidAgent] 已加载 | default_agent=%s | allowed_agents=%s | call_tag=%s | done_tag=%s | include_raw_user_input=%s | session_enabled=%s | session_timeout_minutes=%s",
             self.maid_mode_config.default_agent_name,
             ",".join(self.maid_mode_config.allowed_agent_names or []),
             self.maid_mode_config.call_tag_name,
+            self.maid_mode_config.done_tag_name,
             self.maid_mode_config.include_raw_user_input,
+            self.maid_mode_config.session_enabled,
+            self.maid_mode_config.session_timeout_minutes,
         )
 
     def _rewrite_response_text(self, resp: LLMResponse, text: str) -> None:
         """以兼容 AstrBot 的方式回写响应文本。"""
-        if resp.result_chain is None:
-            resp.result_chain = MessageChain(chain=[Comp.Plain(text)])
+        resp.result_chain = MessageChain(chain=[Comp.Plain(text)])
         resp.completion_text = text
 
     def _replace_response(self, target: LLMResponse, source: LLMResponse) -> None:
@@ -110,6 +116,18 @@ class MaidAgent(Star):
             )
         )
 
+    @staticmethod
+    def _get_missing_provider_request_attrs(req: object) -> list[str]:
+        required = (
+            "prompt",
+            "image_urls",
+            "contexts",
+            "system_prompt",
+            "model",
+            "extra_user_content_parts",
+        )
+        return [attr for attr in required if not hasattr(req, attr)]
+
     @filter.on_llm_request()
     async def sanitize_main_model_request(
         self,
@@ -129,17 +147,24 @@ class MaidAgent(Star):
             event.set_extra(RAW_INPUT_EXTRA_KEY, raw_input)
             logger.debug(f"[大小姐模式] 已保存原始用户输入: {raw_input[:100]}...")
 
+        true_user_input = event.message_str or ""
+        if true_user_input:
+            event.set_extra(TRUE_USER_INPUT_EXTRA_KEY, true_user_input)
+            logger.debug(f"[大小姐模式] 已保存真实用户文本: {true_user_input[:100]}...")
+
         removed_count = sanitize_contexts(req)
         if removed_count > 0:
             logger.debug(f"[大小姐模式] 已清洗 contexts，移除 {removed_count} 条非自然语言消息")
 
-        req.func_tool = None
-        logger.debug("[大小姐模式] 已禁用主模型原生工具暴露")
+        req.func_tool = ToolSet()
+        logger.debug("[大小姐模式] 已注入空工具集，禁用主模型原生工具暴露")
 
         if inject_maid_system_prompt(
             req,
             self.maid_mode_config.call_tag_name,
             self.maid_mode_config.default_agent_name,
+            self.maid_mode_config.done_tag_name,
+            self.maid_mode_config.main_system_prompt_template,
         ):
             logger.debug("[大小姐模式] 已注入 XML 调度协议说明")
 
@@ -238,10 +263,18 @@ class MaidAgent(Star):
 
         cfg = self.maid_mode_config
         completion_text = resp.completion_text or ""
+        session_done_requested = parse_maid_session_done(completion_text, cfg.done_tag_name)
 
         maid_call = parse_maid_call(completion_text, cfg.call_tag_name)
+        if not maid_call and session_done_requested and self.session_store:
+            await self.session_store.close_active_session(event.unified_msg_origin, status="done")
+
         if not maid_call:
-            sanitized = sanitize_user_visible_output(completion_text, cfg.call_tag_name)
+            sanitized = sanitize_user_visible_output(
+                completion_text,
+                cfg.call_tag_name,
+                cfg.done_tag_name,
+            )
             if sanitized != completion_text:
                 self._rewrite_response_text(resp, sanitized)
             return
@@ -253,7 +286,7 @@ class MaidAgent(Star):
             logger.warning(f"[大小姐模式] XML 请求的目标 agent 不在白名单中: {agent_name}")
             agent_name = cfg.default_agent_name
 
-        raw_input = event.get_extra(RAW_INPUT_EXTRA_KEY, "") or ""
+        true_user_input = event.get_extra(TRUE_USER_INPUT_EXTRA_KEY, "") or ""
         image_urls_raw = getattr(getattr(event, "message_obj", None), "image_urls", None)
 
         logger.debug(
@@ -263,17 +296,24 @@ class MaidAgent(Star):
 
         req = event.get_extra("provider_request")
         if not self._is_provider_request_like(req):
-            logger.error("[大小姐模式] event.extra['provider_request'] 不存在或类型错误")
+            logger.error(
+                "[大小姐模式] event.extra['provider_request'] 不存在或类型错误: type=%s missing=%s",
+                type(req).__name__ if req is not None else "NoneType",
+                self._get_missing_provider_request_attrs(req),
+            )
             return
 
         try:
+            if self.session_store is None:
+                raise RuntimeError("session_store 尚未初始化")
             agent_result, resolved_agent_name = await dispatch_to_maid_agent(
                 context=self.context,
                 event=event,
+                session_store=self.session_store,
                 agent_name=agent_name,
                 maid_full_reply=completion_text,
                 maid_request=maid_call.request_text,
-                raw_user_input=raw_input if cfg.include_raw_user_input else None,
+                true_user_input=true_user_input if cfg.include_raw_user_input else None,
                 image_urls_raw=image_urls_raw,
             )
         except Exception as exc:
@@ -281,7 +321,11 @@ class MaidAgent(Star):
             agent_result = f"执行过程中出现问题：{exc!s}"
             resolved_agent_name = agent_name
 
-        maid_visible_text = sanitize_user_visible_output(completion_text, cfg.call_tag_name)
+        maid_visible_text = sanitize_user_visible_output(
+            completion_text,
+            cfg.call_tag_name,
+            cfg.done_tag_name,
+        )
         follow_up_resp = await self._request_maid_follow_up(
             event=event,
             req=req,
@@ -290,7 +334,21 @@ class MaidAgent(Star):
             maid_request=maid_call.request_text,
             agent_result=agent_result,
         )
+        follow_up_completion_text = follow_up_resp.completion_text or ""
+        follow_up_done_requested = parse_maid_session_done(
+            follow_up_completion_text,
+            cfg.done_tag_name,
+        )
+        sanitized_follow_up = sanitize_user_visible_output(
+            follow_up_completion_text,
+            cfg.call_tag_name,
+            cfg.done_tag_name,
+        )
+        if sanitized_follow_up != follow_up_completion_text:
+            self._rewrite_response_text(follow_up_resp, sanitized_follow_up)
         self._replace_response(resp, follow_up_resp)
+        if (session_done_requested or follow_up_done_requested) and self.session_store:
+            await self.session_store.close_active_session(event.unified_msg_origin, status="done")
 
     @filter.on_decorating_result()
     async def decorate_result(self, event: AstrMessageEvent) -> None:

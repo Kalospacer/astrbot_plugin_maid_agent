@@ -9,6 +9,7 @@ import json
 import os
 import re
 import uuid
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -25,6 +26,16 @@ if TYPE_CHECKING:
 
 def _utcnow() -> datetime:
     return datetime.now(UTC)
+
+
+LOCK_ENTRY_TTL = timedelta(hours=1)
+
+
+@dataclass(slots=True)
+class _UmoLockEntry:
+    lock: asyncio.Lock
+    ref_count: int
+    last_used_at: datetime
 
 
 @dataclass(slots=True)
@@ -105,7 +116,8 @@ class MaidSessionStore:
         self.data_dir = StarTools.get_data_dir(PLUGIN_DATA_DIR_NAME)
         self.sessions_dir = self.data_dir / "sessions"
         self.sessions_dir.mkdir(parents=True, exist_ok=True)
-        self._umo_locks: dict[str, asyncio.Lock] = {}
+        self._umo_locks: dict[str, _UmoLockEntry] = {}
+        self._umo_locks_guard = asyncio.Lock()
         self._active_index_lock = asyncio.Lock()
 
     def _session_path(self, session_id: str) -> Path:
@@ -118,8 +130,49 @@ class MaidSessionStore:
             raise ValueError(f"session 路径越界: {session_id!r}")
         return path
 
-    def _get_umo_lock(self, unified_msg_origin: str) -> asyncio.Lock:
-        return self._umo_locks.setdefault(unified_msg_origin, asyncio.Lock())
+    def _prune_stale_umo_locks_unlocked(self, now: datetime) -> None:
+        stale_keys = [
+            key
+            for key, entry in self._umo_locks.items()
+            if entry.ref_count == 0 and now - entry.last_used_at > LOCK_ENTRY_TTL
+        ]
+        for key in stale_keys:
+            self._umo_locks.pop(key, None)
+
+    async def _acquire_umo_lock_entry(self, unified_msg_origin: str) -> _UmoLockEntry:
+        now = _utcnow()
+        async with self._umo_locks_guard:
+            self._prune_stale_umo_locks_unlocked(now)
+            entry = self._umo_locks.get(unified_msg_origin)
+            if entry is None:
+                entry = _UmoLockEntry(lock=asyncio.Lock(), ref_count=0, last_used_at=now)
+                self._umo_locks[unified_msg_origin] = entry
+            entry.ref_count += 1
+            entry.last_used_at = now
+            return entry
+
+    async def _release_umo_lock_entry(
+        self,
+        unified_msg_origin: str,
+        entry: _UmoLockEntry,
+    ) -> None:
+        now = _utcnow()
+        async with self._umo_locks_guard:
+            current = self._umo_locks.get(unified_msg_origin)
+            if current is entry:
+                current.ref_count = max(0, current.ref_count - 1)
+                current.last_used_at = now
+            self._prune_stale_umo_locks_unlocked(now)
+
+    @asynccontextmanager
+    async def _hold_umo_lock(self, unified_msg_origin: str):
+        entry = await self._acquire_umo_lock_entry(unified_msg_origin)
+        await entry.lock.acquire()
+        try:
+            yield
+        finally:
+            entry.lock.release()
+            await self._release_umo_lock_entry(unified_msg_origin, entry)
 
     async def _load_active_index(self) -> dict[str, str]:
         stored = await self.plugin.get_kv_data(ACTIVE_SESSION_INDEX_KEY, {})
@@ -216,7 +269,7 @@ class MaidSessionStore:
         return session
 
     async def get_active_session(self, unified_msg_origin: str) -> MaidAgentSession | None:
-        async with self._get_umo_lock(unified_msg_origin):
+        async with self._hold_umo_lock(unified_msg_origin):
             return await self._get_active_session_unlocked(unified_msg_origin)
 
     async def get_or_create_active_session(
@@ -224,7 +277,7 @@ class MaidSessionStore:
         unified_msg_origin: str,
         agent_name: str,
     ) -> tuple[MaidAgentSession, bool]:
-        async with self._get_umo_lock(unified_msg_origin):
+        async with self._hold_umo_lock(unified_msg_origin):
             session = await self._get_active_session_unlocked(unified_msg_origin)
             if session is not None:
                 if session.agent_name.strip().casefold() != agent_name.strip().casefold():
@@ -257,7 +310,7 @@ class MaidSessionStore:
         unified_msg_origin: str,
         status: str = "done",
     ) -> MaidAgentSession | None:
-        async with self._get_umo_lock(unified_msg_origin):
+        async with self._hold_umo_lock(unified_msg_origin):
             session = await self._get_active_session_unlocked(unified_msg_origin)
             if session is None:
                 return None

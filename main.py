@@ -27,7 +27,7 @@ from astrbot.core.message.message_event_result import MessageChain
 from astrbot.core.provider.entities import ToolCallsResult
 
 from .config import load_maid_mode_config
-from .constants import RAW_INPUT_EXTRA_KEY
+from .constants import RAW_INPUT_EXTRA_KEY, TRUE_USER_INPUT_EXTRA_KEY
 from .context_sanitizer import sanitize_contexts
 from .maid_call_parser import parse_maid_call, parse_maid_session_done
 from .maid_dispatcher import dispatch_to_maid_agent
@@ -134,6 +134,11 @@ class MaidAgent(Star):
         if raw_input:
             event.set_extra(RAW_INPUT_EXTRA_KEY, raw_input)
             logger.debug(f"[大小姐模式] 已保存原始用户输入: {raw_input[:100]}...")
+
+        true_user_input = event.message_str or ""
+        if true_user_input:
+            event.set_extra(TRUE_USER_INPUT_EXTRA_KEY, true_user_input)
+            logger.debug(f"[大小姐模式] 已保存真实用户文本: {true_user_input[:100]}...")
 
         removed_count = sanitize_contexts(req)
         if removed_count > 0:
@@ -268,7 +273,7 @@ class MaidAgent(Star):
             logger.warning(f"[大小姐模式] XML 请求的目标 agent 不在白名单中: {agent_name}")
             agent_name = cfg.default_agent_name
 
-        raw_input = event.get_extra(RAW_INPUT_EXTRA_KEY, "") or ""
+        true_user_input = event.get_extra(TRUE_USER_INPUT_EXTRA_KEY, "") or ""
         image_urls_raw = getattr(getattr(event, "message_obj", None), "image_urls", None)
 
         logger.debug(
@@ -291,7 +296,7 @@ class MaidAgent(Star):
                 agent_name=agent_name,
                 maid_full_reply=completion_text,
                 maid_request=maid_call.request_text,
-                raw_user_input=raw_input if cfg.include_raw_user_input else None,
+                true_user_input=true_user_input if cfg.include_raw_user_input else None,
                 image_urls_raw=image_urls_raw,
             )
         except Exception as exc:

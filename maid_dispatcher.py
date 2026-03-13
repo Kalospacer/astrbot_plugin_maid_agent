@@ -235,7 +235,7 @@ async def dispatch_to_maid_agent(
     begin_dialogs = _normalize_begin_dialogs(getattr(handoff.agent, "begin_dialogs", None))
 
     provider_settings = _load_provider_settings(context, event)
-    agent_max_step = _safe_int(provider_settings.get("max_agent_step", 30), 30)
+    agent_max_step = max(1, _safe_int(provider_settings.get("max_agent_step", 30), 30))
     stream = bool(provider_settings.get("streaming_response", False))
     tool_call_timeout = _safe_int(provider_settings.get("tool_call_timeout", 60), 60)
     llm_compress_instruction = str(provider_settings.get("llm_compress_instruction", "") or "")

@@ -1,190 +1,200 @@
-# AstrBot 大小姐管家模式插件
+# astrbot_plugin_maid_agent
+<div align=center>
+  <h1 align="center">AstrBot Plugin Maid Agent</h1>
+  <i align="center">代理女仆</i>
+</div>
 
-## 概述
+这个项目的开发受到项目`Muika-After-Story`的启发。用于验证一种设计用来优化LLM角色扮演能力的概念架构“大小姐-管家"模式。
+传统角色扮演agent架构由于大量function calling系统提示词注入导致出现“过拟合”问题，模型说话会变得像ai助手一样失去角色扮演能力。
+通过过滤主对话模型以下称作“大小姐”的system prompt,剔除其中过于结构化的函数调用schema，使大小姐的上下文只包含较为纯净的纯自然语言对话。
+将工具调用能力转接给子代理模型以下称作“管家”，由管家主动启发式猜测用户和大小姐模型的需求，执行任务后返回报告给大小姐，最终由大小姐和用户无感对话，提升沉浸感。
 
-本插件实现“大小姐 + 管家”模式，将 AstrBot 的主对话模型与执行代理进行角色分离：
+> [!WARNING]
+>
+> 注意：本项目的实现不能完全代表该概念，项目的实现方向仍在探索中。
+> 并且由于AstrBot中subagent模块仍处于实验性开发阶段，插件需要Hook隐藏模型可用工具，过滤提示词的目标和其他插件的工作原理天然冲突等问题，使用时可能出现诸多问题。
+> 在与其他需要注入提示词，进行发送事件钩子注入的插件同时使用时，效果可能不达预期。
 
-- **大小姐（主模型）**：仅保留自然语言对话上下文，不直接持有任何原生工具，专注于对话和理解用户意图
-- **管家（SubAgent）**：负责所有工具调用、Bash 执行等幕后操作，接收插件拼装的双通道输入（用户原始输入 + 大小姐的自然语言要求）
+AstrBot 的“大小姐 + 管家”模式插件。
 
-当前版本已切换为 **XML 调度协议**：
+这个插件把主模型和执行代理拆成两层：
 
-- 大小姐需要幕后执行时，不再调用 `transfer_to_*` 原生 handoff 工具
-- 而是在回复中输出 `<call_maid>...</call_maid>` XML 块表达请求
-- 插件负责解析 XML、调度对应子 agent，并将结果回灌给大小姐
-- 用户最终只看到大小姐的自然语言回复，不会看到 XML 标签残留
+- 大小姐：负责和用户聊天、理解意图、决定是否需要后台执行
+- 管家：负责真正调用 subagent、工具、Shell、浏览器等执行能力
 
-## 功能特性
+主模型不会直接暴露原生工具。需要后台执行时，主模型通过 XML 标签表达意图，插件负责解析、调度管家、回灌结果，并让大小姐生成最终回复。
 
-1. **主模型上下文净化**：自动过滤 tool role 消息和 tool_calls 痕迹
-2. **原生工具隔离**：主模型请求阶段显式禁用 `req.func_tool`，不再暴露原生 handoff / tool call 能力
-3. **XML 调度协议**：主模型通过 `<call_maid>` 标签表达幕后执行意图
-4. **子 agent 闭环调度**：插件主动调用目标子 agent，并将执行结果回灌给大小姐
-5. **用户可见输出清洗**：最终发送给用户前会清理 `<call_maid>` 标签与残留片段
+## 核心机制
 
-## 安装
+当前实现的协议有两个标签：
 
-将本插件目录放置在 AstrBot 的 `data/plugins/` 目录下，或通过插件市场安装。
+- `<call_maid agent="...">...</call_maid>`
+  用于请求管家执行任务
+- `<maid_session status="done" />`
+  用于声明当前管家 session 结束
 
-```bash
-# 手动安装
-cp -r astrbot_plugin_maid_agent /path/to/astrbot/data/plugins/
-```
+标准流程：
 
-## 配置
+1. 用户发消息
+2. 大小姐先输出自然语言回复
+3. 如果需要后台执行，大小姐在回复末尾附加 `<call_maid>`
+4. 插件解析 XML 并调度目标 subagent
+5. 管家执行完成后，结果回灌给大小姐
+6. 大小姐生成第二轮自然语言回复给用户
+7. 用户侧看不到内部 XML 标签
 
-### 1. 启用插件
+## 当前能力
 
-在 AstrBot WebUI 的插件管理页面启用“大小姐管家模式”插件。
+- 主模型请求阶段清洗非自然语言上下文
+- 主模型原生工具禁用
+- XML 调度协议注入
+- 子 agent 主动调度与结果回灌
+- 用户可见输出自动清洗
+- 单 active 管家 session 持久化
+- session 超时失效
+- follow-up 第二轮回复也会再次清洗 XML 标签
+- 管家 runner 透传 AstrBot 的上下文压缩配置
 
-### 2. 配置管家 SubAgent
+## Session 机制
 
-在 AstrBot 主配置文件中添加以下内容：
+插件当前支持“单 active session”模式：
+
+- 每个 `unified_msg_origin` 同时只维护一个 active 管家 session
+- 只要当前 session 未结束，后续管家调用会继续复用该 session 的完整上下文
+- 大小姐输出 `<maid_session status="done" />` 后，当前 session 会被关闭
+- 超过 `session_timeout_minutes` 未继续使用时，session 会自动失效
+
+session 数据不会写进 AstrBot 主 conversation，而是写入插件自己的数据目录：
+
+- `data/plugin_data/astrbot_plugin_maid_agent/`
+
+## 运行依赖
+
+- 本项目最早基于 AstrBot `>= 4.20.0` 开发，对于旧版本不保证最大化可用性。
+- 必须启用 Astrbot 的SubAgent 编排子代理功能，并且配置了至少一个可用的subagent。
+
+## SubAgent 配置示例
+
+下面是一个最小可用示例：
 
 ```yaml
 subagent_orchestrator:
   agents:
-    - name: butler
+    - name: muiceagent
       enabled: true
       system_prompt: |
-        你是管家，负责处理大小姐转交的所有执行任务。
+        你是运行在 AstrBot 中的 MuiceAgent，一个基于终端的编码助手,你目前作为子代理接收主代理的指令并实际执行。AstrBot 是一个开源的一站式 Agentic 个人和群聊助手。我们期望你做到精确、安全并且有帮助。
+        # 你是沐雪的子 Agent
 
-        你会同时收到：
-        1. 用户的原始输入
-        2. 大小姐的自然语言要求
+        ## 身份
+        - 你是沐雪（一只AI女孩子）派出的任务执行者
+        - 你的使命是高效、准确地完成主脑分配的任务
+        - 你拥有完整的工具访问权限（shell、python、文件操作等）
 
-        请综合考虑以上信息，执行必要的工具调用来完成任务。
-        执行完成后，用自然语言向大小姐汇报结果。
+        ## 工作原则
+        1. **零上下文启动** — 你只知道自己被派来做什么，不知道之前的对话
+        2. **严格遵循task描述** — 所有背景、约束、目标都在task里，仔细阅读
+        3. **主动决策** — 遇到模糊的地方优先做合理假设并继续执行，在结果中明确说明假设；仅在缺失信息会阻止任务推进时返回失败，不进行追问
+        4. **结果导向** — 产出明确的交付物，不要过程废话，默认 never-ask：除非任务无法继续执行（例如缺少必要凭据、文件不存在且无法推断、目标冲突且无法自解），否则不得向用户提问。遇到不确定性时采用最合理假设推进，并在最终结果中报告        假设与影响。
 
-        注意：你的汇报对象是大小姐，而不是直接面向用户。
-      tools: null
+
+        你的能力：
+
+        * 接收主代理提示以及由运行环境提供的其他上下文，例如工作区中的文件。
+        * 通过流式输出思考过程与响应，以及创建和更新计划来自主决策尽可能的完成任务。
+        * 通过函数调用来运行终端命令和应用补丁。
 ```
 
-### 3. 配置插件协议参数（可选）
+说明：
 
-本插件使用 AstrBot 插件配置注入，不读取全局主配置里的 `maid_mode:` 节点。
+- `name` 不必叫 `muiceagent`，只要与你的插件配置一致即可
+- 插件对 agent 名匹配做了大小写兼容，并且找不到时会回退到第一个可用 subagent
 
-请在插件管理页面打开本插件配置，填写以下字段：
+## 插件配置
+
+插件配置走 AstrBot 插件配置页，不读取全局 `maid_mode:` 节点。
+
+最小配置示例：
 
 ```yaml
-default_agent_name: "butler"
+default_agent_name: "muiceagent"
 allowed_agent_names:
-  - "butler"
+  - "muiceagent"
 call_tag_name: "call_maid"
+done_tag_name: "maid_session"
 include_raw_user_input: true
+session_enabled: true
+session_timeout_minutes: 20
 ```
 
-字段说明：
+### 配置项说明
 
-- `default_agent_name`：默认调度的子 agent 名称
-- `allowed_agent_names`：允许 XML 指定的 agent 白名单
-- `call_tag_name`：XML 标签名，默认 `call_maid`
-- `include_raw_user_input`：是否把用户原始输入一起传给子 agent
+- `default_agent_name`
+  默认调度的 subagent 名称
+- `allowed_agent_names`
+  允许 XML 指定的 agent 白名单
+- `call_tag_name`
+  主模型输出的调度标签名
+- `done_tag_name`
+  结束当前管家 session 的标签名
+- `include_raw_user_input`
+  是否把真实用户原话传给管家
+- `session_enabled`
+  是否启用管家 session 持久化
+- `session_timeout_minutes`
+  session 超时分钟数
+- `main_system_prompt_template`
+  注入给主模型的协议提示模板
+- `dispatch_prompt_template`
+  发送给管家的调度提示模板
 
-### 4. （可选）为管家指定专属模型
+## 提示词模板
 
-如果希望管家使用不同的模型（如更强大的模型），可以指定 `provider_id`：
+### 1. 主模型协议提示模板
 
-```yaml
-subagent_orchestrator:
-  agents:
-    - name: butler
-      enabled: true
-      provider_id: "openai_gpt4"
-      system_prompt: |
-        ...
-      tools: null
-```
+配置项：`main_system_prompt_template`
 
-## 工作流程
+支持占位符：
+
+- `{call_tag_name}`
+- `{default_agent_name}`
+- `{done_tag_name}`
+
+默认值：
 
 ```text
-用户消息
-  ↓
-大小姐模型（自然语言对话）
-  ↓
-需要幕后执行？
-  ↓ 是
-输出 <call_maid agent="butler">...</call_maid>
-  ↓
-插件解析 XML
-  ↓
-调度目标 SubAgent（双通道输入）
-  ↓
-执行工具 / Bash / 其他能力
-  ↓
-自然语言结果回灌给大小姐
-  ↓
-大小姐重新组织回复
-  ↓
-用户
+- 当你需要呼叫管家帮忙完成任务时，请在回复末尾附加 XML 块咒语：<{call_tag_name} agent="{default_agent_name}">这里写给管家的要求</{call_tag_name}>
+- 如果不需要呼叫管家帮忙，就不要说这个咒语
+- XML 标签中的内容是你对管家的任务要求
+- 当你判断当前管家任务已经结束时，请额外附加独立结束标签：<{done_tag_name} status="done" />
+- 如果当前管家任务尚未结束，就不要输出结束标签
 ```
 
-## 依赖要求
+### 2. 管家调度提示模板
 
-| 依赖项                | 说明                                                                               |
-| --------------------- | ---------------------------------------------------------------------------------- |
-| AstrBot >= 4.16       | 框架版本要求                                                                       |
-| SubAgent Orchestrator | 需要启用并配置至少一个可用子 agent                                                 |
-| 默认 agent            | 默认依赖名为 `butler` 的子 agent，除非在插件配置 `default_agent_name` 中另行指定   |
+配置项：`dispatch_prompt_template`
 
-## 注意事项
+支持占位符：
 
-1. **必须配置可用子 agent**：否则插件无法完成 XML 请求后的幕后执行
-2. **当前 subagent 为一次性执行模型**：并不是持续共享上下文的长期管家会话
-3. **当前版本不处理“大小姐中途继续和同一管家追问并保持同一工作记忆”的场景**
-4. **最终用户输出会清洗 `<call_maid>` 标签**：用户不应看到内部协议痕迹
-5. **旧的 `transfer_to_butler` 说明仅为兼容背景，不再是主路径协议**
+- `{user_input_block}`
+- `{maid_full_reply_block}`
+- `{maid_request_block}`
 
-## 当前实现说明
+这三个 block 由插件在运行时生成：
 
-当前插件已经实现：
+- `{user_input_block}`：真实用户原话
+- `{maid_full_reply_block}`：大小姐完整回复
+- `{maid_request_block}`：`<call_maid>` 标签里的显式任务文本
 
-- 主模型请求阶段禁用原生工具暴露
-- XML 标签解析
-- 通过插件主动调度子 agent
-- 子 agent 结果回灌给大小姐后再次生成用户回复
-- 用户侧 `<call_maid>` 标签清洗
+默认值：
 
-当前仍需注意：
-
-- `response_validator.py` 仅保留为低优先级观测模块
-- 当前 AstrBot 的子 agent 执行仍是一次性实例，不具备天然持续会话记忆
-
-## 开发
-
-```bash
-# 安装开发依赖
-pip install ruff
-
-# 代码检查
-ruff check .
-
-# 代码格式化
-ruff format .
-
-# 语法检查
-python -m compileall .
+```text
+{user_input_block}{maid_full_reply_block}{maid_request_block}你是MuiceMaid，一个全能的管家AIagent助手，擅长从大小姐的话语中理解大小姐的意图，并提取出大小姐的需求主动完成大小姐的愿望。你需要综合考虑大小姐和用户的对话，提取他们是否需要执行某些实际操作，并综合以上信息完成任务，请判断用户的需求，和大小姐的意图，如果大小姐误解了用户的需求，你以用户的需求为准完成任务，如果大小姐拒绝了用户的请求，你应当停止工作并汇报结束，如果大小姐和用户的需求一致，结合两者的需求准确完成任务。你的汇报对象是大小姐，不是用户。
 ```
 
 ## 许可证
 
-CC BY-NC-SA 4.0 (Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International)
-
-本作品采用知识共享署名-非商业性使用-相同方式共享 4.0 国际许可协议进行许可。
-
-**你可以自由地：**
-
-- 共享 — 以任何媒介或格式复制、发行本作品
-- 演绎 — 修改、转换或以本作品为基础进行创作
-
-**惟须遵守下列条件：**
-
-- 署名 — 你必须给出适当的署名
-- 非商业性使用 — 你不得将本作品用于商业目的
-- 相同方式共享 — 修改后的作品必须使用相同许可证
-
-完整许可协议文本：https://creativecommons.org/licenses/by-nc-sa/4.0/legalcode.zh-Hans
+CC BY-NC-SA 4.0
 
 ## 作者
 

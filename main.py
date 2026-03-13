@@ -116,6 +116,18 @@ class MaidAgent(Star):
             )
         )
 
+    @staticmethod
+    def _get_missing_provider_request_attrs(req: object) -> list[str]:
+        required = (
+            "prompt",
+            "image_urls",
+            "contexts",
+            "system_prompt",
+            "model",
+            "extra_user_content_parts",
+        )
+        return [attr for attr in required if not hasattr(req, attr)]
+
     @filter.on_llm_request()
     async def sanitize_main_model_request(
         self,
@@ -152,6 +164,7 @@ class MaidAgent(Star):
             self.maid_mode_config.call_tag_name,
             self.maid_mode_config.default_agent_name,
             self.maid_mode_config.done_tag_name,
+            self.maid_mode_config.main_system_prompt_template,
         ):
             logger.debug("[大小姐模式] 已注入 XML 调度协议说明")
 
@@ -283,7 +296,11 @@ class MaidAgent(Star):
 
         req = event.get_extra("provider_request")
         if not self._is_provider_request_like(req):
-            logger.error("[大小姐模式] event.extra['provider_request'] 不存在或类型错误")
+            logger.error(
+                "[大小姐模式] event.extra['provider_request'] 不存在或类型错误: type=%s missing=%s",
+                type(req).__name__ if req is not None else "NoneType",
+                self._get_missing_provider_request_attrs(req),
+            )
             return
 
         try:

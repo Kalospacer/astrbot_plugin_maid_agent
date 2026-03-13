@@ -7,20 +7,20 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from astrbot.api import logger
+from astrbot.api.provider import ProviderRequest
 from astrbot.core.agent.hooks import BaseAgentRunHooks
 from astrbot.core.agent.message import Message
 from astrbot.core.agent.runners.tool_loop_agent_runner import ToolLoopAgentRunner
 from astrbot.core.astr_agent_context import AgentContextWrapper, AstrAgentContext
 from astrbot.core.astr_agent_tool_exec import FunctionToolExecutor
-from astrbot.core.provider.entities import ProviderRequest
 
 from .session_store import MaidAgentSession, MaidSessionStore
 
 if TYPE_CHECKING:
     from astrbot.api.event import AstrMessageEvent
+    from astrbot.api.star import Context
     from astrbot.core.agent.handoff import HandoffTool
     from astrbot.core.provider.provider import Provider
-    from astrbot.core.star.context import Context
 
 
 def _list_handoffs(context: Context) -> list[HandoffTool]:
@@ -61,20 +61,23 @@ def _resolve_handoff(context: Context, agent_name: str) -> tuple[HandoffTool, st
 def _build_dispatch_prompt(
     true_user_input: str | None,
     maid_full_reply: str,
+    dispatch_prompt_template: str,
     maid_request: str | None = None,
 ) -> str:
-    parts: list[str] = []
     normalized_true_input = (true_user_input or "").strip()
-
-    if normalized_true_input:
-        parts.append(f"【用户原话】\n{normalized_true_input}")
-    parts.append(f"【大小姐完整回复】\n{maid_full_reply.strip()}")
-    if maid_request and maid_request.strip():
-        parts.append(f"【大小姐显式请求】\n{maid_request.strip()}")
-    parts.append(
-        "你是MuiceMaid，一个全能的管家AIagent助手，擅长从大小姐的话语中理解大小姐的意图，并提取出大小姐的需求主动完成大小姐的愿望。你需要综合考虑大小姐和用户的对话，提取他们是否需要执行某些实际操作，并综合以上信息完成任务，请判断用户的需求，和大小姐的意图，如果大小姐误解了用户的需求，你以用户的需求为准完成任务，如果大小姐拒绝了用户的请求，你应当停止工作并汇报结束，如果大小姐和用户的需求一致，结合两者的需求准确完成任务。你的汇报对象是大小姐，不是用户。"
+    user_input_block = f"【用户原话】\n{normalized_true_input}\n\n" if normalized_true_input else ""
+    maid_full_reply_block = f"【大小姐完整回复】\n{maid_full_reply.strip()}\n\n"
+    maid_request_block = (
+        f"【大小姐显式请求】\n{maid_request.strip()}\n\n"
+        if maid_request and maid_request.strip()
+        else ""
     )
-    return "\n\n".join(parts)
+    return (
+        dispatch_prompt_template.replace("{user_input_block}", user_input_block)
+        .replace("{maid_full_reply_block}", maid_full_reply_block)
+        .replace("{maid_request_block}", maid_request_block)
+        .strip()
+    )
 
 
 def _normalize_begin_dialogs(dialogs: Any) -> list[Message] | None:
@@ -204,6 +207,7 @@ async def dispatch_to_maid_agent(
     dispatch_prompt = _build_dispatch_prompt(
         true_user_input=true_user_input,
         maid_full_reply=maid_full_reply,
+        dispatch_prompt_template=session_store.config.dispatch_prompt_template,
         maid_request=maid_request,
     )
     begin_dialogs = _normalize_begin_dialogs(getattr(handoff.agent, "begin_dialogs", None))

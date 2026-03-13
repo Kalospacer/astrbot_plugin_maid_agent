@@ -8,10 +8,33 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from functools import lru_cache
 
 DEFAULT_CALL_MAID_TAG_NAME = "call_maid"
 DEFAULT_DONE_TAG_NAME = "maid_session"
 DEFAULT_MAID_AGENT_NAME = "butler"
+
+
+@lru_cache(maxsize=32)
+def _get_done_tag_patterns(done_tag_name: str) -> tuple[re.Pattern[str], re.Pattern[str]]:
+    return (
+        re.compile(
+            rf"<{re.escape(done_tag_name)}(?P<attrs>[^>]*)/>",
+            re.IGNORECASE,
+        ),
+        re.compile(
+            rf"<{re.escape(done_tag_name)}(?P<attrs>[^>]*)>(?P<body>[\s\S]*?)</{re.escape(done_tag_name)}>",
+            re.IGNORECASE,
+        ),
+    )
+
+
+@lru_cache(maxsize=32)
+def _get_call_pattern(call_tag_name: str) -> re.Pattern[str]:
+    return re.compile(
+        rf"<(?P<tag>{re.escape(call_tag_name)})(?P<attrs>[^>]*)>(?P<body>[\s\S]*?)</{re.escape(call_tag_name)}>",
+        re.IGNORECASE,
+    )
 
 
 @dataclass(slots=True)
@@ -31,16 +54,7 @@ def parse_maid_session_done(
     if not text:
         return False
 
-    self_closing_pattern = re.compile(
-        rf"<{re.escape(done_tag_name)}(?P<attrs>[^>]*)/>",
-        re.IGNORECASE,
-    )
-    block_pattern = re.compile(
-        rf"<{re.escape(done_tag_name)}(?P<attrs>[^>]*)>(?P<body>[\s\S]*?)</{re.escape(done_tag_name)}>",
-        re.IGNORECASE,
-    )
-
-    for pattern in (self_closing_pattern, block_pattern):
+    for pattern in _get_done_tag_patterns(done_tag_name):
         for match in pattern.finditer(text):
             attrs = match.groupdict().get("attrs") or ""
             status_match = re.search(
@@ -71,10 +85,7 @@ def parse_maid_call(
     if not text:
         return None
 
-    pattern = re.compile(
-        rf"<(?P<tag>{re.escape(call_tag_name)})(?P<attrs>[^>]*)>(?P<body>[\s\S]*?)</{re.escape(call_tag_name)}>",
-        re.IGNORECASE,
-    )
+    pattern = _get_call_pattern(call_tag_name)
     match = pattern.search(text)
     if not match:
         return None

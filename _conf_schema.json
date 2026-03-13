@@ -19,10 +19,28 @@
     "type": "string",
     "default": "call_maid"
   },
+  "done_tag_name": {
+    "description": "Session 完成标签名",
+    "hint": "大小姐声明当前管家任务结束时使用的独立 XML 标签名，例如 maid_session。",
+    "type": "string",
+    "default": "maid_session"
+  },
   "include_raw_user_input": {
     "description": "附带用户原始输入",
     "hint": "开启后，转交给管家 subagent 时会同时附带用户原始输入与大小姐的自然语言要求。",
     "type": "bool",
     "default": true
+  },
+  "session_enabled": {
+    "description": "启用管家 Session",
+    "hint": "开启后，管家会在同一用户会话内持续复用自己的工作上下文，直到完成或超时。",
+    "type": "bool",
+    "default": true
+  },
+  "session_timeout_minutes": {
+    "description": "Session 超时时间（分钟）",
+    "hint": "当前管家任务超过该时间未继续使用时，将自动失效并在下次重新创建。",
+    "type": "int",
+    "default": 20
   }
 }

@@ -1,10 +1,10 @@
 id: "maid_agent"
 name: "Maid Agent Mode"
 version: "1.0.0"
-description: "大小姐+管家模式：主模型仅保留自然语言对话上下文，所有工具调用通过管家subagent执行"
+description: "大小姐+管家模式子代理系统：主模型仅保留自然语言对话上下文，所有工具调用通过管家subagent执行，减少结构化数据提示词污染角色扮演。"
 author: "Kalo"
 repository: "https://github.com/Kalospacer/astrbot_plugin_maid_agent"
-display_name: "大小姐管家模式"
+display_name: "代理女仆"
 astrbot_version: ">=4.16,<5"
 
 # ============================================================

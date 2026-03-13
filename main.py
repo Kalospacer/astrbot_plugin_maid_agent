@@ -29,11 +29,12 @@ from astrbot.core.provider.entities import ToolCallsResult
 from .config import load_maid_mode_config
 from .constants import RAW_INPUT_EXTRA_KEY
 from .context_sanitizer import sanitize_contexts
-from .maid_call_parser import parse_maid_call
+from .maid_call_parser import parse_maid_call, parse_maid_session_done
 from .maid_dispatcher import dispatch_to_maid_agent
 from .output_sanitizer import sanitize_user_visible_output
 from .prompt_injector import inject_maid_system_prompt
 from .response_validator import validate_llm_response
+from .session_store import MaidSessionStore
 
 if TYPE_CHECKING:
     from astrbot.api.event import AstrMessageEvent
@@ -54,15 +55,20 @@ class MaidAgent(Star):
         super().__init__(context)
         self.config = config or {}
         self.maid_mode_config = load_maid_mode_config(self.config)
+        self.session_store: MaidSessionStore | None = None
 
     async def initialize(self) -> None:
         """插件初始化"""
+        self.session_store = MaidSessionStore(self, self.maid_mode_config)
         logger.info(
-            "[MaidAgent] 已加载 | default_agent=%s | allowed_agents=%s | call_tag=%s | include_raw_user_input=%s",
+            "[MaidAgent] 已加载 | default_agent=%s | allowed_agents=%s | call_tag=%s | done_tag=%s | include_raw_user_input=%s | session_enabled=%s | session_timeout_minutes=%s",
             self.maid_mode_config.default_agent_name,
             ",".join(self.maid_mode_config.allowed_agent_names or []),
             self.maid_mode_config.call_tag_name,
+            self.maid_mode_config.done_tag_name,
             self.maid_mode_config.include_raw_user_input,
+            self.maid_mode_config.session_enabled,
+            self.maid_mode_config.session_timeout_minutes,
         )
 
     def _rewrite_response_text(self, resp: LLMResponse, text: str) -> None:
@@ -140,6 +146,7 @@ class MaidAgent(Star):
             req,
             self.maid_mode_config.call_tag_name,
             self.maid_mode_config.default_agent_name,
+            self.maid_mode_config.done_tag_name,
         ):
             logger.debug("[大小姐模式] 已注入 XML 调度协议说明")
 
@@ -238,10 +245,18 @@ class MaidAgent(Star):
 
         cfg = self.maid_mode_config
         completion_text = resp.completion_text or ""
+        session_done_requested = parse_maid_session_done(completion_text, cfg.done_tag_name)
 
         maid_call = parse_maid_call(completion_text, cfg.call_tag_name)
+        if not maid_call and session_done_requested and self.session_store:
+            await self.session_store.close_active_session(event.unified_msg_origin, status="done")
+
         if not maid_call:
-            sanitized = sanitize_user_visible_output(completion_text, cfg.call_tag_name)
+            sanitized = sanitize_user_visible_output(
+                completion_text,
+                cfg.call_tag_name,
+                cfg.done_tag_name,
+            )
             if sanitized != completion_text:
                 self._rewrite_response_text(resp, sanitized)
             return
@@ -267,9 +282,12 @@ class MaidAgent(Star):
             return
 
         try:
+            if self.session_store is None:
+                raise RuntimeError("session_store 尚未初始化")
             agent_result, resolved_agent_name = await dispatch_to_maid_agent(
                 context=self.context,
                 event=event,
+                session_store=self.session_store,
                 agent_name=agent_name,
                 maid_full_reply=completion_text,
                 maid_request=maid_call.request_text,
@@ -281,7 +299,11 @@ class MaidAgent(Star):
             agent_result = f"执行过程中出现问题：{exc!s}"
             resolved_agent_name = agent_name
 
-        maid_visible_text = sanitize_user_visible_output(completion_text, cfg.call_tag_name)
+        maid_visible_text = sanitize_user_visible_output(
+            completion_text,
+            cfg.call_tag_name,
+            cfg.done_tag_name,
+        )
         follow_up_resp = await self._request_maid_follow_up(
             event=event,
             req=req,
@@ -291,6 +313,8 @@ class MaidAgent(Star):
             agent_result=agent_result,
         )
         self._replace_response(resp, follow_up_resp)
+        if session_done_requested and self.session_store:
+            await self.session_store.close_active_session(event.unified_msg_origin, status="done")
 
     @filter.on_decorating_result()
     async def decorate_result(self, event: AstrMessageEvent) -> None:

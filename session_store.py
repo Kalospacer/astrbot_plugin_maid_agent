@@ -56,12 +56,14 @@ class MaidAgentSession:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> MaidAgentSession:
+        raw_messages = data.get("messages", []) or []
+        messages = [item for item in raw_messages if isinstance(item, dict)]
         return cls(
             session_id=str(data.get("session_id", "")),
             unified_msg_origin=str(data.get("unified_msg_origin", "")),
             agent_name=str(data.get("agent_name", "")),
             status=str(data.get("status", "active")),
-            messages=list(data.get("messages", []) or []),
+            messages=messages,
             created_at=str(data.get("created_at", "")),
             updated_at=str(data.get("updated_at", "")),
             last_maid_request=str(data.get("last_maid_request", "")),

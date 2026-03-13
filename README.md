@@ -83,11 +83,21 @@ subagent_orchestrator:
         自然语言汇报 → 大小姐 → 用户
 ```
 
+## 依赖要求
+
+| 依赖项 | 说明 |
+|--------|------|
+| AstrBot >= 4.16 | 框架版本要求 |
+| butler subagent | 必须在配置中启用名为 `butler` 的 subagent |
+
+> **重要**：如果 butler subagent 未配置，插件会发出警告但仍会加载。此时主模型将无法正常转交任务。
+
 ## 注意事项
 
 1. **必须配置 butler subagent**：本插件依赖名为 `butler` 的 subagent，请确保已在配置中正确设置
 2. **核心补丁**：为了实现双通道输入，需要修改 AstrBot 核心文件 `astr_agent_tool_exec.py`（详见下方）
 3. **兼容性**：本插件要求 AstrBot >= 4.16
+4. **加载顺序**：插件会在运行时检查 `transfer_to_butler` 工具是否存在，如果 butler subagent 尚未加载，会记录警告
 
 ## 核心补丁（双通道输入注入）
 

@@ -66,7 +66,7 @@ class MaidAgent(Star):
             )
 
         # 3. 裁剪工具集
-        if trim_tools_to_butler_handoff(req):
+        if trim_tools_to_butler_handoff(req, self.context):
             logger.debug(f"[大小姐模式] 已裁剪工具集，仅保留: {BUTLER_HANDOFF_TOOL_NAME}")
         else:
             logger.warning(

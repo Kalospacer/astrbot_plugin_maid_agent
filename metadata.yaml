@@ -7,6 +7,24 @@ repository: "https://github.com/Kalospacer/astrbot_plugin_maid_agent"
 display_name: "大小姐管家模式"
 astrbot_version: ">=4.16,<5"
 
+# ============================================================
+# 依赖说明
+# ============================================================
+# 本插件需要配合 AstrBot 的 subagent 功能使用：
+#
+# 1. 必须在 AstrBot 配置中启用名为 "butler" 的 subagent
+# 2. subagent 配置示例：
+#    subagent_orchestrator:
+#      agents:
+#        - name: butler
+#          enabled: true
+#          system_prompt: |
+#            你是管家，负责处理大小姐转交的所有执行任务...
+#          tools: null
+#
+# 详细配置说明请参考 README.md
+# ============================================================
+
 # 插件启用后的行为说明：
 # 1. 主模型（大小姐）只看到自然语言对话历史，不直接持有工具
 # 2. 主模型的工具列表被裁剪为仅保留 transfer_to_butler handoff

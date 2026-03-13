@@ -37,6 +37,12 @@
     "type": "bool",
     "default": true
   },
+  "log_raw_llm_io": {
+    "description": "记录完整 LLM 原始请求/响应",
+    "hint": "默认关闭。开启后会在 debug 日志中打印完整 prompt、contexts、system prompt 和模型输出，可能包含敏感信息。",
+    "type": "bool",
+    "default": false
+  },
   "session_timeout_minutes": {
     "description": "Session 超时时间（分钟）",
     "hint": "当前管家任务超过该时间未继续使用时，将自动失效并在下次重新创建。",

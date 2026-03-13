@@ -7,6 +7,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -106,7 +107,14 @@ class MaidSessionStore:
         self._active_index_lock = asyncio.Lock()
 
     def _session_path(self, session_id: str) -> Path:
-        return self.sessions_dir / f"{session_id}.json"
+        normalized = session_id.strip().casefold()
+        if not re.fullmatch(r"[0-9a-f]{32}", normalized):
+            raise ValueError(f"非法 session_id: {session_id!r}")
+        path = (self.sessions_dir / f"{normalized}.json").resolve()
+        sessions_root = self.sessions_dir.resolve()
+        if path.parent != sessions_root:
+            raise ValueError(f"session 路径越界: {session_id!r}")
+        return path
 
     def _get_umo_lock(self, unified_msg_origin: str) -> asyncio.Lock:
         return self._umo_locks.setdefault(unified_msg_origin, asyncio.Lock())
@@ -155,7 +163,11 @@ class MaidSessionStore:
             raise
 
     async def load_session(self, session_id: str) -> MaidAgentSession | None:
-        path = self._session_path(session_id)
+        try:
+            path = self._session_path(session_id)
+        except ValueError as exc:
+            logger.error("[大小姐模式] session_id 校验失败: %s", exc)
+            return None
         if not await asyncio.to_thread(path.exists):
             return None
         try:
@@ -213,7 +225,19 @@ class MaidSessionStore:
         async with self._get_umo_lock(unified_msg_origin):
             session = await self._get_active_session_unlocked(unified_msg_origin)
             if session is not None:
-                return session, True
+                if session.agent_name.strip().casefold() != agent_name.strip().casefold():
+                    session.status = "expired"
+                    await self.save_session(session)
+                    await self._clear_active_session_id(unified_msg_origin)
+                    logger.info(
+                        "[大小姐模式] 检测到跨 agent session 复用，已关闭旧 session: umo=%s old_session_id=%s old_agent=%s new_agent=%s",
+                        unified_msg_origin,
+                        session.session_id,
+                        session.agent_name,
+                        agent_name,
+                    )
+                else:
+                    return session, True
 
             session = MaidAgentSession.create(unified_msg_origin, agent_name)
             await self.save_session(session)

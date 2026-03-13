@@ -65,13 +65,14 @@ class MaidAgent(Star):
         """插件初始化"""
         self.session_store = MaidSessionStore(self, self.maid_mode_config)
         logger.info(
-            "[MaidAgent] 已加载 | default_agent=%s | allowed_agents=%s | call_tag=%s | done_tag=%s | include_raw_user_input=%s | session_enabled=%s | session_timeout_minutes=%s",
+            "[MaidAgent] 已加载 | default_agent=%s | allowed_agents=%s | call_tag=%s | done_tag=%s | include_raw_user_input=%s | session_enabled=%s | log_raw_llm_io=%s | session_timeout_minutes=%s",
             self.maid_mode_config.default_agent_name,
             ",".join(self.maid_mode_config.allowed_agent_names or []),
             self.maid_mode_config.call_tag_name,
             self.maid_mode_config.done_tag_name,
             self.maid_mode_config.include_raw_user_input,
             self.maid_mode_config.session_enabled,
+            self.maid_mode_config.log_raw_llm_io,
             self.maid_mode_config.session_timeout_minutes,
         )
 
@@ -79,17 +80,6 @@ class MaidAgent(Star):
         """以兼容 AstrBot 的方式回写响应文本。"""
         resp.result_chain = MessageChain(chain=[Comp.Plain(text)])
         resp.completion_text = text
-
-    def _replace_response(self, target: LLMResponse, source: LLMResponse) -> None:
-        if source.result_chain is not None:
-            target.result_chain = source.result_chain
-        target.completion_text = source.completion_text or ""
-        target.tools_call_name = list(source.tools_call_name or [])
-        target.tools_call_args = list(source.tools_call_args or [])
-        target.tools_call_ids = list(source.tools_call_ids or [])
-        target.tools_call_extra_content = dict(source.tools_call_extra_content or {})
-        target.reasoning_content = source.reasoning_content
-        target.reasoning_signature = source.reasoning_signature
 
     @staticmethod
     def _contains_agent_name(agent_names: list[str] | None, agent_name: str) -> bool:
@@ -175,24 +165,25 @@ class MaidAgent(Star):
         ):
             logger.debug("[大小姐模式] 已注入 XML 调度协议说明")
 
-        logger.debug(
-            "[大小姐模式] LLM请求原文:\n%s",
-            self._dump_json(
-                {
-                    "prompt": req.prompt,
-                    "system_prompt": req.system_prompt,
-                    "contexts": req.contexts,
-                    "image_urls": req.image_urls,
-                    "func_tool": (
-                        [tool.name for tool in req.func_tool.tools]
-                        if req.func_tool and getattr(req.func_tool, "tools", None)
-                        else None
-                    ),
-                    "session_id": req.session_id,
-                    "model": req.model,
-                }
-            ),
-        )
+        if self.maid_mode_config.log_raw_llm_io:
+            logger.debug(
+                "[大小姐模式] LLM请求原文:\n%s",
+                self._dump_json(
+                    {
+                        "prompt": req.prompt,
+                        "system_prompt": req.system_prompt,
+                        "contexts": req.contexts,
+                        "image_urls": req.image_urls,
+                        "func_tool": (
+                            [tool.name for tool in req.func_tool.tools]
+                            if req.func_tool and getattr(req.func_tool, "tools", None)
+                            else None
+                        ),
+                        "session_id": req.session_id,
+                        "model": req.model,
+                    }
+                ),
+            )
 
     async def _request_maid_follow_up(
         self,
@@ -254,19 +245,20 @@ class MaidAgent(Star):
         if native_tools:
             logger.debug(f"[大小姐模式] 观测到主模型残留原生工具调用倾向: {native_tools}")
 
-        logger.debug(
-            "[大小姐模式] LLM响应原文:\n%s",
-            self._dump_json(
-                {
-                    "completion_text": resp.completion_text,
-                    "tools_call_name": resp.tools_call_name,
-                    "tools_call_args": resp.tools_call_args,
-                    "tools_call_ids": resp.tools_call_ids,
-                    "tools_call_extra_content": resp.tools_call_extra_content,
-                    "reasoning_content": resp.reasoning_content,
-                }
-            ),
-        )
+        if self.maid_mode_config.log_raw_llm_io:
+            logger.debug(
+                "[大小姐模式] LLM响应原文:\n%s",
+                self._dump_json(
+                    {
+                        "completion_text": resp.completion_text,
+                        "tools_call_name": resp.tools_call_name,
+                        "tools_call_args": resp.tools_call_args,
+                        "tools_call_ids": resp.tools_call_ids,
+                        "tools_call_extra_content": resp.tools_call_extra_content,
+                        "reasoning_content": resp.reasoning_content,
+                    }
+                ),
+            )
 
         cfg = self.maid_mode_config
         completion_text = resp.completion_text or ""
@@ -303,6 +295,13 @@ class MaidAgent(Star):
 
         req = event.get_extra("provider_request")
         if not self._is_provider_request_like(req):
+            sanitized = sanitize_user_visible_output(
+                completion_text,
+                cfg.call_tag_name,
+                cfg.done_tag_name,
+            )
+            if sanitized != completion_text:
+                self._rewrite_response_text(resp, sanitized)
             logger.error(
                 "[大小姐模式] event.extra['provider_request'] 不存在或类型错误: type=%s missing=%s",
                 type(req).__name__ if req is not None else "NoneType",

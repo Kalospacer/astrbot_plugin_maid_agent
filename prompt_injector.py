@@ -47,7 +47,11 @@ def inject_maid_system_prompt(
         done_tag_name,
         prompt_template,
     )
-    if prompt_append not in req.system_prompt:
-        req.system_prompt += prompt_append
+    current_prompt = req.system_prompt or ""
+    normalized_append = (
+        prompt_append if not current_prompt or current_prompt.endswith("\n") else f"\n{prompt_append}"
+    )
+    if prompt_append not in current_prompt:
+        req.system_prompt = current_prompt + normalized_append
         return True
     return False

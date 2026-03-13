@@ -39,9 +39,26 @@ class MaidModeConfig:
     done_tag_name: str = DEFAULT_DONE_TAG_NAME
     include_raw_user_input: bool = True
     session_enabled: bool = True
+    log_raw_llm_io: bool = False
     session_timeout_minutes: int = DEFAULT_SESSION_TIMEOUT_MINUTES
     main_system_prompt_template: str = DEFAULT_MAIN_SYSTEM_PROMPT_TEMPLATE
     dispatch_prompt_template: str = DEFAULT_DISPATCH_PROMPT_TEMPLATE
+
+
+def _parse_bool(value: Any, default: bool) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return default
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        normalized = value.strip().casefold()
+        if normalized in {"1", "true", "yes", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "off", ""}:
+            return False
+    return default
 
 
 def load_maid_mode_config(config: Mapping[str, Any] | None = None) -> MaidModeConfig:
@@ -67,8 +84,9 @@ def load_maid_mode_config(config: Mapping[str, Any] | None = None) -> MaidModeCo
         str(cfg.get("done_tag_name", DEFAULT_DONE_TAG_NAME)).strip()
         or DEFAULT_DONE_TAG_NAME
     )
-    include_raw_user_input = bool(cfg.get("include_raw_user_input", True))
-    session_enabled = bool(cfg.get("session_enabled", True))
+    include_raw_user_input = _parse_bool(cfg.get("include_raw_user_input", True), True)
+    session_enabled = _parse_bool(cfg.get("session_enabled", True), True)
+    log_raw_llm_io = _parse_bool(cfg.get("log_raw_llm_io", False), False)
     main_system_prompt_template = str(
         cfg.get("main_system_prompt_template", DEFAULT_MAIN_SYSTEM_PROMPT_TEMPLATE)
     )
@@ -95,6 +113,7 @@ def load_maid_mode_config(config: Mapping[str, Any] | None = None) -> MaidModeCo
         done_tag_name=done_tag_name,
         include_raw_user_input=include_raw_user_input,
         session_enabled=session_enabled,
+        log_raw_llm_io=log_raw_llm_io,
         session_timeout_minutes=session_timeout_minutes,
         main_system_prompt_template=main_system_prompt_template,
         dispatch_prompt_template=dispatch_prompt_template,

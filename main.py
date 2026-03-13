@@ -9,11 +9,13 @@
 
 from __future__ import annotations
 
+import json
 from typing import TYPE_CHECKING
 
-import astrbot.core.message_components as Comp
-from astrbot.api import Star, logger, register
+import astrbot.api.message_components as Comp
+from astrbot.api import logger
 from astrbot.api.event import filter
+from astrbot.api.star import Star, register
 from astrbot.core.message.message_event_result import MessageChain
 
 from .config import load_maid_mode_config
@@ -29,6 +31,7 @@ from .response_validator import validate_llm_response
 if TYPE_CHECKING:
     from astrbot.api.event import AstrMessageEvent
     from astrbot.api.provider import LLMResponse, ProviderRequest
+    from astrbot.api.star import Context
 
 
 @register(
@@ -40,15 +43,33 @@ if TYPE_CHECKING:
 class MaidAgent(Star):
     """大小姐管家模式插件"""
 
+    def __init__(self, context: Context, config: dict | None = None):
+        super().__init__(context)
+        self.config = config or {}
+        self.maid_mode_config = load_maid_mode_config(self.config)
+
     async def initialize(self) -> None:
         """插件初始化"""
-        logger.info("大小姐管家模式插件已加载（XML 协议模式）")
+        logger.info(
+            "[MaidAgent] 已加载 | default_agent=%s | allowed_agents=%s | call_tag=%s | include_raw_user_input=%s",
+            self.maid_mode_config.default_agent_name,
+            ",".join(self.maid_mode_config.allowed_agent_names or []),
+            self.maid_mode_config.call_tag_name,
+            self.maid_mode_config.include_raw_user_input,
+        )
 
     def _rewrite_response_text(self, resp: LLMResponse, text: str) -> None:
         """以兼容 AstrBot 的方式回写响应文本。"""
         if resp.result_chain is None:
             resp.result_chain = MessageChain(chain=[Comp.Plain(text)])
         resp.completion_text = text
+
+    @staticmethod
+    def _dump_json(data) -> str:
+        try:
+            return json.dumps(data, ensure_ascii=False, indent=2, default=str)
+        except Exception:
+            return repr(data)
 
     @filter.on_llm_request()
     async def sanitize_main_model_request(
@@ -75,15 +96,32 @@ class MaidAgent(Star):
 
         removed_count = sanitize_contexts(req)
         if removed_count > 0:
-            logger.debug(
-                f"[大小姐模式] 已清洗 contexts，移除 {removed_count} 条非自然语言消息"
-            )
+            logger.debug(f"[大小姐模式] 已清洗 contexts，移除 {removed_count} 条非自然语言消息")
 
         req.func_tool = None
         logger.debug("[大小姐模式] 已禁用主模型原生工具暴露")
 
         if inject_maid_system_prompt(req):
             logger.debug("[大小姐模式] 已注入 XML 调度协议说明")
+
+        logger.debug(
+            "[大小姐模式] LLM请求原文:\n%s",
+            self._dump_json(
+                {
+                    "prompt": req.prompt,
+                    "system_prompt": req.system_prompt,
+                    "contexts": req.contexts,
+                    "image_urls": req.image_urls,
+                    "func_tool": (
+                        [tool.name for tool in req.func_tool.tools]
+                        if req.func_tool and getattr(req.func_tool, "tools", None)
+                        else None
+                    ),
+                    "session_id": req.session_id,
+                    "model": req.model,
+                }
+            ),
+        )
 
     async def _request_maid_rephrase(
         self,
@@ -92,7 +130,7 @@ class MaidAgent(Star):
         maid_visible_text: str,
         agent_result: str,
     ) -> str:
-        cfg = load_maid_mode_config(self.context, event)
+        cfg = self.maid_mode_config
         provider_id = await self.context.get_current_chat_provider_id(event.unified_msg_origin)
         prompt = build_maid_rephrase_prompt(
             original_user_input=original_user_input,
@@ -123,11 +161,23 @@ class MaidAgent(Star):
         """
         native_tools = validate_llm_response(resp)
         if native_tools:
-            logger.debug(
-                f"[大小姐模式] 观测到主模型残留原生工具调用倾向: {native_tools}"
-            )
+            logger.debug(f"[大小姐模式] 观测到主模型残留原生工具调用倾向: {native_tools}")
 
-        cfg = load_maid_mode_config(self.context, event)
+        logger.debug(
+            "[大小姐模式] LLM响应原文:\n%s",
+            self._dump_json(
+                {
+                    "completion_text": resp.completion_text,
+                    "tools_call_name": resp.tools_call_name,
+                    "tools_call_args": resp.tools_call_args,
+                    "tools_call_ids": resp.tools_call_ids,
+                    "tools_call_extra_content": resp.tools_call_extra_content,
+                    "reasoning_content": resp.reasoning_content,
+                }
+            ),
+        )
+
+        cfg = self.maid_mode_config
         completion_text = resp.completion_text or ""
 
         if event.get_extra(REPHRASE_STAGE_EXTRA_KEY, False):
@@ -161,6 +211,7 @@ class MaidAgent(Star):
                 context=self.context,
                 event=event,
                 agent_name=agent_name,
+                maid_full_reply=completion_text,
                 maid_request=maid_call.request_text,
                 raw_user_input=raw_input if cfg.include_raw_user_input else None,
                 image_urls_raw=image_urls_raw,

@@ -1,0 +1,28 @@
+{
+  "default_agent_name": {
+    "description": "默认管家 Agent 名称",
+    "hint": "当 XML 中未显式指定 agent，或指定的 agent 不在白名单中时，回退到这个子 agent。",
+    "type": "string",
+    "default": "butler"
+  },
+  "allowed_agent_names": {
+    "description": "允许调度的 Agent 白名单",
+    "hint": "仅允许 XML 调度这些 subagent 名称。为空时仍会自动包含默认 agent。",
+    "type": "list",
+    "default": [
+      "butler"
+    ]
+  },
+  "call_tag_name": {
+    "description": "XML 调度标签名",
+    "hint": "主模型输出的 XML 标签名，例如 call_maid。修改后需与提示词和解析逻辑保持一致。",
+    "type": "string",
+    "default": "call_maid"
+  },
+  "include_raw_user_input": {
+    "description": "附带用户原始输入",
+    "hint": "开启后，转交给管家 subagent 时会同时附带用户原始输入与大小姐的自然语言要求。",
+    "type": "bool",
+    "default": true
+  }
+}

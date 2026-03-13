@@ -62,13 +62,16 @@ subagent_orchestrator:
 
 ### 3. 配置插件协议参数（可选）
 
+本插件使用 AstrBot 插件配置注入，不读取全局主配置里的 `maid_mode:` 节点。
+
+请在插件管理页面打开本插件配置，填写以下字段：
+
 ```yaml
-maid_mode:
-  default_agent_name: "butler"
-  allowed_agent_names:
-    - "butler"
-  call_tag_name: "call_maid"
-  include_raw_user_input: true
+default_agent_name: "butler"
+allowed_agent_names:
+  - "butler"
+call_tag_name: "call_maid"
+include_raw_user_input: true
 ```
 
 字段说明：
@@ -123,7 +126,7 @@ subagent_orchestrator:
 | --------------------- | ---------------------------------------------------------------------------------- |
 | AstrBot >= 4.16       | 框架版本要求                                                                       |
 | SubAgent Orchestrator | 需要启用并配置至少一个可用子 agent                                                 |
-| 默认 agent            | 默认依赖名为 `butler` 的子 agent，除非在 `maid_mode.default_agent_name` 中另行指定 |
+| 默认 agent            | 默认依赖名为 `butler` 的子 agent，除非在插件配置 `default_agent_name` 中另行指定   |
 
 ## 注意事项
 

@@ -5,13 +5,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import Any, Mapping
 
 from .constants import CALL_MAID_TAG_NAME, DEFAULT_MAID_AGENT_NAME
-
-if TYPE_CHECKING:
-    from astrbot.api.event import AstrMessageEvent
-    from astrbot.core.star.context import Context
 
 
 @dataclass(slots=True)
@@ -22,12 +18,9 @@ class MaidModeConfig:
     include_raw_user_input: bool = True
 
 
-def load_maid_mode_config(context: "Context", event: "AstrMessageEvent") -> MaidModeConfig:
-    """从 AstrBot 配置中读取 maid_mode 配置。"""
-    root_cfg = context.get_config(umo=event.unified_msg_origin)
-    cfg = root_cfg.get("maid_mode", {}) if isinstance(root_cfg, dict) else {}
-    if not isinstance(cfg, dict):
-        cfg = {}
+def load_maid_mode_config(config: Mapping[str, Any] | None = None) -> MaidModeConfig:
+    """从插件注入配置中读取 maid agent 配置。"""
+    cfg = dict(config or {})
 
     default_agent_name = str(cfg.get("default_agent_name", DEFAULT_MAID_AGENT_NAME)).strip()
     if not default_agent_name:

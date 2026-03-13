@@ -51,7 +51,7 @@ def parse_maid_call(text: str, call_tag_name: str = CALL_MAID_TAG_NAME) -> MaidC
         return None
 
     agent_match = re.search(r'agent\s*=\s*["\'](?P<agent>[^"\']+)["\']', attrs, re.IGNORECASE)
-    agent_name = (agent_match.group("agent").strip() if agent_match else DEFAULT_MAID_AGENT_NAME)
+    agent_name = agent_match.group("agent").strip() if agent_match else DEFAULT_MAID_AGENT_NAME
     if not agent_name:
         agent_name = DEFAULT_MAID_AGENT_NAME
 

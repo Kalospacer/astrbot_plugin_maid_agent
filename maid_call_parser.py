@@ -9,7 +9,8 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
-from .constants import CALL_MAID_TAG_NAME, DEFAULT_MAID_AGENT_NAME
+DEFAULT_CALL_MAID_TAG_NAME = "call_maid"
+DEFAULT_MAID_AGENT_NAME = "butler"
 
 
 @dataclass(slots=True)
@@ -21,7 +22,10 @@ class MaidCall:
     raw_block: str
 
 
-def parse_maid_call(text: str, call_tag_name: str = CALL_MAID_TAG_NAME) -> MaidCall | None:
+def parse_maid_call(
+    text: str,
+    call_tag_name: str = DEFAULT_CALL_MAID_TAG_NAME,
+) -> MaidCall | None:
     """
     从文本中解析第一个 `<call_maid>` 块。
 

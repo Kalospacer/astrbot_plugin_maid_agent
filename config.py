@@ -7,14 +7,15 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Mapping
 
-from .constants import CALL_MAID_TAG_NAME, DEFAULT_MAID_AGENT_NAME
+DEFAULT_CALL_MAID_TAG_NAME = "call_maid"
+DEFAULT_MAID_AGENT_NAME = "butler"
 
 
 @dataclass(slots=True)
 class MaidModeConfig:
     default_agent_name: str = DEFAULT_MAID_AGENT_NAME
     allowed_agent_names: list[str] | None = None
-    call_tag_name: str = CALL_MAID_TAG_NAME
+    call_tag_name: str = DEFAULT_CALL_MAID_TAG_NAME
     include_raw_user_input: bool = True
 
 
@@ -33,7 +34,10 @@ def load_maid_mode_config(config: Mapping[str, Any] | None = None) -> MaidModeCo
     if default_agent_name not in allowed_agent_names:
         allowed_agent_names.append(default_agent_name)
 
-    call_tag_name = str(cfg.get("call_tag_name", CALL_MAID_TAG_NAME)).strip() or CALL_MAID_TAG_NAME
+    call_tag_name = (
+        str(cfg.get("call_tag_name", DEFAULT_CALL_MAID_TAG_NAME)).strip()
+        or DEFAULT_CALL_MAID_TAG_NAME
+    )
     include_raw_user_input = bool(cfg.get("include_raw_user_input", True))
 
     return MaidModeConfig(

@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING
 
 import astrbot.api.message_components as Comp
 from astrbot.api import logger
-from astrbot.api.event import filter
+from astrbot.api.event import MessageChain, filter
 from astrbot.api.star import Star, register
 from astrbot.core.agent.message import (
     AssistantMessageSegment,
@@ -24,11 +24,14 @@ from astrbot.core.agent.message import (
     ToolCallMessageSegment,
 )
 from astrbot.core.agent.tool import ToolSet
-from astrbot.core.message.message_event_result import MessageChain
 from astrbot.core.provider.entities import ToolCallsResult
 
 from .config import load_maid_mode_config
-from .constants import RAW_INPUT_EXTRA_KEY, TRUE_USER_INPUT_EXTRA_KEY
+from .constants import (
+    PENDING_MAID_FOLLOW_UP_EXTRA_KEY,
+    RAW_INPUT_EXTRA_KEY,
+    TRUE_USER_INPUT_EXTRA_KEY,
+)
 from .context_sanitizer import sanitize_contexts
 from .maid_call_parser import parse_maid_call, parse_maid_session_done
 from .maid_dispatcher import dispatch_to_maid_agent
@@ -127,6 +130,10 @@ class MaidAgent(Star):
             "extra_user_content_parts",
         )
         return [attr for attr in required if not hasattr(req, attr)]
+
+    @staticmethod
+    def _clear_pending_follow_up(event: AstrMessageEvent) -> None:
+        event.set_extra(PENDING_MAID_FOLLOW_UP_EXTRA_KEY, None)
 
     @filter.on_llm_request()
     async def sanitize_main_model_request(
@@ -303,52 +310,107 @@ class MaidAgent(Star):
             )
             return
 
-        try:
-            if self.session_store is None:
-                raise RuntimeError("session_store 尚未初始化")
-            agent_result, resolved_agent_name = await dispatch_to_maid_agent(
-                context=self.context,
-                event=event,
-                session_store=self.session_store,
-                agent_name=agent_name,
-                maid_full_reply=completion_text,
-                maid_request=maid_call.request_text,
-                true_user_input=true_user_input if cfg.include_raw_user_input else None,
-                image_urls_raw=image_urls_raw,
-            )
-        except Exception as exc:
-            logger.error(f"[大小姐模式] 子 agent 调度失败: {exc!s}", exc_info=True)
-            agent_result = f"执行过程中出现问题：{exc!s}"
-            resolved_agent_name = agent_name
-
         maid_visible_text = sanitize_user_visible_output(
             completion_text,
             cfg.call_tag_name,
             cfg.done_tag_name,
         )
-        follow_up_resp = await self._request_maid_follow_up(
-            event=event,
-            req=req,
-            maid_visible_text=maid_visible_text,
-            agent_name=resolved_agent_name,
-            maid_request=maid_call.request_text,
-            agent_result=agent_result,
+        if maid_visible_text != completion_text:
+            self._rewrite_response_text(resp, maid_visible_text)
+        event.set_extra(
+            PENDING_MAID_FOLLOW_UP_EXTRA_KEY,
+            {
+                "agent_name": agent_name,
+                "maid_full_reply": completion_text,
+                "maid_request": maid_call.request_text,
+                "true_user_input": true_user_input if cfg.include_raw_user_input else None,
+                "image_urls_raw": image_urls_raw,
+                "session_done_requested": session_done_requested,
+            },
         )
-        follow_up_completion_text = follow_up_resp.completion_text or ""
-        follow_up_done_requested = parse_maid_session_done(
-            follow_up_completion_text,
-            cfg.done_tag_name,
-        )
-        sanitized_follow_up = sanitize_user_visible_output(
-            follow_up_completion_text,
-            cfg.call_tag_name,
-            cfg.done_tag_name,
-        )
-        if sanitized_follow_up != follow_up_completion_text:
-            self._rewrite_response_text(follow_up_resp, sanitized_follow_up)
-        self._replace_response(resp, follow_up_resp)
-        if (session_done_requested or follow_up_done_requested) and self.session_store:
-            await self.session_store.close_active_session(event.unified_msg_origin, status="done")
+        logger.debug("[大小姐模式] 已保留第一条大小姐回复，并挂起管家后续处理")
+
+    @filter.after_message_sent()
+    async def continue_maid_follow_up_after_send(self, event: AstrMessageEvent) -> None:
+        pending = event.get_extra(PENDING_MAID_FOLLOW_UP_EXTRA_KEY)
+        if not isinstance(pending, dict):
+            return
+        try:
+            cfg = self.maid_mode_config
+            req = event.get_extra("provider_request")
+            if not self._is_provider_request_like(req):
+                logger.error(
+                    "[大小姐模式] after_message_sent 阶段 provider_request 不存在或类型错误: type=%s missing=%s",
+                    type(req).__name__ if req is not None else "NoneType",
+                    self._get_missing_provider_request_attrs(req),
+                )
+                return
+
+            agent_name = pending.get("agent_name") or cfg.default_agent_name
+            maid_full_reply = pending.get("maid_full_reply") or ""
+            maid_request = pending.get("maid_request") or ""
+            true_user_input = pending.get("true_user_input")
+            image_urls_raw = pending.get("image_urls_raw")
+            session_done_requested = bool(pending.get("session_done_requested", False))
+
+            try:
+                if self.session_store is None:
+                    raise RuntimeError("session_store 尚未初始化")
+                agent_result, resolved_agent_name = await dispatch_to_maid_agent(
+                    context=self.context,
+                    event=event,
+                    session_store=self.session_store,
+                    agent_name=agent_name,
+                    maid_full_reply=maid_full_reply,
+                    maid_request=maid_request,
+                    true_user_input=true_user_input if isinstance(true_user_input, str) else None,
+                    image_urls_raw=image_urls_raw,
+                )
+            except Exception as exc:
+                logger.error(f"[大小姐模式] 子 agent 调度失败: {exc!s}", exc_info=True)
+                agent_result = f"执行过程中出现问题：{exc!s}"
+                resolved_agent_name = agent_name
+
+            maid_visible_text = sanitize_user_visible_output(
+                maid_full_reply,
+                cfg.call_tag_name,
+                cfg.done_tag_name,
+            )
+            follow_up_resp = await self._request_maid_follow_up(
+                event=event,
+                req=req,
+                maid_visible_text=maid_visible_text,
+                agent_name=resolved_agent_name,
+                maid_request=maid_request,
+                agent_result=agent_result,
+            )
+            follow_up_completion_text = follow_up_resp.completion_text or ""
+            follow_up_done_requested = parse_maid_session_done(
+                follow_up_completion_text,
+                cfg.done_tag_name,
+            )
+            sanitized_follow_up = sanitize_user_visible_output(
+                follow_up_completion_text,
+                cfg.call_tag_name,
+                cfg.done_tag_name,
+            )
+            if sanitized_follow_up != follow_up_completion_text:
+                self._rewrite_response_text(follow_up_resp, sanitized_follow_up)
+
+            if follow_up_resp.result_chain is not None or sanitized_follow_up.strip():
+                chain = follow_up_resp.result_chain or MessageChain(
+                    chain=[Comp.Plain(sanitized_follow_up)]
+                )
+                await event.send(chain)
+
+            if (session_done_requested or follow_up_done_requested) and self.session_store:
+                await self.session_store.close_active_session(
+                    event.unified_msg_origin, status="done"
+                )
+        except Exception as exc:
+            logger.error("[大小姐模式] after_message_sent 后续追答失败: %s", exc, exc_info=True)
+        finally:
+            self._clear_pending_follow_up(event)
 
     @filter.on_decorating_result()
     async def decorate_result(self, event: AstrMessageEvent) -> None:

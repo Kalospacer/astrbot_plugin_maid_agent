@@ -102,9 +102,14 @@ class MaidSessionStore:
         self.data_dir = StarTools.get_data_dir(PLUGIN_DATA_DIR_NAME)
         self.sessions_dir = self.data_dir / "sessions"
         self.sessions_dir.mkdir(parents=True, exist_ok=True)
+        self._umo_locks: dict[str, asyncio.Lock] = {}
+        self._active_index_lock = asyncio.Lock()
 
     def _session_path(self, session_id: str) -> Path:
         return self.sessions_dir / f"{session_id}.json"
+
+    def _get_umo_lock(self, unified_msg_origin: str) -> asyncio.Lock:
+        return self._umo_locks.setdefault(unified_msg_origin, asyncio.Lock())
 
     async def _load_active_index(self) -> dict[str, str]:
         stored = await self.plugin.get_kv_data(ACTIVE_SESSION_INDEX_KEY, {})
@@ -114,15 +119,17 @@ class MaidSessionStore:
         await self.plugin.put_kv_data(ACTIVE_SESSION_INDEX_KEY, index)
 
     async def _set_active_session_id(self, unified_msg_origin: str, session_id: str) -> None:
-        index = await self._load_active_index()
-        index[unified_msg_origin] = session_id
-        await self._save_active_index(index)
+        async with self._active_index_lock:
+            index = await self._load_active_index()
+            index[unified_msg_origin] = session_id
+            await self._save_active_index(index)
 
     async def _clear_active_session_id(self, unified_msg_origin: str) -> None:
-        index = await self._load_active_index()
-        if unified_msg_origin in index:
-            index.pop(unified_msg_origin, None)
-            await self._save_active_index(index)
+        async with self._active_index_lock:
+            index = await self._load_active_index()
+            if unified_msg_origin in index:
+                index.pop(unified_msg_origin, None)
+                await self._save_active_index(index)
 
     def _write_json_atomic(self, path: Path, payload: dict[str, Any]) -> None:
         temp_path = path.with_suffix(f"{path.suffix}.tmp")
@@ -160,7 +167,10 @@ class MaidSessionStore:
             logger.error("[大小姐模式] 读取 session 文件失败: %s", exc, exc_info=True)
             return None
 
-    async def get_active_session(self, unified_msg_origin: str) -> MaidAgentSession | None:
+    async def _get_active_session_unlocked(
+        self,
+        unified_msg_origin: str,
+    ) -> MaidAgentSession | None:
         if not self.config.session_enabled:
             return None
 
@@ -191,42 +201,48 @@ class MaidSessionStore:
 
         return session
 
+    async def get_active_session(self, unified_msg_origin: str) -> MaidAgentSession | None:
+        async with self._get_umo_lock(unified_msg_origin):
+            return await self._get_active_session_unlocked(unified_msg_origin)
+
     async def get_or_create_active_session(
         self,
         unified_msg_origin: str,
         agent_name: str,
     ) -> tuple[MaidAgentSession, bool]:
-        session = await self.get_active_session(unified_msg_origin)
-        if session is not None:
-            return session, True
+        async with self._get_umo_lock(unified_msg_origin):
+            session = await self._get_active_session_unlocked(unified_msg_origin)
+            if session is not None:
+                return session, True
 
-        session = MaidAgentSession.create(unified_msg_origin, agent_name)
-        await self.save_session(session)
-        await self._set_active_session_id(unified_msg_origin, session.session_id)
-        logger.info(
-            "[大小姐模式] 已创建新的管家 session: umo=%s session_id=%s agent=%s",
-            unified_msg_origin,
-            session.session_id,
-            agent_name,
-        )
-        return session, False
+            session = MaidAgentSession.create(unified_msg_origin, agent_name)
+            await self.save_session(session)
+            await self._set_active_session_id(unified_msg_origin, session.session_id)
+            logger.info(
+                "[大小姐模式] 已创建新的管家 session: umo=%s session_id=%s agent=%s",
+                unified_msg_origin,
+                session.session_id,
+                agent_name,
+            )
+            return session, False
 
     async def close_active_session(
         self,
         unified_msg_origin: str,
         status: str = "done",
     ) -> MaidAgentSession | None:
-        session = await self.get_active_session(unified_msg_origin)
-        if session is None:
-            return None
+        async with self._get_umo_lock(unified_msg_origin):
+            session = await self._get_active_session_unlocked(unified_msg_origin)
+            if session is None:
+                return None
 
-        session.status = status
-        await self.save_session(session)
-        await self._clear_active_session_id(unified_msg_origin)
-        logger.info(
-            "[大小姐模式] 已关闭管家 session: umo=%s session_id=%s status=%s",
-            unified_msg_origin,
-            session.session_id,
-            status,
-        )
-        return session
+            session.status = status
+            await self.save_session(session)
+            await self._clear_active_session_id(unified_msg_origin)
+            logger.info(
+                "[大小姐模式] 已关闭管家 session: umo=%s session_id=%s status=%s",
+                unified_msg_origin,
+                session.session_id,
+                status,
+            )
+            return session

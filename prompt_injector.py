@@ -1,7 +1,7 @@
 """
-大小姐管家模式插件 - 提示注入器
+大小姐管家模式插件 - 协议提示注入器
 
-负责为主模型注入大小姐角色说明。
+负责为主模型注入 XML 调度协议说明。
 """
 
 from __future__ import annotations
@@ -12,12 +12,16 @@ if TYPE_CHECKING:
     from astrbot.api.provider import ProviderRequest
 
 
-def build_maid_system_prompt_append(call_tag_name: str, default_agent_name: str) -> str:
+def build_maid_system_prompt_append(
+    call_tag_name: str,
+    default_agent_name: str,
+    done_tag_name: str,
+    prompt_template: str,
+) -> str:
     return (
-        f"\n- 当你需要呼叫管家帮忙完成任务时，请在回复末尾附加 XML 块咒语："
-        f'<{call_tag_name} agent="{default_agent_name}">这里写给管家的要求</{call_tag_name}>'
-        "\n- 如果不需要呼叫管家帮忙，就不要说这个咒语"
-        "\n- XML 标签中的内容是你对管家的任务要求\n"
+        prompt_template.replace("{call_tag_name}", call_tag_name)
+        .replace("{default_agent_name}", default_agent_name)
+        .replace("{done_tag_name}", done_tag_name)
     )
 
 
@@ -25,9 +29,11 @@ def inject_maid_system_prompt(
     req: ProviderRequest,
     call_tag_name: str,
     default_agent_name: str,
+    done_tag_name: str,
+    prompt_template: str,
 ) -> bool:
     """
-    注入大小姐模式说明到系统提示。
+    注入大小姐模式的 XML 协议说明到系统提示。
 
     Args:
         req: ProviderRequest 对象
@@ -35,7 +41,12 @@ def inject_maid_system_prompt(
     Returns:
         是否成功注入（如果已存在则返回 False）
     """
-    prompt_append = build_maid_system_prompt_append(call_tag_name, default_agent_name)
+    prompt_append = build_maid_system_prompt_append(
+        call_tag_name,
+        default_agent_name,
+        done_tag_name,
+        prompt_template,
+    )
     if prompt_append not in req.system_prompt:
         req.system_prompt += prompt_append
         return True

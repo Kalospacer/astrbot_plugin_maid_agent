@@ -334,15 +334,20 @@ class MaidAgent(Star):
             maid_request=maid_call.request_text,
             agent_result=agent_result,
         )
+        follow_up_completion_text = follow_up_resp.completion_text or ""
+        follow_up_done_requested = parse_maid_session_done(
+            follow_up_completion_text,
+            cfg.done_tag_name,
+        )
         sanitized_follow_up = sanitize_user_visible_output(
-            follow_up_resp.completion_text or "",
+            follow_up_completion_text,
             cfg.call_tag_name,
             cfg.done_tag_name,
         )
-        if sanitized_follow_up != (follow_up_resp.completion_text or ""):
+        if sanitized_follow_up != follow_up_completion_text:
             self._rewrite_response_text(follow_up_resp, sanitized_follow_up)
         self._replace_response(resp, follow_up_resp)
-        if session_done_requested and self.session_store:
+        if (session_done_requested or follow_up_done_requested) and self.session_store:
             await self.session_store.close_active_session(event.unified_msg_origin, status="done")
 
     @filter.on_decorating_result()

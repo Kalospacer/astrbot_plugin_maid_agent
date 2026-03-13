@@ -97,7 +97,12 @@ def _normalize_begin_dialogs(dialogs: Any) -> list[Message] | None:
             contexts.append(
                 dialog if isinstance(dialog, Message) else Message.model_validate(dialog)
             )
-        except Exception:
+        except Exception as exc:
+            logger.warning(
+                "[大小姐模式] 解析 begin_dialogs 条目失败，已跳过: %s | dialog=%r",
+                exc,
+                dialog,
+            )
             continue
     return contexts or None
 

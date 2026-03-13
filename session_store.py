@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import uuid
@@ -129,22 +130,30 @@ class MaidSessionStore:
             json.dump(payload, fh, ensure_ascii=False, indent=2)
         os.replace(temp_path, path)
 
+    def _read_json(self, path: Path) -> dict[str, Any] | None:
+        with path.open("r", encoding="utf-8") as fh:
+            data = json.load(fh)
+        return data if isinstance(data, dict) else None
+
     async def save_session(self, session: MaidAgentSession) -> None:
         session.touch()
         try:
-            self._write_json_atomic(self._session_path(session.session_id), session.to_dict())
+            await asyncio.to_thread(
+                self._write_json_atomic,
+                self._session_path(session.session_id),
+                session.to_dict(),
+            )
         except Exception as exc:
             logger.error("[大小姐模式] 写入 session 文件失败: %s", exc, exc_info=True)
             raise
 
     async def load_session(self, session_id: str) -> MaidAgentSession | None:
         path = self._session_path(session_id)
-        if not path.exists():
+        if not await asyncio.to_thread(path.exists):
             return None
         try:
-            with path.open("r", encoding="utf-8") as fh:
-                data = json.load(fh)
-            if not isinstance(data, dict):
+            data = await asyncio.to_thread(self._read_json, path)
+            if data is None:
                 return None
             return MaidAgentSession.from_dict(data)
         except Exception as exc:

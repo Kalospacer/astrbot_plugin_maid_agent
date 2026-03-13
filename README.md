@@ -26,7 +26,7 @@
 > - 如果你遇到问题，欢迎你提交issue。如果你有新的创意或愿意帮助修复bug，欢迎你提交pr。
 
 ## ✨ 快速开始
-启用插件，确保你启用了Astrbot中的SubAgent 编排子代理功能，并且配置了至少一个可用的subagent。
+启用插件，确保你启用了AstrBot中的SubAgent 编排子代理功能，并且配置了至少一个可用的subagent。
 在插件配置中，正确填写你的默认管家 Agent 名称为你刚配置的subagent ID。
 
 ## 🧩 核心机制

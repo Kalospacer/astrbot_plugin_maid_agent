@@ -63,9 +63,10 @@ def load_maid_mode_config(config: Mapping[str, Any] | None = None) -> MaidModeCo
         str(cfg.get("call_tag_name", DEFAULT_CALL_MAID_TAG_NAME)).strip()
         or DEFAULT_CALL_MAID_TAG_NAME
     )
-    done_tag_name = str(cfg.get("done_tag_name", DEFAULT_DONE_TAG_NAME)).strip()
-    if not done_tag_name:
-        done_tag_name = DEFAULT_DONE_TAG_NAME
+    done_tag_name = (
+        str(cfg.get("done_tag_name", DEFAULT_DONE_TAG_NAME)).strip()
+        or DEFAULT_DONE_TAG_NAME
+    )
     include_raw_user_input = bool(cfg.get("include_raw_user_input", True))
     session_enabled = bool(cfg.get("session_enabled", True))
     main_system_prompt_template = str(

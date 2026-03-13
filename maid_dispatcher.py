@@ -6,6 +6,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+from astrbot.api import logger
 from astrbot.core.agent.message import Message
 from astrbot.core.astr_agent_context import AgentContextWrapper, AstrAgentContext
 from astrbot.core.astr_agent_tool_exec import FunctionToolExecutor
@@ -16,13 +17,39 @@ if TYPE_CHECKING:
     from astrbot.core.star.context import Context
 
 
-def _find_handoff(context: "Context", agent_name: str) -> "HandoffTool | None":
+def _list_handoffs(context: "Context") -> list["HandoffTool"]:
     orchestrator = getattr(context, "subagent_orchestrator", None)
     handoffs = getattr(orchestrator, "handoffs", None) or []
-    for handoff in handoffs:
-        if getattr(getattr(handoff, "agent", None), "name", None) == agent_name:
+    return [handoff for handoff in handoffs if getattr(handoff, "agent", None) is not None]
+
+
+def _find_handoff(context: "Context", agent_name: str) -> "HandoffTool | None":
+    target_name = agent_name.strip().casefold()
+    for handoff in _list_handoffs(context):
+        handoff_name = getattr(getattr(handoff, "agent", None), "name", None)
+        if isinstance(handoff_name, str) and handoff_name.strip().casefold() == target_name:
             return handoff
     return None
+
+
+def _resolve_handoff(context: "Context", agent_name: str) -> tuple["HandoffTool", str]:
+    handoff = _find_handoff(context, agent_name)
+    if handoff is not None:
+        resolved_name = getattr(getattr(handoff, "agent", None), "name", None) or agent_name
+        return handoff, str(resolved_name)
+
+    handoffs = _list_handoffs(context)
+    if handoffs:
+        fallback = handoffs[0]
+        fallback_name = getattr(getattr(fallback, "agent", None), "name", None) or agent_name
+        logger.warning(
+            "[大小姐模式] 未找到名为 %s 的子 agent，已回退到第一个可用子 agent: %s",
+            agent_name,
+            fallback_name,
+        )
+        return fallback, str(fallback_name)
+
+    raise ValueError("未找到任何可用的子 agent")
 
 
 def _build_dispatch_prompt(
@@ -73,11 +100,10 @@ async def dispatch_to_maid_agent(
     maid_request: str,
     raw_user_input: str | None,
     image_urls_raw: Any = None,
-) -> str:
-    """根据 agent 名调用对应子 agent，并返回其自然语言结果。"""
-    handoff = _find_handoff(context, agent_name)
-    if handoff is None:
-        raise ValueError(f"未找到可用的子 agent: {agent_name}")
+) -> tuple[str, str]:
+    """根据 agent 名调用对应子 agent，并返回其自然语言结果与实际命中的 agent 名。"""
+    handoff, resolved_agent_name = _resolve_handoff(context, agent_name)
+    logger.debug("[大小姐模式] 本次调度实际使用子 agent: %s", resolved_agent_name)
 
     agent_context = AstrAgentContext(context=context, event=event)
     run_context = AgentContextWrapper(context=agent_context, tool_call_timeout=60)
@@ -112,4 +138,4 @@ async def dispatch_to_maid_agent(
         agent_context=agent_context,
         tool_call_timeout=60,
     )
-    return llm_resp.completion_text or ""
+    return llm_resp.completion_text or "", resolved_agent_name

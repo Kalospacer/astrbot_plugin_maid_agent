@@ -10,20 +10,27 @@
 from __future__ import annotations
 
 import json
+import uuid
 from typing import TYPE_CHECKING
 
 import astrbot.api.message_components as Comp
 from astrbot.api import logger
 from astrbot.api.event import filter
 from astrbot.api.star import Star, register
+from astrbot.core.agent.message import (
+    AssistantMessageSegment,
+    TextPart,
+    ToolCall,
+    ToolCallMessageSegment,
+)
 from astrbot.core.message.message_event_result import MessageChain
+from astrbot.core.provider.entities import ToolCallsResult
 
 from .config import load_maid_mode_config
-from .constants import RAW_INPUT_EXTRA_KEY, REPHRASE_STAGE_EXTRA_KEY
+from .constants import RAW_INPUT_EXTRA_KEY
 from .context_sanitizer import sanitize_contexts
 from .maid_call_parser import parse_maid_call
 from .maid_dispatcher import dispatch_to_maid_agent
-from .maid_result_rewriter import build_maid_rephrase_prompt
 from .output_sanitizer import sanitize_user_visible_output
 from .prompt_injector import inject_maid_system_prompt
 from .response_validator import validate_llm_response
@@ -64,6 +71,24 @@ class MaidAgent(Star):
             resp.result_chain = MessageChain(chain=[Comp.Plain(text)])
         resp.completion_text = text
 
+    def _replace_response(self, target: LLMResponse, source: LLMResponse) -> None:
+        if source.result_chain is not None:
+            target.result_chain = source.result_chain
+        target.completion_text = source.completion_text or ""
+        target.tools_call_name = list(source.tools_call_name or [])
+        target.tools_call_args = list(source.tools_call_args or [])
+        target.tools_call_ids = list(source.tools_call_ids or [])
+        target.tools_call_extra_content = dict(source.tools_call_extra_content or {})
+        target.reasoning_content = source.reasoning_content
+        target.reasoning_signature = source.reasoning_signature
+
+    @staticmethod
+    def _contains_agent_name(agent_names: list[str] | None, agent_name: str) -> bool:
+        if not agent_names:
+            return False
+        target = agent_name.strip().casefold()
+        return any(name.strip().casefold() == target for name in agent_names)
+
     @staticmethod
     def _dump_json(data) -> str:
         try:
@@ -85,10 +110,6 @@ class MaidAgent(Star):
         3. 禁用主模型原生工具
         4. 注入大小姐 XML 协议说明
         """
-        if event.get_extra(REPHRASE_STAGE_EXTRA_KEY, False):
-            req.func_tool = None
-            return
-
         raw_input = req.prompt or event.message_str or ""
         if raw_input:
             event.set_extra(RAW_INPUT_EXTRA_KEY, raw_input)
@@ -101,7 +122,11 @@ class MaidAgent(Star):
         req.func_tool = None
         logger.debug("[大小姐模式] 已禁用主模型原生工具暴露")
 
-        if inject_maid_system_prompt(req):
+        if inject_maid_system_prompt(
+            req,
+            self.maid_mode_config.call_tag_name,
+            self.maid_mode_config.default_agent_name,
+        ):
             logger.debug("[大小姐模式] 已注入 XML 调度协议说明")
 
         logger.debug(
@@ -123,32 +148,52 @@ class MaidAgent(Star):
             ),
         )
 
-    async def _request_maid_rephrase(
+    async def _request_maid_follow_up(
         self,
         event: AstrMessageEvent,
-        original_user_input: str,
+        req: ProviderRequest,
         maid_visible_text: str,
+        agent_name: str,
+        maid_request: str,
         agent_result: str,
-    ) -> str:
-        cfg = self.maid_mode_config
+    ) -> LLMResponse:
         provider_id = await self.context.get_current_chat_provider_id(event.unified_msg_origin)
-        prompt = build_maid_rephrase_prompt(
-            original_user_input=original_user_input,
-            maid_visible_text=maid_visible_text,
-            agent_result=agent_result,
+        provider = self.context.get_provider_by_id(provider_id)
+        if provider is None:
+            raise RuntimeError(f"未找到用于大小姐追答的 provider: {provider_id}")
+
+        tool_call_id = f"maid_{uuid.uuid4().hex}"
+        assistant_parts = [TextPart(text=maid_visible_text)] if maid_visible_text.strip() else None
+        tool_calls_result = ToolCallsResult(
+            tool_calls_info=AssistantMessageSegment(
+                content=assistant_parts,
+                tool_calls=[
+                    ToolCall(
+                        id=tool_call_id,
+                        function=ToolCall.FunctionBody(
+                            name=f"transfer_to_{agent_name}",
+                            arguments=json.dumps({"input": maid_request}, ensure_ascii=False),
+                        ),
+                    )
+                ],
+            ),
+            tool_calls_result=[
+                ToolCallMessageSegment(
+                    tool_call_id=tool_call_id,
+                    content=agent_result,
+                )
+            ],
         )
-        event.set_extra(REPHRASE_STAGE_EXTRA_KEY, True)
-        try:
-            llm_resp = await self.context.llm_generate(
-                chat_provider_id=provider_id,
-                prompt=prompt,
-                system_prompt="",
-                tools=None,
-                contexts=[],
-            )
-        finally:
-            event.set_extra(REPHRASE_STAGE_EXTRA_KEY, False)
-        return sanitize_user_visible_output(llm_resp.completion_text or "", cfg.call_tag_name)
+        return await provider.text_chat(
+            prompt=req.prompt,
+            image_urls=req.image_urls,
+            func_tool=None,
+            contexts=req.contexts,
+            system_prompt=req.system_prompt,
+            tool_calls_result=tool_calls_result,
+            model=req.model,
+            extra_user_content_parts=req.extra_user_content_parts,
+        )
 
     @filter.on_llm_response()
     async def sanitize_llm_response(
@@ -180,12 +225,6 @@ class MaidAgent(Star):
         cfg = self.maid_mode_config
         completion_text = resp.completion_text or ""
 
-        if event.get_extra(REPHRASE_STAGE_EXTRA_KEY, False):
-            sanitized = sanitize_user_visible_output(completion_text, cfg.call_tag_name)
-            if sanitized != completion_text:
-                self._rewrite_response_text(resp, sanitized)
-            return
-
         maid_call = parse_maid_call(completion_text, cfg.call_tag_name)
         if not maid_call:
             sanitized = sanitize_user_visible_output(completion_text, cfg.call_tag_name)
@@ -194,7 +233,9 @@ class MaidAgent(Star):
             return
 
         agent_name = maid_call.agent_name or cfg.default_agent_name
-        if cfg.allowed_agent_names and agent_name not in cfg.allowed_agent_names:
+        if cfg.allowed_agent_names and not self._contains_agent_name(
+            cfg.allowed_agent_names, agent_name
+        ):
             logger.warning(f"[大小姐模式] XML 请求的目标 agent 不在白名单中: {agent_name}")
             agent_name = cfg.default_agent_name
 
@@ -206,8 +247,13 @@ class MaidAgent(Star):
             f"请求摘要: {maid_call.request_text[:100]}..."
         )
 
+        req = event.get_extra("provider_request")
+        if not isinstance(req, ProviderRequest):
+            logger.error("[大小姐模式] event.extra['provider_request'] 不存在或类型错误")
+            return
+
         try:
-            agent_result = await dispatch_to_maid_agent(
+            agent_result, resolved_agent_name = await dispatch_to_maid_agent(
                 context=self.context,
                 event=event,
                 agent_name=agent_name,
@@ -219,14 +265,18 @@ class MaidAgent(Star):
         except Exception as exc:
             logger.error(f"[大小姐模式] 子 agent 调度失败: {exc!s}", exc_info=True)
             agent_result = f"执行过程中出现问题：{exc!s}"
+            resolved_agent_name = agent_name
 
-        final_text = await self._request_maid_rephrase(
+        maid_visible_text = sanitize_user_visible_output(completion_text, cfg.call_tag_name)
+        follow_up_resp = await self._request_maid_follow_up(
             event=event,
-            original_user_input=raw_input,
-            maid_visible_text=sanitize_user_visible_output(completion_text, cfg.call_tag_name),
+            req=req,
+            maid_visible_text=maid_visible_text,
+            agent_name=resolved_agent_name,
+            maid_request=maid_call.request_text,
             agent_result=agent_result,
         )
-        self._rewrite_response_text(resp, final_text)
+        self._replace_response(resp, follow_up_resp)
 
     @filter.on_decorating_result()
     async def decorate_result(self, event: AstrMessageEvent) -> None:

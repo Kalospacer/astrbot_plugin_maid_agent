@@ -6,10 +6,13 @@ from __future__ import annotations
 
 import re
 
-from .constants import CALL_MAID_TAG_NAME
+DEFAULT_CALL_MAID_TAG_NAME = "call_maid"
 
 
-def sanitize_user_visible_output(text: str, call_tag_name: str = CALL_MAID_TAG_NAME) -> str:
+def sanitize_user_visible_output(
+    text: str,
+    call_tag_name: str = DEFAULT_CALL_MAID_TAG_NAME,
+) -> str:
     """清洗用户可见文本中的 `<call_maid>` 标签及残留。"""
     if not text:
         return ""

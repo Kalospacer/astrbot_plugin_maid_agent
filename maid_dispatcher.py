@@ -59,13 +59,15 @@ def _resolve_handoff(context: Context, agent_name: str) -> tuple[HandoffTool, st
 
 
 def _build_dispatch_prompt(
-    raw_user_input: str | None,
+    true_user_input: str | None,
     maid_full_reply: str,
     maid_request: str | None = None,
 ) -> str:
     parts: list[str] = []
-    if raw_user_input and raw_user_input.strip():
-        parts.append(f"【用户原始输入】\n{raw_user_input.strip()}")
+    normalized_true_input = (true_user_input or "").strip()
+
+    if normalized_true_input:
+        parts.append(f"【用户原话】\n{normalized_true_input}")
     parts.append(f"【大小姐完整回复】\n{maid_full_reply.strip()}")
     if maid_request and maid_request.strip():
         parts.append(f"【大小姐显式请求】\n{maid_request.strip()}")
@@ -156,7 +158,7 @@ async def dispatch_to_maid_agent(
     agent_name: str,
     maid_full_reply: str,
     maid_request: str,
-    raw_user_input: str | None,
+    true_user_input: str | None,
     image_urls_raw: Any = None,
 ) -> tuple[str, str]:
     """根据 agent 名调用对应子 agent，并返回其自然语言结果与实际命中的 agent 名。"""
@@ -173,7 +175,7 @@ async def dispatch_to_maid_agent(
         handoff, "provider_id", None
     ) or await context.get_current_chat_provider_id(event.unified_msg_origin)
     dispatch_prompt = _build_dispatch_prompt(
-        raw_user_input=raw_user_input,
+        true_user_input=true_user_input,
         maid_full_reply=maid_full_reply,
         maid_request=maid_request,
     )

@@ -9,10 +9,10 @@
 
 ## 功能特性
 
-1. 主模型上下文净化：自动过滤掉 tool role 消息和 tool_calls 痕迹
-2. 工具列表裁剪：主模型只看到 `transfer_to_butler` handoff 工具
-3. 双通道输入注入：管家同时获取原始用户输入和大小姐的转述
-4. 模式说明注入：自动为主模型注入大小姐角色说明
+1. **主模型上下文净化**：自动过滤掉 tool role 消息和 tool_calls 痕迹
+2. **工具列表裁剪**：主模型只看到 `transfer_to_butler` handoff 工具
+3. **双通道输入注入**：管家同时获取原始用户输入和大小姐的转述
+4. **模式说明注入**：自动为主模型注入大小姐角色说明
 
 ## 安装
 
@@ -116,9 +116,35 @@ if raw_user_input and tool.name == "transfer_to_butler":
 # === 双通道输入注入结束 ===
 ```
 
+## 开发
+
+```bash
+# 安装开发依赖
+pip install ruff
+
+# 代码检查
+ruff check .
+
+# 代码格式化
+ruff format .
+```
+
 ## 许可证
 
-MIT License
+CC BY-NC-SA 4.0 (Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International)
+
+本作品采用知识共享署名-非商业性使用-相同方式共享 4.0 国际许可协议进行许可。
+
+**你可以自由地：**
+- 共享 — 以任何媒介或格式复制、发行本作品
+- 演绎 — 修改、转换或以本作品为基础进行创作
+
+**惟须遵守下列条件：**
+- 署名 — 你必须给出适当的署名
+- 非商业性使用 — 你不得将本作品用于商业目的
+- 相同方式共享 — 修改后的作品必须使用相同许可证
+
+完整许可协议文本：https://creativecommons.org/licenses/by-nc-sa/4.0/legalcode.zh-Hans
 
 ## 作者
 

@@ -1,0 +1,32 @@
+[project]
+name = "astrbot-plugin-maid-agent"
+version = "1.0.0"
+description = "大小姐+管家模式：主模型仅保留自然语言对话上下文，所有工具调用通过管家subagent执行"
+readme = "README.md"
+requires-python = ">=3.10"
+
+[tool.ruff]
+target-version = "py310"
+line-length = 100
+
+[tool.ruff.lint]
+select = [
+    "E",      # pycodestyle errors
+    "W",      # pycodestyle warnings
+    "F",      # Pyflakes
+    "I",      # isort
+    "B",      # flake8-bugbear
+    "C4",     # flake8-comprehensions
+    "UP",     # pyupgrade
+    "ARG",    # flake8-unused-arguments
+    "SIM",    # flake8-simplify
+]
+ignore = [
+    "E501",   # line too long (handled by formatter)
+    "B008",   # do not perform function calls in argument defaults
+    "B905",   # zip without strict
+    "ARG001", # unused function argument (common in hooks)
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["astrbot"]

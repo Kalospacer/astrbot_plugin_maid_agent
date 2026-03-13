@@ -9,36 +9,20 @@
 
 from __future__ import annotations
 
-import logging
 from typing import TYPE_CHECKING
 
-from astrbot.api import Star, register
-from astrbot.api import filter
-from astrbot.core.agent.tool import ToolSet
-from astrbot.core.provider.register import llm_tools
+from astrbot.api import Star, logger, register
+from astrbot.api.event import filter
+
+from .constants import BUTLER_HANDOFF_TOOL_NAME, MAID_SYSTEM_PROMPT_APPEND, RAW_INPUT_EXTRA_KEY
+from .context_sanitizer import sanitize_contexts
+from .prompt_injector import inject_maid_system_prompt
+from .response_validator import validate_llm_response
+from .tool_manager import trim_tools_to_butler_handoff
 
 if TYPE_CHECKING:
-    from astrbot.core.platform.astr_message_event import AstrMessageEvent
-    from astrbot.core.provider.entities import LLMResponse, ProviderRequest
-
-# 插件专用 key，用于存储原始用户输入
-RAW_INPUT_EXTRA_KEY = "_maid_agent_raw_input"
-
-# 管家 handoff 工具名称
-BUTLER_HANDOFF_TOOL_NAME = "transfer_to_butler"
-
-# 大小姐模式系统提示追加
-MAID_SYSTEM_PROMPT_APPEND = """
-
-【大小姐模式】
-你是一位优雅的大小姐，只负责自然语言对话和理解用户意图。
-- 当需要执行任何操作（如搜索、查询、调用工具、运行代码等）时，请使用 transfer_to_butler 工具将任务转交给管家处理
-- 你只需要用自然语言表达你的需求，管家会为你完成所有执行工作
-- 执行完成后，管家会用自然语言向你汇报结果
-- 请保持优雅、礼貌的对话风格
-"""
-
-logger = logging.getLogger(__name__)
+    from astrbot.api.event import AstrMessageEvent
+    from astrbot.api.provider import LLMResponse, ProviderRequest
 
 
 @register(
@@ -74,29 +58,15 @@ class MaidAgent(Star):
             event.set_extra(RAW_INPUT_EXTRA_KEY, raw_input)
             logger.debug(f"[大小姐模式] 已保存原始用户输入: {raw_input[:100]}...")
 
-        # 2. 清洗 contexts - 过滤 tool role 和 tool_calls
-        natural_contexts = []
-        for ctx in req.contexts:
-            role = ctx.get("role", "")
-            # 过滤掉 tool 角色的消息
-            if role == "tool":
-                continue
-            # 过滤掉包含 tool_calls 的 assistant 消息
-            if role == "assistant" and "tool_calls" in ctx:
-                continue
-            natural_contexts.append(ctx)
-
-        if len(req.contexts) != len(natural_contexts):
+        # 2. 清洗 contexts
+        removed_count = sanitize_contexts(req)
+        if removed_count > 0:
             logger.debug(
-                f"[大小姐模式] 已清洗 contexts: {len(req.contexts)} -> {len(natural_contexts)}"
+                f"[大小姐模式] 已清洗 contexts，移除 {removed_count} 条非自然语言消息"
             )
-        req.contexts = natural_contexts
 
-        # 3. 裁剪 func_tool - 仅保留管家 handoff
-        butler_handoff = llm_tools.get_func(BUTLER_HANDOFF_TOOL_NAME)
-        if butler_handoff:
-            req.func_tool = ToolSet()
-            req.func_tool.add_tool(butler_handoff)
+        # 3. 裁剪工具集
+        if trim_tools_to_butler_handoff(req):
             logger.debug(f"[大小姐模式] 已裁剪工具集，仅保留: {BUTLER_HANDOFF_TOOL_NAME}")
         else:
             logger.warning(
@@ -105,8 +75,7 @@ class MaidAgent(Star):
             )
 
         # 4. 注入大小姐模式说明
-        if MAID_SYSTEM_PROMPT_APPEND not in req.system_prompt:
-            req.system_prompt += MAID_SYSTEM_PROMPT_APPEND
+        if inject_maid_system_prompt(req):
             logger.debug("[大小姐模式] 已注入大小姐模式说明")
 
     @filter.on_llm_response()
@@ -120,22 +89,15 @@ class MaidAgent(Star):
 
         主要用于记录和调试，不修改响应内容。
         """
-        # 检查是否是工具调用
-        if resp.tools_call_name:
-            # 如果主模型尝试直接调用工具（不应该发生），记录警告
-            non_butler_tools = [
-                name
-                for name in resp.tools_call_name
-                if name != BUTLER_HANDOFF_TOOL_NAME
-            ]
-            if non_butler_tools:
-                logger.warning(
-                    f"[大小姐模式] 主模型尝试直接调用非管家工具: {non_butler_tools}"
-                )
-            else:
-                logger.debug(
-                    f"[大小姐模式] 主模型正确调用管家 handoff: {resp.tools_call_name}"
-                )
+        non_butler_tools = validate_llm_response(resp)
+        if non_butler_tools:
+            logger.warning(
+                f"[大小姐模式] 主模型尝试直接调用非管家工具: {non_butler_tools}"
+            )
+        elif resp.tools_call_name:
+            logger.debug(
+                f"[大小姐模式] 主模型正确调用管家 handoff: {resp.tools_call_name}"
+            )
 
     @filter.on_decorating_result()
     async def decorate_result(self, event: AstrMessageEvent) -> None:

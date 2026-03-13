@@ -100,6 +100,21 @@ def _load_provider_settings(context: Context, event: AstrMessageEvent) -> dict[s
     return provider_settings if isinstance(provider_settings, dict) else {}
 
 
+def _get_compress_provider(
+    context: Context,
+    provider_settings: dict[str, Any],
+):
+    provider_id = str(provider_settings.get("llm_compress_provider_id", "")).strip()
+    strategy = str(provider_settings.get("context_limit_reached_strategy", "truncate_by_turns"))
+    if not provider_id or strategy != "llm_compress":
+        return None
+    provider = context.get_provider_by_id(provider_id)
+    if provider is None:
+        logger.warning("[大小姐模式] 未找到指定的上下文压缩模型 %s，将跳过压缩。", provider_id)
+        return None
+    return provider
+
+
 def _build_session_contexts(
     session: MaidAgentSession | None,
     begin_dialogs: list[Message] | None,
@@ -124,6 +139,12 @@ async def _build_runner(
     contexts: list[dict[str, Any]] | list[Message] | None,
     stream: bool,
     tool_call_timeout: int,
+    llm_compress_instruction: str,
+    llm_compress_keep_recent: int,
+    llm_compress_provider,
+    truncate_turns: int,
+    enforce_max_turns: int,
+    tool_schema_mode: str,
 ) -> ToolLoopAgentRunner:
     agent_context = AstrAgentContext(context=context, event=event)
     runner = ToolLoopAgentRunner()
@@ -147,6 +168,12 @@ async def _build_runner(
         tool_executor=FunctionToolExecutor(),
         agent_hooks=BaseAgentRunHooks[AstrAgentContext](),
         streaming=stream,
+        llm_compress_instruction=llm_compress_instruction,
+        llm_compress_keep_recent=llm_compress_keep_recent,
+        llm_compress_provider=llm_compress_provider,
+        truncate_turns=truncate_turns,
+        enforce_max_turns=enforce_max_turns,
+        tool_schema_mode=tool_schema_mode,
     )
     return runner
 
@@ -185,6 +212,12 @@ async def dispatch_to_maid_agent(
     agent_max_step = int(provider_settings.get("max_agent_step", 30))
     stream = bool(provider_settings.get("streaming_response", False))
     tool_call_timeout = int(provider_settings.get("tool_call_timeout", 60))
+    llm_compress_instruction = str(provider_settings.get("llm_compress_instruction", "") or "")
+    llm_compress_keep_recent = int(provider_settings.get("llm_compress_keep_recent", 4))
+    truncate_turns = int(provider_settings.get("dequeue_context_length", 1))
+    enforce_max_turns = int(provider_settings.get("max_context_length", -1))
+    tool_schema_mode = str(provider_settings.get("tool_schema_mode", "full") or "full")
+    llm_compress_provider = _get_compress_provider(context, provider_settings)
 
     provider = context.get_provider_by_id(provider_id)
     if provider is None:
@@ -214,6 +247,12 @@ async def dispatch_to_maid_agent(
         contexts=_build_session_contexts(session, begin_dialogs),
         stream=stream,
         tool_call_timeout=tool_call_timeout,
+        llm_compress_instruction=llm_compress_instruction,
+        llm_compress_keep_recent=llm_compress_keep_recent,
+        llm_compress_provider=llm_compress_provider,
+        truncate_turns=truncate_turns,
+        enforce_max_turns=enforce_max_turns,
+        tool_schema_mode=tool_schema_mode,
     )
     async for _ in runner.step_until_done(agent_max_step):
         pass

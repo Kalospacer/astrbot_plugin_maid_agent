@@ -74,8 +74,7 @@ class MaidAgent(Star):
 
     def _rewrite_response_text(self, resp: LLMResponse, text: str) -> None:
         """以兼容 AstrBot 的方式回写响应文本。"""
-        if resp.result_chain is None:
-            resp.result_chain = MessageChain(chain=[Comp.Plain(text)])
+        resp.result_chain = MessageChain(chain=[Comp.Plain(text)])
         resp.completion_text = text
 
     def _replace_response(self, target: LLMResponse, source: LLMResponse) -> None:
@@ -318,6 +317,13 @@ class MaidAgent(Star):
             maid_request=maid_call.request_text,
             agent_result=agent_result,
         )
+        sanitized_follow_up = sanitize_user_visible_output(
+            follow_up_resp.completion_text or "",
+            cfg.call_tag_name,
+            cfg.done_tag_name,
+        )
+        if sanitized_follow_up != (follow_up_resp.completion_text or ""):
+            self._rewrite_response_text(follow_up_resp, sanitized_follow_up)
         self._replace_response(resp, follow_up_resp)
         if session_done_requested and self.session_store:
             await self.session_store.close_active_session(event.unified_msg_origin, status="done")

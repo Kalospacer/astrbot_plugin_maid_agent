@@ -20,5 +20,5 @@ def build_maid_rephrase_prompt(
         sections.append(f"【你刚才准备回复用户的思路】\n{maid_visible_text.strip()}")
 
     sections.append(f"【与当前问题相关的补充结果】\n{agent_result.strip() or '暂无补充结果。'}")
-    sections.append("请你以大小姐身份，结合以上信息自然地回复用户。")
+    sections.append("请你结合以上信息自然地回复用户。")
     return "\n\n".join(sections)

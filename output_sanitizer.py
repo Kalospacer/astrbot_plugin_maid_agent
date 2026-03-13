@@ -20,6 +20,8 @@ def sanitize_user_visible_output(text: str, call_tag_name: str = CALL_MAID_TAG_N
         text,
         flags=re.IGNORECASE,
     )
-    sanitized = re.sub(rf"</?{re.escape(call_tag_name)}\b[^>]*>", "", sanitized, flags=re.IGNORECASE)
+    sanitized = re.sub(
+        rf"</?{re.escape(call_tag_name)}\b[^>]*>", "", sanitized, flags=re.IGNORECASE
+    )
     sanitized = re.sub(r"\n{3,}", "\n\n", sanitized)
     return sanitized.strip()

@@ -25,12 +25,20 @@ def _find_handoff(context: "Context", agent_name: str) -> "HandoffTool | None":
     return None
 
 
-def _build_dispatch_prompt(raw_user_input: str | None, maid_request: str) -> str:
+def _build_dispatch_prompt(
+    raw_user_input: str | None,
+    maid_full_reply: str,
+    maid_request: str | None = None,
+) -> str:
     parts: list[str] = []
     if raw_user_input and raw_user_input.strip():
         parts.append(f"【用户原始输入】\n{raw_user_input.strip()}")
-    parts.append(f"【大小姐的要求】\n{maid_request.strip()}")
-    parts.append("请综合考虑以上信息完成任务。你的汇报对象是大小姐，不是用户。")
+    parts.append(f"【大小姐完整回复】\n{maid_full_reply.strip()}")
+    if maid_request and maid_request.strip():
+        parts.append(f"【大小姐显式请求】\n{maid_request.strip()}")
+    parts.append(
+        "你是MuiceMaid，一个全能的管家AIagent助手，擅长从大小姐的话语中理解大小姐的意图，并提取出大小姐的需求主动完成大小姐的愿望。你需要综合考虑大小姐和用户的对话，提取他们是否需要执行某些实际操作，并综合以上信息完成任务，请判断用户的需求，和大小姐的意图，如果大小姐误解了用户的需求，你以用户的需求为准完成任务，如果大小姐拒绝了用户的请求，你应当停止工作并汇报结束，如果大小姐和用户的需求一致，结合两者的需求准确完成任务。你的汇报对象是大小姐，不是用户。"
+    )
     return "\n\n".join(parts)
 
 
@@ -41,7 +49,9 @@ def _normalize_begin_dialogs(dialogs: Any) -> list[Message] | None:
     contexts: list[Message] = []
     for dialog in dialogs:
         try:
-            contexts.append(dialog if isinstance(dialog, Message) else Message.model_validate(dialog))
+            contexts.append(
+                dialog if isinstance(dialog, Message) else Message.model_validate(dialog)
+            )
         except Exception:
             continue
     return contexts or None
@@ -59,6 +69,7 @@ async def dispatch_to_maid_agent(
     context: "Context",
     event: "AstrMessageEvent",
     agent_name: str,
+    maid_full_reply: str,
     maid_request: str,
     raw_user_input: str | None,
     image_urls_raw: Any = None,
@@ -74,10 +85,14 @@ async def dispatch_to_maid_agent(
     toolset = FunctionToolExecutor._build_handoff_toolset(run_context, handoff.agent.tools)
     image_urls = await FunctionToolExecutor._collect_handoff_image_urls(run_context, image_urls_raw)
 
-    provider_id = getattr(handoff, "provider_id", None) or await context.get_current_chat_provider_id(
-        event.unified_msg_origin
+    provider_id = getattr(
+        handoff, "provider_id", None
+    ) or await context.get_current_chat_provider_id(event.unified_msg_origin)
+    dispatch_prompt = _build_dispatch_prompt(
+        raw_user_input=raw_user_input,
+        maid_full_reply=maid_full_reply,
+        maid_request=maid_request,
     )
-    dispatch_prompt = _build_dispatch_prompt(raw_user_input, maid_request)
     begin_dialogs = _normalize_begin_dialogs(getattr(handoff.agent, "begin_dialogs", None))
 
     provider_settings = _load_provider_settings(context, event)

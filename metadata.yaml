@@ -1,0 +1,14 @@
+id: "maid_agent"
+name: "Maid Agent Mode"
+version: "1.0.0"
+description: "大小姐+管家模式：主模型仅保留自然语言对话上下文，所有工具调用通过管家subagent执行"
+author: "Kalo"
+repository: "https://github.com/Kalospacer/astrbot_plugin_maid_agent"
+display_name: "大小姐管家模式"
+astrbot_version: ">=4.16,<5"
+
+# 插件启用后的行为说明：
+# 1. 主模型（大小姐）只看到自然语言对话历史，不直接持有工具
+# 2. 主模型的工具列表被裁剪为仅保留 transfer_to_butler handoff
+# 3. 管家subagent接收双通道输入：用户原始输入 + 大小姐的自然语言要求
+# 4. 所有执行操作由管家完成，结果以自然语言形式返回

@@ -23,6 +23,7 @@ from astrbot.core.agent.message import (
     ToolCall,
     ToolCallMessageSegment,
 )
+from astrbot.core.agent.tool import ToolSet
 from astrbot.core.message.message_event_result import MessageChain
 from astrbot.core.provider.entities import ToolCallsResult
 
@@ -144,8 +145,8 @@ class MaidAgent(Star):
         if removed_count > 0:
             logger.debug(f"[大小姐模式] 已清洗 contexts，移除 {removed_count} 条非自然语言消息")
 
-        req.func_tool = None
-        logger.debug("[大小姐模式] 已禁用主模型原生工具暴露")
+        req.func_tool = ToolSet()
+        logger.debug("[大小姐模式] 已注入空工具集，禁用主模型原生工具暴露")
 
         if inject_maid_system_prompt(
             req,

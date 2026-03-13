@@ -1,16 +1,12 @@
 """
-大小姐管家模式插件 - 响应验证器
+大小姐管家模式插件 - 响应观测器
 
-负责验证和记录 LLM 响应，确保大小姐模式的输出符合预期。
+在 XML 协议模式下，仅用于观测主模型是否仍残留原生工具调用倾向。
 """
 
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
-
-from astrbot.api import logger
-
-from .constants import BUTLER_HANDOFF_TOOL_NAME
 
 if TYPE_CHECKING:
     from astrbot.api.provider import LLMResponse
@@ -18,19 +14,9 @@ if TYPE_CHECKING:
 
 def validate_llm_response(resp: LLMResponse) -> list[str]:
     """
-    验证 LLM 响应，检查是否正确调用了管家 handoff。
+    返回主模型响应中的原生工具调用名称列表。
 
-    Args:
-        resp: LLMResponse 对象
-
-    Returns:
-        尝试直接调用的非管家工具名称列表（空列表表示正常）
+    在 XML 协议模式下，这仅作为低优先级观测信息，
+    不再承担主路径校验职责。
     """
-    if not resp.tools_call_name:
-        return []
-
-    return [
-        name
-        for name in resp.tools_call_name
-        if name != BUTLER_HANDOFF_TOOL_NAME
-    ]
+    return list(resp.tools_call_name or [])

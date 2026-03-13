@@ -12,14 +12,16 @@ astrbot_version: ">=4.20.0"
 # ============================================================
 # 本插件需要配合 AstrBot 的 subagent 功能使用：
 #
-# 1. 必须在 AstrBot 配置中启用名为 "butler" 的 subagent
+# 1. 必须在 AstrBot 配置中启用至少一个可用的 subagent
+# 2. 插件实际调度目标由插件配置中的 `default_agent_name` /
+#    `allowed_agent_names` 以及模型输出的 XML 一起决定
 # 2. subagent 配置示例：
 #    subagent_orchestrator:
 #      agents:
-#        - name: butler
+#        - name: muiceagent
 #          enabled: true
 #          system_prompt: |
-#            你是管家，负责处理大小姐转交的所有执行任务...
+#            你是管家，负责处理大小姐转交的执行任务...
 #          tools: null
 #
 # 详细配置说明请参考 README.md
@@ -27,6 +29,6 @@ astrbot_version: ">=4.20.0"
 
 # 插件启用后的行为说明：
 # 1. 主模型（大小姐）只看到自然语言对话历史，不直接持有工具
-# 2. 主模型的工具列表被裁剪为仅保留 transfer_to_butler handoff
-# 3. 管家subagent接收双通道输入：用户原始输入 + 大小姐的自然语言要求
-# 4. 所有执行操作由管家完成，结果以自然语言形式返回
+# 2. 主模型通过 XML 协议输出 `<call_maid>` / `<maid_session>` 标签表达意图
+# 3. 插件解析 XML 后主动调度 subagent，并将执行结果回灌给大小姐
+# 4. 管家 session 可在单 active 模式下跨轮持久化，直到完成或超时

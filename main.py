@@ -96,6 +96,20 @@ class MaidAgent(Star):
         except Exception:
             return repr(data)
 
+    @staticmethod
+    def _is_provider_request_like(req: object) -> bool:
+        return all(
+            hasattr(req, attr)
+            for attr in (
+                "prompt",
+                "image_urls",
+                "contexts",
+                "system_prompt",
+                "model",
+                "extra_user_content_parts",
+            )
+        )
+
     @filter.on_llm_request()
     async def sanitize_main_model_request(
         self,
@@ -248,7 +262,7 @@ class MaidAgent(Star):
         )
 
         req = event.get_extra("provider_request")
-        if not isinstance(req, ProviderRequest):
+        if not self._is_provider_request_like(req):
             logger.error("[大小姐模式] event.extra['provider_request'] 不存在或类型错误")
             return
 

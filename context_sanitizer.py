@@ -22,8 +22,11 @@ def sanitize_contexts(req: ProviderRequest) -> int:
     Returns:
         过滤掉的消息数量
     """
+    raw_contexts = req.contexts if isinstance(req.contexts, list) else []
     natural_contexts = []
-    for ctx in req.contexts:
+    for ctx in raw_contexts:
+        if not isinstance(ctx, dict):
+            continue
         role = ctx.get("role", "")
         # 过滤掉 tool 角色的消息
         if role == "tool":
@@ -33,6 +36,6 @@ def sanitize_contexts(req: ProviderRequest) -> int:
             continue
         natural_contexts.append(ctx)
 
-    removed_count = len(req.contexts) - len(natural_contexts)
+    removed_count = len(raw_contexts) - len(natural_contexts)
     req.contexts = natural_contexts
     return removed_count

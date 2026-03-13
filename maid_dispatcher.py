@@ -23,6 +23,13 @@ if TYPE_CHECKING:
     from astrbot.core.provider.provider import Provider
 
 
+def _safe_int(value: Any, default: int) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
 def _list_handoffs(context: Context) -> list[HandoffTool]:
     orchestrator = getattr(context, "subagent_orchestrator", None)
     handoffs = getattr(orchestrator, "handoffs", None) or []
@@ -213,13 +220,13 @@ async def dispatch_to_maid_agent(
     begin_dialogs = _normalize_begin_dialogs(getattr(handoff.agent, "begin_dialogs", None))
 
     provider_settings = _load_provider_settings(context, event)
-    agent_max_step = int(provider_settings.get("max_agent_step", 30))
+    agent_max_step = _safe_int(provider_settings.get("max_agent_step", 30), 30)
     stream = bool(provider_settings.get("streaming_response", False))
-    tool_call_timeout = int(provider_settings.get("tool_call_timeout", 60))
+    tool_call_timeout = _safe_int(provider_settings.get("tool_call_timeout", 60), 60)
     llm_compress_instruction = str(provider_settings.get("llm_compress_instruction", "") or "")
-    llm_compress_keep_recent = int(provider_settings.get("llm_compress_keep_recent", 4))
-    truncate_turns = int(provider_settings.get("dequeue_context_length", 1))
-    enforce_max_turns = int(provider_settings.get("max_context_length", -1))
+    llm_compress_keep_recent = _safe_int(provider_settings.get("llm_compress_keep_recent", 4), 4)
+    truncate_turns = _safe_int(provider_settings.get("dequeue_context_length", 1), 1)
+    enforce_max_turns = _safe_int(provider_settings.get("max_context_length", -1), -1)
     tool_schema_mode = str(provider_settings.get("tool_schema_mode", "full") or "full")
     llm_compress_provider = _get_compress_provider(context, provider_settings)
 

@@ -78,10 +78,20 @@ def load_maid_mode_config(config: Mapping[str, Any] | None = None) -> MaidModeCo
         default_agent_name = DEFAULT_MAID_AGENT_NAME
 
     allowed = cfg.get("allowed_agent_names", [default_agent_name])
-    if not isinstance(allowed, list):
+    if not isinstance(allowed, (list, tuple, set)):
         allowed = [default_agent_name]
-    allowed_agent_names = [str(item).strip() for item in allowed if str(item).strip()]
-    if default_agent_name not in allowed_agent_names:
+    allowed_agent_names: list[str] = []
+    seen_agent_names: set[str] = set()
+    for item in allowed:
+        normalized = str(item).strip()
+        if not normalized:
+            continue
+        key = normalized.casefold()
+        if key in seen_agent_names:
+            continue
+        seen_agent_names.add(key)
+        allowed_agent_names.append(normalized)
+    if default_agent_name.casefold() not in seen_agent_names:
         allowed_agent_names.append(default_agent_name)
 
     call_tag_name = _normalize_xml_tag_name(

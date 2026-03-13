@@ -45,24 +45,30 @@ def _find_handoff(context: Context, agent_name: str) -> HandoffTool | None:
     return None
 
 
-def _resolve_handoff(context: Context, agent_name: str) -> tuple[HandoffTool, str]:
+def _resolve_handoff(
+    context: Context,
+    agent_name: str,
+    fallback_agent_name: str | None = None,
+) -> tuple[HandoffTool, str]:
     handoff = _find_handoff(context, agent_name)
     if handoff is not None:
         resolved_name = getattr(getattr(handoff, "agent", None), "name", None) or agent_name
         return handoff, str(resolved_name)
 
-    handoffs = _list_handoffs(context)
-    if handoffs:
-        fallback = handoffs[0]
-        fallback_name = getattr(getattr(fallback, "agent", None), "name", None) or agent_name
-        logger.warning(
-            "[大小姐模式] 未找到名为 %s 的子 agent，已回退到第一个可用子 agent: %s",
-            agent_name,
-            fallback_name,
-        )
-        return fallback, str(fallback_name)
+    if fallback_agent_name and fallback_agent_name.strip().casefold() != agent_name.strip().casefold():
+        fallback = _find_handoff(context, fallback_agent_name)
+        if fallback is not None:
+            fallback_name = (
+                getattr(getattr(fallback, "agent", None), "name", None) or fallback_agent_name
+            )
+            logger.warning(
+                "[大小姐模式] 未找到名为 %s 的子 agent，已回退到默认子 agent: %s",
+                agent_name,
+                fallback_name,
+            )
+            return fallback, str(fallback_name)
 
-    raise ValueError("未找到任何可用的子 agent")
+    raise ValueError(f"未找到可用的子 agent: {agent_name}")
 
 
 def _build_dispatch_prompt(
@@ -204,7 +210,11 @@ async def dispatch_to_maid_agent(
     image_urls_raw: Any = None,
 ) -> tuple[str, str]:
     """根据 agent 名调用对应子 agent，并返回其自然语言结果与实际命中的 agent 名。"""
-    handoff, resolved_agent_name = _resolve_handoff(context, agent_name)
+    handoff, resolved_agent_name = _resolve_handoff(
+        context,
+        agent_name,
+        fallback_agent_name=session_store.config.default_agent_name,
+    )
     logger.debug("[大小姐模式] 本次调度实际使用子 agent: %s", resolved_agent_name)
 
     agent_context = AstrAgentContext(context=context, event=event)

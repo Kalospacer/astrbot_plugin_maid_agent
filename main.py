@@ -318,8 +318,15 @@ class MaidAgent(Star):
             cfg.call_tag_name,
             cfg.done_tag_name,
         )
-        if maid_visible_text != completion_text:
+        if maid_visible_text != completion_text and maid_visible_text.strip():
             self._rewrite_response_text(resp, maid_visible_text)
+        elif not maid_visible_text.strip():
+            resp.result_chain = None
+            resp.completion_text = ""
+            resp.tools_call_name = []
+            resp.tools_call_args = []
+            resp.tools_call_ids = []
+            resp.tools_call_extra_content = {}
         event.set_extra(
             PENDING_MAID_FOLLOW_UP_EXTRA_KEY,
             {

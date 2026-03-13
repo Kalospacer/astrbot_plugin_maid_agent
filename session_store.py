@@ -220,7 +220,7 @@ class MaidSessionStore:
     async def load_session(self, session_id: str) -> MaidAgentSession | None:
         try:
             path = self._session_path(session_id)
-        except ValueError as exc:
+        except (TypeError, AttributeError, ValueError) as exc:
             logger.error("[大小姐模式] session_id 校验失败: %s", exc)
             return None
         if not await asyncio.to_thread(path.exists):

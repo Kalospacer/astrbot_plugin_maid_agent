@@ -355,6 +355,7 @@ class MaidAgent(Star):
             true_user_input = pending.get("true_user_input")
             image_urls_raw = pending.get("image_urls_raw")
             session_done_requested = bool(pending.get("session_done_requested", False))
+            self._clear_pending_follow_up(event)
 
             try:
                 if self.session_store is None:

@@ -10,25 +10,28 @@ from dataclasses import dataclass
 from typing import Any
 
 DEFAULT_CALL_MAID_TAG_NAME = "call_maid"
-DEFAULT_DONE_TAG_NAME = "maid_session"
 DEFAULT_MAID_AGENT_NAME = "butler"
 DEFAULT_SESSION_TIMEOUT_MINUTES = 20
+DEFAULT_SERVING_MAX_TURNS = 3
+DEFAULT_SERVING_PROMPT_TEMPLATE = "根据上文，你决定继续说话。"
 DEFAULT_MAIN_SYSTEM_PROMPT_TEMPLATE = (
-    "- 当你需要呼叫管家帮忙完成任务时，请在回复末尾附加 XML 块咒语："
-    '<{call_tag_name} agent="{default_agent_name}">这里写给管家的要求</{call_tag_name}>'
-    "\n- 如果不需要呼叫管家帮忙，就不要说这个咒语"
-    "\n- XML 标签中的内容是你对管家的任务要求\n"
-    '- 当你判断当前管家任务已经结束时，请额外附加独立结束标签：<{done_tag_name} status="done" />'
-    "\n- 如果当前管家任务尚未结束，就不要输出结束标签\n"
+    "- 需要管家协助时，回复末尾附加："
+    '<{call_tag_name} agent="{default_agent_name}">任务要求</{call_tag_name}>'
+    "\n- 不需要管家则不附加此标签"
+    '\n- 查询管家任务状态：<{call_tag_name} action="status" />'
+    '\n- 停止管家任务：<{call_tag_name} action="stop" />'
+    '\n- 补充或修正当前管家任务：<{call_tag_name} action="steer">补充要求</{call_tag_name}>'
+    '\n- 若你判断这次应在对方未继续发言时主动再说几次，可附加：<{call_tag_name} action="continue" turns="{serving_max_turns}" />'
+    '\n- 管家任务结束时附加：<{call_tag_name} action="done" />，未结束不附加'
 )
 DEFAULT_DISPATCH_PROMPT_TEMPLATE = (
     "{user_input_block}"
     "{maid_full_reply_block}"
     "{maid_request_block}"
     "你是MuiceMaid，一个全能的管家AIagent助手，擅长从大小姐的话语中理解大小姐的意图，并提取出大小姐的需求主动完成大小姐的愿望。"
-    "你需要综合考虑大小姐和用户的对话，提取他们是否需要执行某些实际操作，并综合以上信息完成任务，请判断用户的需求，和大小姐的意图，"
-    "如果大小姐误解了用户的需求，你以用户的需求为准完成任务，如果大小姐拒绝了用户的请求，你应当停止工作并汇报结束，"
-    "如果大小姐和用户的需求一致，结合两者的需求准确完成任务。你的汇报对象是大小姐，不是用户。"
+    "你需要综合考虑大小姐和对方的对话，提取他们是否需要执行某些实际操作，并综合以上信息完成任务，请判断对方的需求，和大小姐的意图，"
+    "如果大小姐误解了对方的需求，你以对方的需求为准完成任务，如果大小姐拒绝了对方的请求，你应当停止工作并汇报结束，"
+    "如果大小姐和对方的需求一致，结合两者的需求准确完成任务。你的汇报对象是大小姐，不是对方。"
 )
 
 
@@ -37,11 +40,13 @@ class MaidModeConfig:
     default_agent_name: str = DEFAULT_MAID_AGENT_NAME
     allowed_agent_names: list[str] | None = None
     call_tag_name: str = DEFAULT_CALL_MAID_TAG_NAME
-    done_tag_name: str = DEFAULT_DONE_TAG_NAME
     include_raw_user_input: bool = True
     session_enabled: bool = True
     log_raw_llm_io: bool = False
     session_timeout_minutes: int = DEFAULT_SESSION_TIMEOUT_MINUTES
+    serving_mode_enabled: bool = False
+    serving_max_turns: int = DEFAULT_SERVING_MAX_TURNS
+    serving_prompt_template: str = DEFAULT_SERVING_PROMPT_TEMPLATE
     main_system_prompt_template: str = DEFAULT_MAIN_SYSTEM_PROMPT_TEMPLATE
     dispatch_prompt_template: str = DEFAULT_DISPATCH_PROMPT_TEMPLATE
 
@@ -98,13 +103,10 @@ def load_maid_mode_config(config: Mapping[str, Any] | None = None) -> MaidModeCo
         cfg.get("call_tag_name", DEFAULT_CALL_MAID_TAG_NAME),
         DEFAULT_CALL_MAID_TAG_NAME,
     )
-    done_tag_name = _normalize_xml_tag_name(
-        cfg.get("done_tag_name", DEFAULT_DONE_TAG_NAME),
-        DEFAULT_DONE_TAG_NAME,
-    )
     include_raw_user_input = _parse_bool(cfg.get("include_raw_user_input", True), True)
     session_enabled = _parse_bool(cfg.get("session_enabled", True), True)
     log_raw_llm_io = _parse_bool(cfg.get("log_raw_llm_io", False), False)
+    serving_mode_enabled = _parse_bool(cfg.get("serving_mode_enabled", False), False)
     main_system_prompt_template = str(
         cfg.get("main_system_prompt_template", DEFAULT_MAIN_SYSTEM_PROMPT_TEMPLATE)
     )
@@ -115,6 +117,11 @@ def load_maid_mode_config(config: Mapping[str, Any] | None = None) -> MaidModeCo
     )
     if not dispatch_prompt_template.strip():
         dispatch_prompt_template = DEFAULT_DISPATCH_PROMPT_TEMPLATE
+    serving_prompt_template = str(
+        cfg.get("serving_prompt_template", DEFAULT_SERVING_PROMPT_TEMPLATE)
+    )
+    if not serving_prompt_template.strip():
+        serving_prompt_template = DEFAULT_SERVING_PROMPT_TEMPLATE
 
     timeout_raw = cfg.get("session_timeout_minutes", DEFAULT_SESSION_TIMEOUT_MINUTES)
     try:
@@ -123,16 +130,25 @@ def load_maid_mode_config(config: Mapping[str, Any] | None = None) -> MaidModeCo
         session_timeout_minutes = DEFAULT_SESSION_TIMEOUT_MINUTES
     if session_timeout_minutes <= 0:
         session_timeout_minutes = DEFAULT_SESSION_TIMEOUT_MINUTES
+    serving_max_turns_raw = cfg.get("serving_max_turns", DEFAULT_SERVING_MAX_TURNS)
+    try:
+        serving_max_turns = int(serving_max_turns_raw)
+    except (TypeError, ValueError):
+        serving_max_turns = DEFAULT_SERVING_MAX_TURNS
+    if serving_max_turns <= 0:
+        serving_max_turns = DEFAULT_SERVING_MAX_TURNS
 
     return MaidModeConfig(
         default_agent_name=default_agent_name,
         allowed_agent_names=allowed_agent_names,
         call_tag_name=call_tag_name,
-        done_tag_name=done_tag_name,
         include_raw_user_input=include_raw_user_input,
         session_enabled=session_enabled,
         log_raw_llm_io=log_raw_llm_io,
         session_timeout_minutes=session_timeout_minutes,
+        serving_mode_enabled=serving_mode_enabled,
+        serving_max_turns=serving_max_turns,
+        serving_prompt_template=serving_prompt_template,
         main_system_prompt_template=main_system_prompt_template,
         dispatch_prompt_template=dispatch_prompt_template,
     )

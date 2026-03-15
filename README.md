@@ -55,7 +55,7 @@
 
 服侍模式用于打破传统的 `user -> assistant` 单轮回复节奏，让大小姐在**对方没有继续发言**时，也可以按协议主动追加几轮自然语言回复。
 
-- 大小姐可在回复中附加：\`<call_maid action=\"continue\" turns=\"次数\" />\`
+- 大小姐可在回复中附加：\`<call_maid action=\"continue\" turns=\"{serving_max_turns}\" />\`
 - 插件会在首条回复发送后，自动再次请求 LLM，并按 \`serving_prompt_template\` 续发
 - 单次用户发言最多可触发 \`serving_max_turns\` 次自动续发，默认上限为 `3`
 - 当前实现下，自动续发预算不会被无限“续杯”；即使自动回复中再次输出 \`continue\`，也只会在本轮剩余预算内继续
@@ -173,6 +173,7 @@ session_timeout_minutes: 20
 支持的注入占位符：
 - \`{call_tag_name}\`
 - \`{default_agent_name}\`
+- \`{serving_max_turns}\`
 
 **默认模板效果：**
 
@@ -182,7 +183,7 @@ session_timeout_minutes: 20
 - 查询管家任务状态：<{call_tag_name} action=\"status\" />
 - 停止管家任务：<{call_tag_name} action=\"stop\" />
 - 补充或修正当前管家任务：<{call_tag_name} action=\"steer\">补充要求</{call_tag_name}>
-- 若你判断这次应在对方未继续发言时主动再说几次，可附加：<{call_tag_name} action=\"continue\" turns=\"次数\" />
+- 若你判断这次应在对方未继续发言时主动再说几次，可附加：<{call_tag_name} action=\"continue\" turns=\"{serving_max_turns}\" />
 - 管家任务结束时附加：<{call_tag_name} action=\"done\" />，未结束不附加
 \`\`\`
 

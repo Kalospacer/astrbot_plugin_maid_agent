@@ -15,11 +15,13 @@ if TYPE_CHECKING:
 def build_maid_system_prompt_append(
     call_tag_name: str,
     default_agent_name: str,
+    serving_max_turns: int,
     prompt_template: str,
 ) -> str:
     return (
         prompt_template.replace("{call_tag_name}", call_tag_name)
         .replace("{default_agent_name}", default_agent_name)
+        .replace("{serving_max_turns}", str(serving_max_turns))
     )
 
 
@@ -27,6 +29,7 @@ def inject_maid_system_prompt(
     req: ProviderRequest,
     call_tag_name: str,
     default_agent_name: str,
+    serving_max_turns: int,
     prompt_template: str,
 ) -> bool:
     """
@@ -41,6 +44,7 @@ def inject_maid_system_prompt(
     prompt_append = build_maid_system_prompt_append(
         call_tag_name,
         default_agent_name,
+        serving_max_turns,
         prompt_template,
     )
     current_prompt = req.system_prompt or ""

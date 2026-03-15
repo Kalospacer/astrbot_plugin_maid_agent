@@ -3,7 +3,7 @@
 ## 1.0.0 - 2026-03-15
 - 初始化 `代理女仆` 插件，提供“大小姐 + 管家”双代理模式。
 - 主模型默认禁用原生工具，仅通过 XML 协议块调用后台管家 subagent。
-- 新增 `<call_maid>`、`<maid_session>`、`<maid_control>` 协议解析与用户可见输出清洗。
+- 新增基于 `<call_maid ...>` 的协议解析与用户可见输出清洗。
 - 支持单 active 管家 session 持久化、超时失效与跨轮复用。
 - 新增后台任务注册表，支持查询运行状态、停止任务与对运行中的管家进行 steering。
 - 新增 `/maid status`、`/maid stop` 控制入口，以及主模型可见的 `status / stop / steer` 控制标签。

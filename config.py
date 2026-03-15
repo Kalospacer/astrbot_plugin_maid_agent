@@ -10,7 +10,6 @@ from dataclasses import dataclass
 from typing import Any
 
 DEFAULT_CALL_MAID_TAG_NAME = "call_maid"
-DEFAULT_DONE_TAG_NAME = "maid_session"
 DEFAULT_MAID_AGENT_NAME = "butler"
 DEFAULT_SESSION_TIMEOUT_MINUTES = 20
 DEFAULT_SERVING_MAX_TURNS = 3
@@ -19,11 +18,11 @@ DEFAULT_MAIN_SYSTEM_PROMPT_TEMPLATE = (
     "- 需要管家协助时，回复末尾附加："
     '<{call_tag_name} agent="{default_agent_name}">任务要求</{call_tag_name}>'
     "\n- 不需要管家则不附加此标签"
-    '\n- 查询管家任务状态：<maid_control action="status" />'
-    '\n- 停止管家任务：<maid_control action="stop" />'
-    '\n- 补充或修正当前管家任务：<maid_control action="steer">补充要求</maid_control>'
-    '\n- 若你判断这次应在对方未继续发言时主动再说几次，可附加：<maid_control action="continue" turns="次数" />'
-    '\n- 管家任务结束时附加：<{done_tag_name} status="done" />，未结束不附加'
+    '\n- 查询管家任务状态：<{call_tag_name} action="status" />'
+    '\n- 停止管家任务：<{call_tag_name} action="stop" />'
+    '\n- 补充或修正当前管家任务：<{call_tag_name} action="steer">补充要求</{call_tag_name}>'
+    '\n- 若你判断这次应在对方未继续发言时主动再说几次，可附加：<{call_tag_name} action="continue" turns="次数" />'
+    '\n- 管家任务结束时附加：<{call_tag_name} action="done" />，未结束不附加'
 )
 DEFAULT_DISPATCH_PROMPT_TEMPLATE = (
     "{user_input_block}"
@@ -41,7 +40,6 @@ class MaidModeConfig:
     default_agent_name: str = DEFAULT_MAID_AGENT_NAME
     allowed_agent_names: list[str] | None = None
     call_tag_name: str = DEFAULT_CALL_MAID_TAG_NAME
-    done_tag_name: str = DEFAULT_DONE_TAG_NAME
     include_raw_user_input: bool = True
     session_enabled: bool = True
     log_raw_llm_io: bool = False
@@ -105,10 +103,6 @@ def load_maid_mode_config(config: Mapping[str, Any] | None = None) -> MaidModeCo
         cfg.get("call_tag_name", DEFAULT_CALL_MAID_TAG_NAME),
         DEFAULT_CALL_MAID_TAG_NAME,
     )
-    done_tag_name = _normalize_xml_tag_name(
-        cfg.get("done_tag_name", DEFAULT_DONE_TAG_NAME),
-        DEFAULT_DONE_TAG_NAME,
-    )
     include_raw_user_input = _parse_bool(cfg.get("include_raw_user_input", True), True)
     session_enabled = _parse_bool(cfg.get("session_enabled", True), True)
     log_raw_llm_io = _parse_bool(cfg.get("log_raw_llm_io", False), False)
@@ -148,7 +142,6 @@ def load_maid_mode_config(config: Mapping[str, Any] | None = None) -> MaidModeCo
         default_agent_name=default_agent_name,
         allowed_agent_names=allowed_agent_names,
         call_tag_name=call_tag_name,
-        done_tag_name=done_tag_name,
         include_raw_user_input=include_raw_user_input,
         session_enabled=session_enabled,
         log_raw_llm_io=log_raw_llm_io,

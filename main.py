@@ -21,11 +21,11 @@ from astrbot.api.star import Star, register
 from astrbot.core.agent.message import (
     AssistantMessageSegment,
     TextPart,
+    ThinkPart,
     ToolCall,
     ToolCallMessageSegment,
 )
 from astrbot.core.agent.tool import ToolSet
-from astrbot.core.pipeline.process_stage.follow_up import _ACTIVE_AGENT_RUNNERS
 from astrbot.core.provider.entities import ToolCallsResult
 from astrbot.core.utils.active_event_registry import active_event_registry
 
@@ -38,7 +38,7 @@ from .constants import (
     TRUE_USER_INPUT_EXTRA_KEY,
 )
 from .context_sanitizer import sanitize_contexts
-from .maid_call_parser import parse_maid_call, parse_maid_control, parse_maid_session_done
+from .maid_call_parser import parse_maid_call
 from .maid_dispatcher import dispatch_to_maid_agent
 from .output_sanitizer import sanitize_user_visible_output
 from .prompt_injector import inject_maid_system_prompt
@@ -67,16 +67,16 @@ class MaidAgent(Star):
         self.session_store: MaidSessionStore | None = None
         self.background_tasks = MaidBackgroundTaskRegistry()
         self._active_asyncio_tasks: set[asyncio.Task] = set()
+        self._background_runners_by_umo: dict[str, object] = {}
 
     async def initialize(self) -> None:
         """插件初始化"""
         self.session_store = MaidSessionStore(self, self.maid_mode_config)
         logger.info(
-            "[MaidAgent] 已加载 | default_agent=%s | allowed_agents=%s | call_tag=%s | done_tag=%s | include_raw_user_input=%s | session_enabled=%s | log_raw_llm_io=%s | session_timeout_minutes=%s",
+            "[MaidAgent] 已加载 | default_agent=%s | allowed_agents=%s | call_tag=%s | include_raw_user_input=%s | session_enabled=%s | log_raw_llm_io=%s | session_timeout_minutes=%s",
             self.maid_mode_config.default_agent_name,
             ",".join(self.maid_mode_config.allowed_agent_names or []),
             self.maid_mode_config.call_tag_name,
-            self.maid_mode_config.done_tag_name,
             self.maid_mode_config.include_raw_user_input,
             self.maid_mode_config.session_enabled,
             self.maid_mode_config.log_raw_llm_io,
@@ -187,7 +187,6 @@ class MaidAgent(Star):
             req,
             self.maid_mode_config.call_tag_name,
             self.maid_mode_config.default_agent_name,
-            self.maid_mode_config.done_tag_name,
             self.maid_mode_config.main_system_prompt_template,
         ):
             logger.debug("[大小姐模式] 已注入 XML 调度协议说明")
@@ -220,6 +219,8 @@ class MaidAgent(Star):
         agent_name: str,
         maid_request: str,
         agent_result: str,
+        reasoning_content: str = "",
+        reasoning_signature: str | None = None,
     ) -> LLMResponse:
         provider_id = await self.context.get_current_chat_provider_id(event.unified_msg_origin)
         provider = self.context.get_provider_by_id(provider_id)
@@ -227,7 +228,18 @@ class MaidAgent(Star):
             raise RuntimeError(f"未找到用于大小姐追答的 provider: {provider_id}")
 
         tool_call_id = f"maid_{uuid.uuid4().hex}"
-        assistant_parts = [TextPart(text=maid_visible_text)] if maid_visible_text.strip() else None
+        assistant_parts = []
+        if reasoning_content or reasoning_signature:
+            assistant_parts.append(
+                ThinkPart(
+                    think=reasoning_content or "",
+                    encrypted=reasoning_signature,
+                )
+            )
+        if maid_visible_text.strip():
+            assistant_parts.append(TextPart(text=maid_visible_text))
+        if not assistant_parts:
+            assistant_parts = None
         tool_calls_result = ToolCallsResult(
             tool_calls_info=AssistantMessageSegment(
                 content=assistant_parts,
@@ -334,11 +346,9 @@ class MaidAgent(Star):
                     contexts=contexts,
                 )
                 completion_text = follow_up_resp.completion_text or ""
-                maid_control = parse_maid_control(completion_text)
                 sanitized = sanitize_user_visible_output(
                     completion_text,
                     self.maid_mode_config.call_tag_name,
-                    self.maid_mode_config.done_tag_name,
                 )
                 if sanitized != completion_text:
                     self._rewrite_response_text(follow_up_resp, sanitized)
@@ -357,8 +367,16 @@ class MaidAgent(Star):
                     {"role": "assistant", "content": sanitized or completion_text}
                 )
                 budget -= 1
-                if maid_control and maid_control.action == "continue" and maid_control.turns > 0:
-                    budget = min(budget, maid_control.turns)
+                follow_up_call = parse_maid_call(
+                    completion_text,
+                    self.maid_mode_config.call_tag_name,
+                )
+                if (
+                    follow_up_call
+                    and follow_up_call.action == "continue"
+                    and follow_up_call.turns > 0
+                ):
+                    budget = min(budget, follow_up_call.turns)
                 else:
                     break
             if task_id:
@@ -392,6 +410,8 @@ class MaidAgent(Star):
         true_user_input = pending.get("true_user_input")
         image_urls_raw = pending.get("image_urls_raw")
         session_done_requested = bool(pending.get("session_done_requested", False))
+        reasoning_content = str(pending.get("reasoning_content", "") or "")
+        reasoning_signature = pending.get("reasoning_signature")
         dispatch_error: str | None = None
 
         try:
@@ -412,6 +432,8 @@ class MaidAgent(Star):
                     maid_request=maid_request,
                     true_user_input=true_user_input if isinstance(true_user_input, str) else None,
                     image_urls_raw=image_urls_raw,
+                    on_runner_registered=self._register_background_runner,
+                    on_runner_unregistered=self._unregister_background_runner,
                 )
                 if task_id:
                     await self.background_tasks.update_progress(
@@ -427,7 +449,6 @@ class MaidAgent(Star):
             maid_visible_text = sanitize_user_visible_output(
                 maid_full_reply,
                 cfg.call_tag_name,
-                cfg.done_tag_name,
             )
             follow_up_resp = await self._request_maid_follow_up(
                 event=event,
@@ -436,16 +457,22 @@ class MaidAgent(Star):
                 agent_name=resolved_agent_name,
                 maid_request=maid_request,
                 agent_result=agent_result,
+                reasoning_content=reasoning_content,
+                reasoning_signature=(
+                    str(reasoning_signature) if reasoning_signature is not None else None
+                ),
             )
             follow_up_completion_text = follow_up_resp.completion_text or ""
-            follow_up_done_requested = parse_maid_session_done(
+            follow_up_call = parse_maid_call(
                 follow_up_completion_text,
-                cfg.done_tag_name,
+                cfg.call_tag_name,
+            )
+            follow_up_done_requested = bool(
+                follow_up_call and follow_up_call.action == "done"
             )
             sanitized_follow_up = sanitize_user_visible_output(
                 follow_up_completion_text,
                 cfg.call_tag_name,
-                cfg.done_tag_name,
             )
             if sanitized_follow_up != follow_up_completion_text:
                 self._rewrite_response_text(follow_up_resp, sanitized_follow_up)
@@ -529,7 +556,7 @@ class MaidAgent(Star):
         if current is None:
             return "当前会话没有运行中的管家任务，无法补充要求。"
 
-        runner = _ACTIVE_AGENT_RUNNERS.get(event.unified_msg_origin)
+        runner = self._background_runners_by_umo.get(event.unified_msg_origin)
         if runner is None:
             return "当前没有可引导的活跃管家执行器，请稍后再试。"
 
@@ -551,6 +578,13 @@ class MaidAgent(Star):
             f"已将补充要求转交给后台管家。task_id={current.task_id}\n"
             f"补充内容: {message_text[:120]}"
         )
+
+    def _register_background_runner(self, umo: str, runner: object) -> None:
+        self._background_runners_by_umo[umo] = runner
+
+    def _unregister_background_runner(self, umo: str, runner: object) -> None:
+        if self._background_runners_by_umo.get(umo) is runner:
+            self._background_runners_by_umo.pop(umo, None)
 
     @filter.on_llm_response()
     async def sanitize_llm_response(
@@ -582,27 +616,24 @@ class MaidAgent(Star):
 
         cfg = self.maid_mode_config
         completion_text = resp.completion_text or ""
-        session_done_requested = parse_maid_session_done(completion_text, cfg.done_tag_name)
-        maid_control = parse_maid_control(completion_text)
-
         maid_call = parse_maid_call(completion_text, cfg.call_tag_name)
-        if not maid_call and session_done_requested and self.session_store:
+        session_done_requested = bool(maid_call and maid_call.action == "done")
+        if session_done_requested and self.session_store:
             await self.session_store.close_active_session(event.unified_msg_origin, status="done")
 
-        if maid_control and not maid_call:
+        if maid_call and maid_call.action in {"status", "stop", "steer", "continue"}:
             sanitized = sanitize_user_visible_output(
                 completion_text,
                 cfg.call_tag_name,
-                cfg.done_tag_name,
             )
-            if maid_control.action == "status":
+            if maid_call.action == "status":
                 control_text = await self._build_background_status_text(event)
-            elif maid_control.action == "stop":
+            elif maid_call.action == "stop":
                 control_text = await self._request_stop_background_tasks(event)
-            elif maid_control.action == "steer":
+            elif maid_call.action == "steer":
                 control_text = await self._steer_background_task(
                     event,
-                    maid_control.request_text,
+                    maid_call.request_text,
                 )
             else:
                 control_text = ""
@@ -611,14 +642,14 @@ class MaidAgent(Star):
                 final_text = f"{sanitized}\n\n{control_text}".strip()
             self._rewrite_response_text(resp, final_text or sanitized)
             if (
-                maid_control.action == "continue"
+                maid_call.action == "continue"
                 and cfg.serving_mode_enabled
-                and maid_control.turns > 0
+                and maid_call.turns > 0
             ):
                 event.set_extra(
                     PENDING_SELF_SERVING_EXTRA_KEY,
                     {
-                        "remaining_turns": min(cfg.serving_max_turns, maid_control.turns),
+                        "remaining_turns": min(cfg.serving_max_turns, maid_call.turns),
                         "latest_assistant_text": sanitized,
                     },
                 )
@@ -628,23 +659,9 @@ class MaidAgent(Star):
             sanitized = sanitize_user_visible_output(
                 completion_text,
                 cfg.call_tag_name,
-                cfg.done_tag_name,
             )
             if sanitized != completion_text:
                 self._rewrite_response_text(resp, sanitized)
-            if (
-                maid_control
-                and maid_control.action == "continue"
-                and cfg.serving_mode_enabled
-                and maid_control.turns > 0
-            ):
-                event.set_extra(
-                    PENDING_SELF_SERVING_EXTRA_KEY,
-                    {
-                        "remaining_turns": min(cfg.serving_max_turns, maid_control.turns),
-                        "latest_assistant_text": sanitized,
-                    },
-                )
             return
 
         agent_name = maid_call.agent_name or cfg.default_agent_name
@@ -667,7 +684,6 @@ class MaidAgent(Star):
             sanitized = sanitize_user_visible_output(
                 completion_text,
                 cfg.call_tag_name,
-                cfg.done_tag_name,
             )
             if sanitized != completion_text:
                 self._rewrite_response_text(resp, sanitized)
@@ -681,7 +697,6 @@ class MaidAgent(Star):
         maid_visible_text = sanitize_user_visible_output(
             completion_text,
             cfg.call_tag_name,
-            cfg.done_tag_name,
         )
         if maid_visible_text != completion_text and maid_visible_text.strip():
             self._rewrite_response_text(resp, maid_visible_text)
@@ -701,9 +716,39 @@ class MaidAgent(Star):
                 "true_user_input": true_user_input if cfg.include_raw_user_input else None,
                 "image_urls_raw": image_urls_raw,
                 "session_done_requested": session_done_requested,
+                "reasoning_content": resp.reasoning_content,
+                "reasoning_signature": resp.reasoning_signature,
             },
         )
-        logger.debug("[大小姐模式] 已保留第一条大小姐回复，并挂起管家后续处理")
+        if maid_visible_text.strip():
+            logger.debug("[大小姐模式] 已保留第一条大小姐回复，并挂起管家后续处理")
+            return
+
+        logger.debug("[大小姐模式] 首条回复仅含协议标签，直接投递后台管家任务")
+        task_info = await self.background_tasks.create_task(
+            unified_msg_origin=event.unified_msg_origin,
+            sender_id=event.get_sender_id(),
+            agent_name=agent_name,
+            maid_request=maid_call.request_text,
+        )
+        immediate_pending = dict(event.get_extra(PENDING_MAID_FOLLOW_UP_EXTRA_KEY) or {})
+        immediate_pending["task_id"] = task_info.task_id
+        self._clear_pending_follow_up(event)
+        task = asyncio.create_task(
+            self._run_maid_follow_up_background_task(
+                event=event,
+                req=req,
+                pending=immediate_pending,
+            )
+        )
+        self._track_background_task(task)
+        resp.result_chain = None
+        resp.completion_text = ""
+        resp.tools_call_name = []
+        resp.tools_call_args = []
+        resp.tools_call_ids = []
+        resp.tools_call_extra_content = {}
+        return
 
     @filter.after_message_sent()
     async def continue_maid_follow_up_after_send(self, event: AstrMessageEvent) -> None:
@@ -727,20 +772,18 @@ class MaidAgent(Star):
                 )
                 if current_task is not None:
                     logger.warning(
-                        "[大小姐模式] 当前会话已有后台任务运行，拒绝重复投递新任务: current_task_id=%s requested_agent=%s",
+                        "[大小姐模式] 当前会话已有后台任务运行，将新的 call_maid 降级为状态查询: current_task_id=%s requested_agent=%s",
                         current_task.task_id,
                         pending.get("agent_name") or self.maid_mode_config.default_agent_name,
                     )
                     self._clear_pending_follow_up(event)
-                    await event.send(
-                        MessageChain(
-                            chain=[
-                                Comp.Plain(
-                                    "当前已有后台管家任务在运行，请先查询状态或停止后再发起新的管家任务。"
-                                )
-                            ]
+                    status_text = await self._build_background_status_text(event)
+                    if status_text.strip():
+                        await event.send(
+                            MessageChain(
+                                chain=[Comp.Plain(status_text)]
+                            )
                         )
-                    )
                     return
                 agent_name = pending.get("agent_name") or self.maid_mode_config.default_agent_name
                 maid_request = pending.get("maid_request") or ""

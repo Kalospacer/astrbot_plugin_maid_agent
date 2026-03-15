@@ -14,10 +14,6 @@ from astrbot.core.agent.message import Message
 from astrbot.core.agent.runners.tool_loop_agent_runner import ToolLoopAgentRunner
 from astrbot.core.astr_agent_context import AgentContextWrapper, AstrAgentContext
 from astrbot.core.astr_agent_tool_exec import FunctionToolExecutor
-from astrbot.core.pipeline.process_stage.follow_up import (
-    register_active_runner,
-    unregister_active_runner,
-)
 from astrbot.core.utils.active_event_registry import active_event_registry
 from astrbot.core.utils.llm_metadata import LLM_METADATAS
 
@@ -240,6 +236,8 @@ async def dispatch_to_maid_agent(
     maid_request: str,
     true_user_input: str | None,
     image_urls_raw: Any = None,
+    on_runner_registered=None,
+    on_runner_unregistered=None,
 ) -> tuple[str, str]:
     """根据 agent 名调用对应子 agent，并返回其自然语言结果与实际命中的 agent 名。"""
     handoff, resolved_agent_name = _resolve_handoff(
@@ -324,12 +322,11 @@ async def dispatch_to_maid_agent(
         provider_settings.get("context_limit_reached_strategy", "truncate_by_turns"),
         provider_settings.get("llm_compress_provider_id", "") or "<none>",
     )
-    runner_registered = False
     event_registered = False
     step_count = 0
     try:
-        register_active_runner(event.unified_msg_origin, runner)
-        runner_registered = True
+        if on_runner_registered is not None:
+            on_runner_registered(event.unified_msg_origin, runner)
         active_event_registry.register(event)
         event_registered = True
 
@@ -358,8 +355,8 @@ async def dispatch_to_maid_agent(
                 if _should_stop_background_subagent(event):
                     runner.request_stop()
     finally:
-        if runner_registered:
-            unregister_active_runner(event.unified_msg_origin, runner)
+        if on_runner_unregistered is not None:
+            on_runner_unregistered(event.unified_msg_origin, runner)
         if event_registered:
             active_event_registry.unregister(event)
 
@@ -368,10 +365,10 @@ async def dispatch_to_maid_agent(
         raise RuntimeError("子 agent 未返回最终响应")
     if llm_resp.usage is not None:
         logger.info(
-            "[大小姐模式] 子 agent token 用量: agent=%s prompt=%s completion=%s total=%s",
+            "[大小姐模式] 子 agent token 用量: agent=%s input=%s output=%s total=%s",
             resolved_agent_name,
-            llm_resp.usage.prompt_tokens,
-            llm_resp.usage.completion_tokens,
+            llm_resp.usage.input,
+            llm_resp.usage.output,
             llm_resp.usage.total,
         )
     else:

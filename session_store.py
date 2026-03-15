@@ -11,7 +11,7 @@ import re
 import uuid
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -22,6 +22,8 @@ from .constants import ACTIVE_SESSION_INDEX_KEY, PLUGIN_DATA_DIR_NAME
 
 if TYPE_CHECKING:
     from .config import MaidModeConfig
+
+UTC = timezone.utc
 
 
 def _utcnow() -> datetime:

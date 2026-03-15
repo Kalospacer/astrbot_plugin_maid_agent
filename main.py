@@ -33,6 +33,7 @@ from .background_registry import MaidBackgroundTaskRegistry
 from .config import load_maid_mode_config
 from .constants import (
     PENDING_MAID_FOLLOW_UP_EXTRA_KEY,
+    PENDING_SELF_SERVING_EXTRA_KEY,
     RAW_INPUT_EXTRA_KEY,
     TRUE_USER_INPUT_EXTRA_KEY,
 )
@@ -134,6 +135,10 @@ class MaidAgent(Star):
     def _clear_pending_follow_up(event: AstrMessageEvent) -> None:
         event.set_extra(PENDING_MAID_FOLLOW_UP_EXTRA_KEY, None)
 
+    @staticmethod
+    def _clear_pending_self_serving(event: AstrMessageEvent) -> None:
+        event.set_extra(PENDING_SELF_SERVING_EXTRA_KEY, None)
+
     @filter.on_llm_request()
     async def sanitize_main_model_request(
         self,
@@ -143,7 +148,7 @@ class MaidAgent(Star):
         """
         清洗主模型请求，实现大小姐模式。
 
-        1. 保存原始用户输入到 event.extra
+        1. 保存原始对话输入到 event.extra
         2. 清洗 contexts - 过滤 tool role 和 tool_calls
         3. 禁用主模型原生工具
         4. 注入大小姐 XML 协议说明
@@ -151,7 +156,7 @@ class MaidAgent(Star):
         raw_input = req.prompt or event.message_str or ""
         if raw_input:
             event.set_extra(RAW_INPUT_EXTRA_KEY, raw_input)
-            logger.debug(f"[大小姐模式] 已保存原始用户输入: {raw_input[:100]}...")
+            logger.debug(f"[大小姐模式] 已保存原始输入: {raw_input[:100]}...")
 
         true_user_input = event.message_str or ""
         if true_user_input:
@@ -240,6 +245,96 @@ class MaidAgent(Star):
             model=req.model,
             extra_user_content_parts=req.extra_user_content_parts,
         )
+
+    async def _request_serving_follow_up(
+        self,
+        event: AstrMessageEvent,
+        req: ProviderRequest,
+        contexts: list[dict],
+    ) -> LLMResponse:
+        provider_id = await self.context.get_current_chat_provider_id(event.unified_msg_origin)
+        provider = self.context.get_provider_by_id(provider_id)
+        if provider is None:
+            raise RuntimeError(f"未找到用于服侍模式追答的 provider: {provider_id}")
+        return await provider.text_chat(
+            prompt=self.maid_mode_config.serving_prompt_template,
+            image_urls=None,
+            func_tool=ToolSet(),
+            contexts=contexts,
+            system_prompt=req.system_prompt,
+            model=req.model,
+        )
+
+    async def _build_serving_contexts(
+        self,
+        req: ProviderRequest,
+        latest_assistant_text: str,
+    ) -> list[dict]:
+        contexts: list[dict] = []
+        for msg in req.contexts or []:
+            if isinstance(msg, dict):
+                contexts.append(dict(msg))
+            elif hasattr(msg, "model_dump"):
+                contexts.append(msg.model_dump())
+        if req.prompt is not None:
+            assembled = await req.assemble_context()
+            if isinstance(assembled, dict):
+                contexts.append(assembled)
+            elif hasattr(assembled, "model_dump"):
+                contexts.append(assembled.model_dump())
+        if latest_assistant_text.strip():
+            contexts.append({"role": "assistant", "content": latest_assistant_text.strip()})
+        return contexts
+
+    async def _run_self_serving_background_task(
+        self,
+        event: AstrMessageEvent,
+        req: ProviderRequest,
+        pending: dict,
+    ) -> None:
+        remaining_turns = int(pending.get("remaining_turns", 0) or 0)
+        latest_assistant_text = str(pending.get("latest_assistant_text", "") or "")
+        if remaining_turns <= 0:
+            return
+
+        try:
+            contexts = await self._build_serving_contexts(req, latest_assistant_text)
+            budget = min(self.maid_mode_config.serving_max_turns, remaining_turns)
+            while budget > 0:
+                follow_up_resp = await self._request_serving_follow_up(
+                    event=event,
+                    req=req,
+                    contexts=contexts,
+                )
+                completion_text = follow_up_resp.completion_text or ""
+                maid_control = parse_maid_control(completion_text)
+                sanitized = sanitize_user_visible_output(
+                    completion_text,
+                    self.maid_mode_config.call_tag_name,
+                    self.maid_mode_config.done_tag_name,
+                )
+                if sanitized != completion_text:
+                    self._rewrite_response_text(follow_up_resp, sanitized)
+
+                if follow_up_resp.result_chain is not None or sanitized.strip():
+                    chain = follow_up_resp.result_chain or MessageChain(
+                        chain=[Comp.Plain(sanitized)]
+                    )
+                    await event.send(chain)
+
+                contexts.append(
+                    {"role": "user", "content": self.maid_mode_config.serving_prompt_template}
+                )
+                contexts.append(
+                    {"role": "assistant", "content": sanitized or completion_text}
+                )
+                budget -= 1
+                if maid_control and maid_control.action == "continue" and maid_control.turns > 0:
+                    budget = min(budget, maid_control.turns)
+                else:
+                    break
+        except Exception as exc:
+            logger.error("[大小姐模式] 服侍模式自动连发失败: %s", exc, exc_info=True)
 
     async def _run_maid_follow_up_background_task(
         self,
@@ -404,7 +499,7 @@ class MaidAgent(Star):
         active_sender_id = runner_event.get_sender_id() if runner_event is not None else None
         sender_id = event.get_sender_id()
         if not sender_id or active_sender_id != sender_id:
-            return "当前后台管家任务不属于本次发言用户，无法补充要求。"
+            return "当前后台管家任务不属于本次发言的对方，无法补充要求。"
 
         ticket = runner.follow_up(message_text=message_text)
         if ticket is None:
@@ -466,15 +561,29 @@ class MaidAgent(Star):
                 control_text = await self._build_background_status_text(event)
             elif maid_control.action == "stop":
                 control_text = await self._request_stop_background_tasks(event)
-            else:
+            elif maid_control.action == "steer":
                 control_text = await self._steer_background_task(
                     event,
                     maid_control.request_text,
                 )
+            else:
+                control_text = ""
             final_text = control_text
             if sanitized:
                 final_text = f"{sanitized}\n\n{control_text}".strip()
-            self._rewrite_response_text(resp, final_text)
+            self._rewrite_response_text(resp, final_text or sanitized)
+            if (
+                maid_control.action == "continue"
+                and cfg.serving_mode_enabled
+                and maid_control.turns > 0
+            ):
+                event.set_extra(
+                    PENDING_SELF_SERVING_EXTRA_KEY,
+                    {
+                        "remaining_turns": min(cfg.serving_max_turns, maid_control.turns),
+                        "latest_assistant_text": sanitized,
+                    },
+                )
             return
 
         if not maid_call:
@@ -485,6 +594,19 @@ class MaidAgent(Star):
             )
             if sanitized != completion_text:
                 self._rewrite_response_text(resp, sanitized)
+            if (
+                maid_control
+                and maid_control.action == "continue"
+                and cfg.serving_mode_enabled
+                and maid_control.turns > 0
+            ):
+                event.set_extra(
+                    PENDING_SELF_SERVING_EXTRA_KEY,
+                    {
+                        "remaining_turns": min(cfg.serving_max_turns, maid_control.turns),
+                        "latest_assistant_text": sanitized,
+                    },
+                )
             return
 
         agent_name = maid_call.agent_name or cfg.default_agent_name
@@ -548,43 +670,59 @@ class MaidAgent(Star):
     @filter.after_message_sent()
     async def continue_maid_follow_up_after_send(self, event: AstrMessageEvent) -> None:
         pending = event.get_extra(PENDING_MAID_FOLLOW_UP_EXTRA_KEY)
-        if not isinstance(pending, dict):
-            return
         try:
             req = event.get_extra("provider_request")
             if not self._is_provider_request_like(req):
-                logger.error(
-                    "[大小姐模式] after_message_sent 阶段 provider_request 不存在或类型错误: type=%s missing=%s",
-                    type(req).__name__ if req is not None else "NoneType",
-                    self._get_missing_provider_request_attrs(req),
-                )
+                if isinstance(pending, dict) or isinstance(
+                    event.get_extra(PENDING_SELF_SERVING_EXTRA_KEY), dict
+                ):
+                    logger.error(
+                        "[大小姐模式] after_message_sent 阶段 provider_request 不存在或类型错误: type=%s missing=%s",
+                        type(req).__name__ if req is not None else "NoneType",
+                        self._get_missing_provider_request_attrs(req),
+                    )
                 return
-            agent_name = pending.get("agent_name") or self.maid_mode_config.default_agent_name
-            maid_request = pending.get("maid_request") or ""
-            task_info = await self.background_tasks.create_task(
-                unified_msg_origin=event.unified_msg_origin,
-                sender_id=event.get_sender_id(),
-                agent_name=agent_name,
-                maid_request=maid_request,
-            )
-            pending = dict(pending)
-            pending["task_id"] = task_info.task_id
-            self._clear_pending_follow_up(event)
-            asyncio.create_task(
-                self._run_maid_follow_up_background_task(
-                    event=event,
-                    req=req,
-                    pending=pending,
+
+            if isinstance(pending, dict):
+                agent_name = pending.get("agent_name") or self.maid_mode_config.default_agent_name
+                maid_request = pending.get("maid_request") or ""
+                task_info = await self.background_tasks.create_task(
+                    unified_msg_origin=event.unified_msg_origin,
+                    sender_id=event.get_sender_id(),
+                    agent_name=agent_name,
+                    maid_request=maid_request,
                 )
-            )
-            logger.debug(
-                "[大小姐模式] 已投递后台管家任务，task_id=%s，主链路不再等待执行完成",
-                task_info.task_id,
-            )
+                pending = dict(pending)
+                pending["task_id"] = task_info.task_id
+                self._clear_pending_follow_up(event)
+                asyncio.create_task(
+                    self._run_maid_follow_up_background_task(
+                        event=event,
+                        req=req,
+                        pending=pending,
+                    )
+                )
+                logger.debug(
+                    "[大小姐模式] 已投递后台管家任务，task_id=%s，主链路不再等待执行完成",
+                    task_info.task_id,
+                )
+
+            serving_pending = event.get_extra(PENDING_SELF_SERVING_EXTRA_KEY)
+            if isinstance(serving_pending, dict):
+                self._clear_pending_self_serving(event)
+                asyncio.create_task(
+                    self._run_self_serving_background_task(
+                        event=event,
+                        req=req,
+                        pending=dict(serving_pending),
+                    )
+                )
+                logger.debug("[大小姐模式] 已投递服侍模式自动连发任务")
         except Exception as exc:
             logger.error("[大小姐模式] after_message_sent 后续追答失败: %s", exc, exc_info=True)
         finally:
             self._clear_pending_follow_up(event)
+            self._clear_pending_self_serving(event)
 
     @filter.command_group("maid")
     def maid(self):
@@ -603,7 +741,7 @@ class MaidAgent(Star):
         """
         结果装饰阶段。
 
-        当前仅用于日志记录；最终用户输出清洗已在响应阶段执行。
+        当前仅用于日志记录；最终对外输出清洗已在响应阶段执行。
         """
         raw_input = event.get_extra(RAW_INPUT_EXTRA_KEY)
         if raw_input:

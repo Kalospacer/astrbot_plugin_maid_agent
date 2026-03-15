@@ -85,7 +85,7 @@ def _build_dispatch_prompt(
     maid_request: str | None = None,
 ) -> str:
     normalized_true_input = (true_user_input or "").strip()
-    user_input_block = f"【用户原话】\n{normalized_true_input}\n\n" if normalized_true_input else ""
+    user_input_block = f"【对方原话】\n{normalized_true_input}\n\n" if normalized_true_input else ""
     maid_full_reply_block = f"【大小姐完整回复】\n{maid_full_reply.strip()}\n\n"
     maid_request_block = (
         f"【大小姐显式请求】\n{maid_request.strip()}\n\n"
@@ -351,7 +351,7 @@ async def dispatch_to_maid_agent(
             runner.run_context.messages.append(
                 Message(
                     role="user",
-                    content="工具调用次数已达到上限，请停止使用工具，并根据已经收集到的信息，对你的任务和发现进行总结，然后直接回复用户。",
+                    content="工具调用次数已达到上限，请停止使用工具，并根据已经收集到的信息，对你的任务和发现进行总结，然后直接回复对方。",
                 )
             )
             async for _ in runner.step():

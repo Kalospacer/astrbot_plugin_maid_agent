@@ -1,5 +1,5 @@
 """
-大小姐管家模式插件 - 用户可见输出清洗器
+大小姐管家模式插件 - 对外可见输出清洗器
 """
 
 from __future__ import annotations
@@ -58,7 +58,7 @@ def sanitize_user_visible_output(
     call_tag_name: str = DEFAULT_CALL_MAID_TAG_NAME,
     done_tag_name: str = DEFAULT_DONE_TAG_NAME,
 ) -> str:
-    """清洗用户可见文本中的 `<call_maid>` / `<maid_session>` 标签及残留。"""
+    """清洗对外可见文本中的 `<call_maid>` / `<maid_session>` 标签及残留。"""
     if not text:
         return ""
 

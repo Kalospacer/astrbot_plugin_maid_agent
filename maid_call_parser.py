@@ -66,6 +66,7 @@ class MaidControl:
     action: str
     raw_block: str
     request_text: str = ""
+    turns: int = 0
 
 
 def parse_maid_session_done(
@@ -151,8 +152,16 @@ def parse_maid_control(
             re.IGNORECASE,
         )
         action = action_match.group("action").strip().casefold() if action_match else ""
+        turns_match = re.search(
+            r'turns\s*=\s*["\'](?P<turns>\d+)["\']',
+            attrs,
+            re.IGNORECASE,
+        )
+        turns = int(turns_match.group("turns")) if turns_match else 0
         if action in {"status", "stop"}:
             return MaidControl(action=action, raw_block=raw_block)
         if action == "steer" and body:
             return MaidControl(action=action, raw_block=raw_block, request_text=body)
+        if action == "continue" and turns > 0:
+            return MaidControl(action=action, raw_block=raw_block, turns=turns)
     return None

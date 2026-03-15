@@ -33,19 +33,33 @@
 
 在主模型需要后台执行动作时，不会直接暴露原生工具，而是通过 **XML 标签** 表达意图。插件负责解析请求、调度管家并在后台回灌结果。
 
-当前协议内建了两个核心标签：
+当前协议默认收敛为单标签形态：
 
-- **调用管家**：\`<call_maid agent=\"...\">...</call_maid>\` —— 用于请求管家执行任务。
-- **结束会话**：\`<maid_session status=\"done\" />\` —— 用于声明当前管家 session 结束。
+- **调用管家**：\`<call_maid agent=\"...\">...</call_maid>\`
+- **查询状态**：\`<call_maid action=\"status\" />\`
+- **停止任务**：\`<call_maid action=\"stop\" />\`
+- **补充要求**：\`<call_maid action=\"steer\">补充要求</call_maid>\`
+- **服侍续发**：\`<call_maid action=\"continue\" turns=\"次数\" />\`
+- **结束任务**：\`<call_maid action=\"done\" />\`
 
 **标准交互执行流：**
 1. 用户发送消息。
 2. 大小姐先输出第一轮自然语言回复。
 3. 若需后台执行任务，大小姐在回复末尾附加 \`<call_maid>\` 标签。
-4. 插件解析输出，拦截用户可见结果，并在后台调度目标 SubAgent（管家）。
+4. 插件解析输出，拦截对外可见结果，并在后台调度目标 SubAgent（管家）。
 5. 管家执行完毕，将结果回灌给大小姐。
 6. 大小姐根据管家的结果，生成第二轮面向用户的自然语言回复。
-7. 在用户侧，所有内部运作的 XML 标签都会被自动清洗，完全隐形。
+7. 在对外显示时，所有内部运作的 XML 标签都会被自动清洗，完全隐形。
+
+### 服侍模式
+
+服侍模式用于打破传统的 `user -> assistant` 单轮回复节奏，让大小姐在**对方没有继续发言**时，也可以按协议主动追加几轮自然语言回复。
+
+- 大小姐可在回复中附加：\`<call_maid action=\"continue\" turns=\"{serving_max_turns}\" />\`
+- 插件会在首条回复发送后，自动再次请求 LLM，并按 \`serving_prompt_template\` 续发
+- 单次用户发言最多可触发 \`serving_max_turns\` 次自动续发，默认上限为 `3`
+- 当前实现下，自动续发预算不会被无限“续杯”；即使自动回复中再次输出 \`continue\`，也只会在本轮剩余预算内继续
+- 服侍模式与后台任务系统打通，可通过 \`/maid status\`、\`/maid stop\` 或 \`<call_maid action=\"status\" />\`、\`<call_maid action=\"stop\" />\` 查询和停止
 
 ## ✨ 当前能力
 
@@ -53,11 +67,13 @@
 - [x] 主模型原生工具强制禁用
 - [x] XML 调度协议的双向注入与解析
 - [x] 子 Agent (SubAgent) 的主动调度与结果回灌闭环
-- [x] 面向用户的输出结果自动清洗
+- [x] 面向对外显示的输出结果自动清洗
 - [x] 单线并行活跃的管家 Session 状态持久化
 - [x] Session 超时无感失效流转
 - [x] Follow-up 第二轮回复深度清洗机制
 - [x] 管家 Runner 完美透传 AstrBot 的上下文压缩配置
+- [x] 服侍模式自动连发
+- [x] 后台任务状态查询 / 停止 / steering
 
 ## 📦 Session 机制
 
@@ -65,7 +81,7 @@
 
 - 每个通信来源 (\`unified_msg_origin\`) 同时只维护一个处于 Active 状态的管家 Session。
 - 只要当前 Session 不被主动关闭，后续对管家的调度指令都会追加复用该 Session 的完整上下文。
-- 当大小姐觉得任务完结并输出 \`<maid_session status=\"done\" />\` 后，当前 Session 会被正式关闭。
+- 当大小姐觉得任务完结并输出 \`<call_maid action=\"done\" />\` 后，当前 Session 会被正式关闭。
 - 当 Session 超过设定的 \`session_timeout_minutes\` 阈值未被操作时，会自动作废重建。
 
 > **数据存储**：
@@ -122,9 +138,11 @@ default_agent_name: \"muiceagent\"
 allowed_agent_names:
   - \"muiceagent\"
 call_tag_name: \"call_maid\"
-done_tag_name: \"maid_session\"
 include_raw_user_input: true
 session_enabled: true
+serving_mode_enabled: false
+serving_max_turns: 3
+serving_prompt_template: "根据上文，你决定继续说话。"
 session_timeout_minutes: 20
 \`\`\`
 
@@ -135,9 +153,11 @@ session_timeout_minutes: 20
 | \`default_agent_name\` | 默认被调度的 SubAgent 名称。 |
 | \`allowed_agent_names\` | 允许的大小姐 XML 显式指定的 Agent 白名单列表。 |
 | \`call_tag_name\` | 调度管家时主模型输出的 XML 标签名。 |
-| \`done_tag_name\` | 结束当前管家 Session 的状态标签名。 |
 | \`include_raw_user_input\` | 是否把真实的用户原话一并透传给管家。 |
 | \`session_enabled\` | 是否启用管家的 Session 上下文持久化/状态留存机制。 |
+| \`serving_mode_enabled\` | 是否启用服侍模式自动连发。 |
+| \`serving_max_turns\` | 单次用户发言后，大小姐最多还能主动续说几次。 |
+| \`serving_prompt_template\` | 服侍模式中系统自动再次请求 LLM 时使用的提示词。 |
 | \`session_timeout_minutes\` | 并发 Session 闲置自动失效的分钟数。 |
 | \`main_system_prompt_template\` | 注入给主模型（大小姐）的协议说明提示词模板。 |
 | \`dispatch_prompt_template\` | 发送给管家执行机时的中继调度系统提示词模板。 |
@@ -153,16 +173,18 @@ session_timeout_minutes: 20
 支持的注入占位符：
 - \`{call_tag_name}\`
 - \`{default_agent_name}\`
-- \`{done_tag_name}\`
+- \`{serving_max_turns}\`
 
 **默认模板效果：**
 
 \`\`\`text
-- 当你需要呼叫管家帮忙完成任务时，请在回复末尾附加 XML 块咒语：<{call_tag_name} agent=\"{default_agent_name}\">这里写给管家的要求</{call_tag_name}>
-- 如果不需要呼叫管家帮忙，就不要说这个咒语
-- XML 标签中的内容是你对管家的任务要求
-- 当你判断当前管家任务已经结束时，请额外附加独立结束标签：<{done_tag_name} status=\"done\" />
-- 如果当前管家任务尚未结束，就不要输出结束标签
+- 需要管家协助时，回复末尾附加：<{call_tag_name} agent=\"{default_agent_name}\">任务要求</{call_tag_name}>
+- 不需要管家则不附加此标签
+- 查询管家任务状态：<{call_tag_name} action=\"status\" />
+- 停止管家任务：<{call_tag_name} action=\"stop\" />
+- 补充或修正当前管家任务：<{call_tag_name} action=\"steer\">补充要求</{call_tag_name}>
+- 若你判断这次应在对方未继续发言时主动再说几次，可附加：<{call_tag_name} action=\"continue\" turns=\"{serving_max_turns}\" />
+- 管家任务结束时附加：<{call_tag_name} action=\"done\" />，未结束不附加
 \`\`\`
 
 ### 2. 管家调度提示模板 (管家侧)
@@ -177,8 +199,20 @@ session_timeout_minutes: 20
 **默认模板效果：**
 
 \`\`\`text
-{user_input_block}{maid_full_reply_block}{maid_request_block}你是MuiceMaid，一个全能的管家AIagent助手，擅长从大小姐的话语中理解大小姐的意图，并提取出大小姐的需求主动完成大小姐的愿望。你需要综合考虑大小姐和用户的对话，提取他们是否需要执行某些实际操作，并综合以上信息完成任务，请判断用户的需求，和大小姐的意图，如果大小姐误解了用户的需求，你以用户的需求为准完成任务，如果大小姐拒绝了用户的请求，你应当停止工作并汇报结束，如果大小姐和用户的需求一致，结合两者的需求准确完成任务。你的汇报对象是大小姐，不是用户。
+{user_input_block}{maid_full_reply_block}{maid_request_block}你是MuiceMaid，一个全能的管家AIagent助手，擅长从大小姐的话语中理解大小姐的意图，并提取出大小姐的需求主动完成大小姐的愿望。你需要综合考虑大小姐和对方的对话，提取他们是否需要执行某些实际操作，并综合以上信息完成任务，请判断对方的需求，和大小姐的意图，如果大小姐误解了对方的需求，你以对方的需求为准完成任务，如果大小姐拒绝了对方的请求，你应当停止工作并汇报结束，如果大小姐和对方的需求一致，结合两者的需求准确完成任务。你的汇报对象是大小姐，不是对方。
 \`\`\`
+
+### 3. 服侍模式续发提示词
+
+配置项：\`serving_prompt_template\`
+
+默认值：
+
+\`\`\`text
+根据上文，你决定继续说话。
+\`\`\`
+
+该提示词只在服侍模式自动续发时使用，不会影响正常的首轮回复或管家调度逻辑。
 
 ---
 

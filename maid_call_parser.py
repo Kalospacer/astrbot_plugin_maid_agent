@@ -12,6 +12,7 @@ from functools import lru_cache
 
 DEFAULT_CALL_MAID_TAG_NAME = "call_maid"
 DEFAULT_DONE_TAG_NAME = "maid_session"
+DEFAULT_CONTROL_TAG_NAME = "maid_control"
 DEFAULT_MAID_AGENT_NAME = "butler"
 
 
@@ -37,6 +38,20 @@ def _get_call_pattern(call_tag_name: str) -> re.Pattern[str]:
     )
 
 
+@lru_cache(maxsize=32)
+def _get_control_patterns(control_tag_name: str) -> tuple[re.Pattern[str], re.Pattern[str]]:
+    return (
+        re.compile(
+            rf"<{re.escape(control_tag_name)}(?P<attrs>[^>]*)/>",
+            re.IGNORECASE,
+        ),
+        re.compile(
+            rf"<{re.escape(control_tag_name)}(?P<attrs>[^>]*)>(?P<body>[\s\S]*?)</{re.escape(control_tag_name)}>",
+            re.IGNORECASE,
+        ),
+    )
+
+
 @dataclass(slots=True)
 class MaidCall:
     """解析出的大小姐调度请求。"""
@@ -44,6 +59,13 @@ class MaidCall:
     agent_name: str
     request_text: str
     raw_block: str
+
+
+@dataclass(slots=True)
+class MaidControl:
+    action: str
+    raw_block: str
+    request_text: str = ""
 
 
 def parse_maid_session_done(
@@ -107,3 +129,30 @@ def parse_maid_call(
         request_text=body,
         raw_block=raw_block,
     )
+
+
+def parse_maid_control(
+    text: str,
+    control_tag_name: str = DEFAULT_CONTROL_TAG_NAME,
+) -> MaidControl | None:
+    if not text:
+        return None
+
+    for pattern in _get_control_patterns(control_tag_name):
+        match = pattern.search(text)
+        if not match:
+            continue
+        raw_block = match.group(0)
+        attrs = match.groupdict().get("attrs") or ""
+        body = (match.groupdict().get("body") or "").strip()
+        action_match = re.search(
+            r'action\s*=\s*["\'](?P<action>[^"\']+)["\']',
+            attrs,
+            re.IGNORECASE,
+        )
+        action = action_match.group("action").strip().casefold() if action_match else ""
+        if action in {"status", "stop"}:
+            return MaidControl(action=action, raw_block=raw_block)
+        if action == "steer" and body:
+            return MaidControl(action=action, raw_block=raw_block, request_text=body)
+    return None

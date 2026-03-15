@@ -25,8 +25,11 @@ from astrbot.core.agent.message import (
     ToolCallMessageSegment,
 )
 from astrbot.core.agent.tool import ToolSet
+from astrbot.core.pipeline.process_stage.follow_up import _ACTIVE_AGENT_RUNNERS
 from astrbot.core.provider.entities import ToolCallsResult
+from astrbot.core.utils.active_event_registry import active_event_registry
 
+from .background_registry import MaidBackgroundTaskRegistry
 from .config import load_maid_mode_config
 from .constants import (
     PENDING_MAID_FOLLOW_UP_EXTRA_KEY,
@@ -34,7 +37,7 @@ from .constants import (
     TRUE_USER_INPUT_EXTRA_KEY,
 )
 from .context_sanitizer import sanitize_contexts
-from .maid_call_parser import parse_maid_call, parse_maid_session_done
+from .maid_call_parser import parse_maid_call, parse_maid_control, parse_maid_session_done
 from .maid_dispatcher import dispatch_to_maid_agent
 from .output_sanitizer import sanitize_user_visible_output
 from .prompt_injector import inject_maid_system_prompt
@@ -61,6 +64,7 @@ class MaidAgent(Star):
         self.config = config or {}
         self.maid_mode_config = load_maid_mode_config(self.config)
         self.session_store: MaidSessionStore | None = None
+        self.background_tasks = MaidBackgroundTaskRegistry()
 
     async def initialize(self) -> None:
         """插件初始化"""
@@ -244,6 +248,7 @@ class MaidAgent(Star):
         pending: dict,
     ) -> None:
         cfg = self.maid_mode_config
+        task_id = str(pending.get("task_id") or "")
         agent_name = pending.get("agent_name") or cfg.default_agent_name
         maid_full_reply = pending.get("maid_full_reply") or ""
         maid_request = pending.get("maid_request") or ""
@@ -252,6 +257,11 @@ class MaidAgent(Star):
         session_done_requested = bool(pending.get("session_done_requested", False))
 
         try:
+            if task_id:
+                await self.background_tasks.mark_running(
+                    task_id,
+                    progress=f"管家开始执行任务: {maid_request[:80]}",
+                )
             try:
                 if self.session_store is None:
                     raise RuntimeError("session_store 尚未初始化")
@@ -265,10 +275,22 @@ class MaidAgent(Star):
                     true_user_input=true_user_input if isinstance(true_user_input, str) else None,
                     image_urls_raw=image_urls_raw,
                 )
+                if task_id:
+                    await self.background_tasks.update_progress(
+                        task_id,
+                        f"管家已完成执行，等待大小姐整理结果: {resolved_agent_name}",
+                    )
             except Exception as exc:
                 logger.error(f"[大小姐模式] 子 agent 调度失败: {exc!s}", exc_info=True)
                 agent_result = f"执行过程中出现问题：{exc!s}"
                 resolved_agent_name = agent_name
+                if task_id:
+                    await self.background_tasks.finish(
+                        task_id,
+                        status="error",
+                        error=str(exc),
+                        result=agent_result,
+                    )
 
             maid_visible_text = sanitize_user_visible_output(
                 maid_full_reply,
@@ -306,8 +328,96 @@ class MaidAgent(Star):
                 await self.session_store.close_active_session(
                     event.unified_msg_origin, status="done"
                 )
+            if task_id:
+                final_status = (
+                    "stopped"
+                    if event.get_extra("agent_stop_requested")
+                    else "done"
+                )
+                await self.background_tasks.finish(
+                    task_id,
+                    status=final_status,
+                    result=sanitized_follow_up or agent_result,
+                )
         except Exception as exc:
+            if task_id:
+                await self.background_tasks.finish(
+                    task_id,
+                    status="error",
+                    error=str(exc),
+                )
             logger.error("[大小姐模式] 后台追答任务失败: %s", exc, exc_info=True)
+
+    async def _build_background_status_text(self, event: AstrMessageEvent) -> str:
+        current = await self.background_tasks.get_active_by_umo(event.unified_msg_origin)
+        active = await self.background_tasks.list_active()
+        lines = [f"当前后台管家任务数: {len(active)}"]
+        if current is None:
+            lines.append("当前会话没有运行中的管家任务。")
+            return "\n".join(lines)
+
+        lines.append(f"当前任务ID: {current.task_id}")
+        lines.append(f"状态: {current.status}")
+        lines.append(f"Agent: {current.agent_name}")
+        if current.last_progress:
+            lines.append(f"进度: {current.last_progress}")
+        elif current.last_agent_result:
+            lines.append(f"最新结果: {current.last_agent_result[:120]}")
+        elif current.error:
+            lines.append(f"错误: {current.error[:120]}")
+        else:
+            lines.append(f"请求: {current.maid_request[:120]}")
+        return "\n".join(lines)
+
+    async def _request_stop_background_tasks(self, event: AstrMessageEvent) -> str:
+        current = await self.background_tasks.get_active_by_umo(event.unified_msg_origin)
+        if current is None:
+            return "当前会话没有运行中的管家任务。"
+
+        stopped = active_event_registry.request_agent_stop_all(
+            event.unified_msg_origin,
+            exclude=event,
+        )
+        await self.background_tasks.update_progress(
+            current.task_id,
+            "已收到停止请求，等待当前步骤结束后中断。",
+        )
+        lines = [f"已请求停止当前会话的后台管家任务。task_id={current.task_id}"]
+        lines.append(f"命中的活跃事件数: {stopped}")
+        lines.append("如果子 agent 正在等待工具或网络返回，通常会在当前步骤结束后停止。")
+        return "\n".join(lines)
+
+    async def _steer_background_task(
+        self,
+        event: AstrMessageEvent,
+        message_text: str,
+    ) -> str:
+        current = await self.background_tasks.get_active_by_umo(event.unified_msg_origin)
+        if current is None:
+            return "当前会话没有运行中的管家任务，无法补充要求。"
+
+        runner = _ACTIVE_AGENT_RUNNERS.get(event.unified_msg_origin)
+        if runner is None:
+            return "当前没有可引导的活跃管家执行器，请稍后再试。"
+
+        runner_event = getattr(getattr(runner.run_context, "context", None), "event", None)
+        active_sender_id = runner_event.get_sender_id() if runner_event is not None else None
+        sender_id = event.get_sender_id()
+        if not sender_id or active_sender_id != sender_id:
+            return "当前后台管家任务不属于本次发言用户，无法补充要求。"
+
+        ticket = runner.follow_up(message_text=message_text)
+        if ticket is None:
+            return "当前后台管家任务暂时无法接收补充要求。"
+
+        await self.background_tasks.update_progress(
+            current.task_id,
+            f"已收到新的补充要求: {message_text[:120]}",
+        )
+        return (
+            f"已将补充要求转交给后台管家。task_id={current.task_id}\n"
+            f"补充内容: {message_text[:120]}"
+        )
 
     @filter.on_llm_response()
     async def sanitize_llm_response(
@@ -340,10 +450,32 @@ class MaidAgent(Star):
         cfg = self.maid_mode_config
         completion_text = resp.completion_text or ""
         session_done_requested = parse_maid_session_done(completion_text, cfg.done_tag_name)
+        maid_control = parse_maid_control(completion_text)
 
         maid_call = parse_maid_call(completion_text, cfg.call_tag_name)
         if not maid_call and session_done_requested and self.session_store:
             await self.session_store.close_active_session(event.unified_msg_origin, status="done")
+
+        if maid_control and not maid_call:
+            sanitized = sanitize_user_visible_output(
+                completion_text,
+                cfg.call_tag_name,
+                cfg.done_tag_name,
+            )
+            if maid_control.action == "status":
+                control_text = await self._build_background_status_text(event)
+            elif maid_control.action == "stop":
+                control_text = await self._request_stop_background_tasks(event)
+            else:
+                control_text = await self._steer_background_task(
+                    event,
+                    maid_control.request_text,
+                )
+            final_text = control_text
+            if sanitized:
+                final_text = f"{sanitized}\n\n{control_text}".strip()
+            self._rewrite_response_text(resp, final_text)
+            return
 
         if not maid_call:
             sanitized = sanitize_user_visible_output(
@@ -427,19 +559,44 @@ class MaidAgent(Star):
                     self._get_missing_provider_request_attrs(req),
                 )
                 return
+            agent_name = pending.get("agent_name") or self.maid_mode_config.default_agent_name
+            maid_request = pending.get("maid_request") or ""
+            task_info = await self.background_tasks.create_task(
+                unified_msg_origin=event.unified_msg_origin,
+                sender_id=event.get_sender_id(),
+                agent_name=agent_name,
+                maid_request=maid_request,
+            )
+            pending = dict(pending)
+            pending["task_id"] = task_info.task_id
             self._clear_pending_follow_up(event)
             asyncio.create_task(
                 self._run_maid_follow_up_background_task(
                     event=event,
                     req=req,
-                    pending=dict(pending),
+                    pending=pending,
                 )
             )
-            logger.debug("[大小姐模式] 已投递后台管家任务，主链路不再等待执行完成")
+            logger.debug(
+                "[大小姐模式] 已投递后台管家任务，task_id=%s，主链路不再等待执行完成",
+                task_info.task_id,
+            )
         except Exception as exc:
             logger.error("[大小姐模式] after_message_sent 后续追答失败: %s", exc, exc_info=True)
         finally:
             self._clear_pending_follow_up(event)
+
+    @filter.command_group("maid")
+    def maid(self):
+        pass
+
+    @maid.command("status")
+    async def maid_status(self, event: AstrMessageEvent):
+        yield event.plain_result(await self._build_background_status_text(event))
+
+    @maid.command("stop")
+    async def maid_stop(self, event: AstrMessageEvent):
+        yield event.plain_result(await self._request_stop_background_tasks(event))
 
     @filter.on_decorating_result()
     async def decorate_result(self, event: AstrMessageEvent) -> None:

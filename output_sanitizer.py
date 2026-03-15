@@ -9,6 +9,7 @@ from functools import lru_cache
 
 DEFAULT_CALL_MAID_TAG_NAME = "call_maid"
 DEFAULT_DONE_TAG_NAME = "maid_session"
+DEFAULT_CONTROL_TAG_NAME = "maid_control"
 
 
 @lru_cache(maxsize=32)
@@ -35,6 +36,18 @@ def _get_sanitize_patterns(
         ),
         re.compile(
             rf"</?{re.escape(done_tag_name)}\b[^>]*>",
+            flags=re.IGNORECASE,
+        ),
+        re.compile(
+            rf"<{re.escape(DEFAULT_CONTROL_TAG_NAME)}\b[^>]*/>",
+            flags=re.IGNORECASE,
+        ),
+        re.compile(
+            rf"<{re.escape(DEFAULT_CONTROL_TAG_NAME)}\b[^>]*>[\s\S]*?</{re.escape(DEFAULT_CONTROL_TAG_NAME)}>",
+            flags=re.IGNORECASE,
+        ),
+        re.compile(
+            rf"</?{re.escape(DEFAULT_CONTROL_TAG_NAME)}\b[^>]*>",
             flags=re.IGNORECASE,
         ),
     )

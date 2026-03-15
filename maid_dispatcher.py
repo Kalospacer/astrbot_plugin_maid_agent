@@ -14,6 +14,11 @@ from astrbot.core.agent.message import Message
 from astrbot.core.agent.runners.tool_loop_agent_runner import ToolLoopAgentRunner
 from astrbot.core.astr_agent_context import AgentContextWrapper, AstrAgentContext
 from astrbot.core.astr_agent_tool_exec import FunctionToolExecutor
+from astrbot.core.pipeline.process_stage.follow_up import (
+    register_active_runner,
+    unregister_active_runner,
+)
+from astrbot.core.utils.active_event_registry import active_event_registry
 from astrbot.core.utils.llm_metadata import LLM_METADATAS
 
 from .session_store import MaidAgentSession, MaidSessionStore
@@ -171,6 +176,10 @@ def _build_session_contexts(
     return begin_dialogs
 
 
+def _should_stop_background_subagent(event: AstrMessageEvent) -> bool:
+    return event.is_stopped() or bool(event.get_extra("agent_stop_requested"))
+
+
 async def _build_runner(
     *,
     context: Context,
@@ -315,8 +324,44 @@ async def dispatch_to_maid_agent(
         provider_settings.get("context_limit_reached_strategy", "truncate_by_turns"),
         provider_settings.get("llm_compress_provider_id", "") or "<none>",
     )
-    async for _ in runner.step_until_done(agent_max_step):
-        pass
+    runner_registered = False
+    event_registered = False
+    step_count = 0
+    try:
+        register_active_runner(event.unified_msg_origin, runner)
+        runner_registered = True
+        active_event_registry.register(event)
+        event_registered = True
+
+        while not runner.done() and step_count < agent_max_step:
+            step_count += 1
+            if _should_stop_background_subagent(event):
+                runner.request_stop()
+            async for _ in runner.step():
+                if _should_stop_background_subagent(event):
+                    runner.request_stop()
+
+        if not runner.done():
+            logger.warning(
+                "[大小姐模式] 子 agent 达到最大步数 (%s)，将强制收尾。",
+                agent_max_step,
+            )
+            if runner.req:
+                runner.req.func_tool = None
+            runner.run_context.messages.append(
+                Message(
+                    role="user",
+                    content="工具调用次数已达到上限，请停止使用工具，并根据已经收集到的信息，对你的任务和发现进行总结，然后直接回复用户。",
+                )
+            )
+            async for _ in runner.step():
+                if _should_stop_background_subagent(event):
+                    runner.request_stop()
+    finally:
+        if runner_registered:
+            unregister_active_runner(event.unified_msg_origin, runner)
+        if event_registered:
+            active_event_registry.unregister(event)
 
     llm_resp = runner.get_final_llm_resp()
     if llm_resp is None:

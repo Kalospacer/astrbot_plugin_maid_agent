@@ -8,11 +8,13 @@ from typing import TYPE_CHECKING, Any
 
 from astrbot.api import logger
 from astrbot.api.provider import ProviderRequest
+from astrbot.core.agent.context.token_counter import EstimateTokenCounter
 from astrbot.core.agent.hooks import BaseAgentRunHooks
 from astrbot.core.agent.message import Message
 from astrbot.core.agent.runners.tool_loop_agent_runner import ToolLoopAgentRunner
 from astrbot.core.astr_agent_context import AgentContextWrapper, AstrAgentContext
 from astrbot.core.astr_agent_tool_exec import FunctionToolExecutor
+from astrbot.core.utils.llm_metadata import LLM_METADATAS
 
 from .session_store import MaidAgentSession, MaidSessionStore
 
@@ -136,6 +138,27 @@ def _get_compress_provider(
     return provider
 
 
+def _ensure_provider_max_context_tokens(provider: Provider) -> int:
+    max_context_tokens = _safe_int(provider.provider_config.get("max_context_tokens", 0), 0)
+    if max_context_tokens > 0:
+        return max_context_tokens
+
+    model = provider.get_model()
+    model_info = LLM_METADATAS.get(model)
+    if not model_info:
+        return 0
+
+    inferred = _safe_int(model_info.get("limit", {}).get("context", 0), 0)
+    if inferred > 0:
+        provider.provider_config["max_context_tokens"] = inferred
+        logger.debug(
+            "[大小姐模式] 已为子 agent provider 自动补全 max_context_tokens: model=%s limit=%s",
+            model,
+            inferred,
+        )
+    return inferred
+
+
 def _build_session_contexts(
     session: MaidAgentSession | None,
     begin_dialogs: list[Message] | None,
@@ -248,6 +271,7 @@ async def dispatch_to_maid_agent(
     provider = context.get_provider_by_id(provider_id)
     if provider is None:
         raise RuntimeError(f"未找到子 agent provider: {provider_id}")
+    max_context_tokens = _ensure_provider_max_context_tokens(provider)
 
     session: MaidAgentSession | None = None
     if session_store.config.session_enabled:
@@ -280,12 +304,37 @@ async def dispatch_to_maid_agent(
         enforce_max_turns=enforce_max_turns,
         tool_schema_mode=tool_schema_mode,
     )
+    estimated_context_tokens = EstimateTokenCounter().count_tokens(runner.run_context.messages)
+    logger.info(
+        "[大小姐模式] 子 agent 上下文预算: agent=%s provider=%s model=%s estimated_context_tokens=%s max_context_tokens=%s strategy=%s compress_provider=%s",
+        resolved_agent_name,
+        provider_id,
+        provider.get_model(),
+        estimated_context_tokens,
+        max_context_tokens,
+        provider_settings.get("context_limit_reached_strategy", "truncate_by_turns"),
+        provider_settings.get("llm_compress_provider_id", "") or "<none>",
+    )
     async for _ in runner.step_until_done(agent_max_step):
         pass
 
     llm_resp = runner.get_final_llm_resp()
     if llm_resp is None:
         raise RuntimeError("子 agent 未返回最终响应")
+    if llm_resp.usage is not None:
+        logger.info(
+            "[大小姐模式] 子 agent token 用量: agent=%s prompt=%s completion=%s total=%s",
+            resolved_agent_name,
+            llm_resp.usage.prompt_tokens,
+            llm_resp.usage.completion_tokens,
+            llm_resp.usage.total,
+        )
+    else:
+        logger.debug(
+            "[大小姐模式] 子 agent 未返回 usage 信息: agent=%s model=%s",
+            resolved_agent_name,
+            provider.get_model(),
+        )
 
     if session is not None:
         session.agent_name = resolved_agent_name

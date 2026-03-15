@@ -187,6 +187,7 @@ class MaidAgent(Star):
             req,
             self.maid_mode_config.call_tag_name,
             self.maid_mode_config.default_agent_name,
+            self.maid_mode_config.serving_max_turns,
             self.maid_mode_config.main_system_prompt_template,
         ):
             logger.debug("[大小姐模式] 已注入 XML 调度协议说明")
@@ -563,7 +564,7 @@ class MaidAgent(Star):
         runner_event = getattr(getattr(runner.run_context, "context", None), "event", None)
         active_sender_id = runner_event.get_sender_id() if runner_event is not None else None
         sender_id = event.get_sender_id()
-        if not sender_id or active_sender_id != sender_id:
+        if sender_id != active_sender_id:
             return "当前后台管家任务不属于本次发言的对方，无法补充要求。"
 
         ticket = runner.follow_up(message_text=message_text)
@@ -620,6 +621,13 @@ class MaidAgent(Star):
         session_done_requested = bool(maid_call and maid_call.action == "done")
         if session_done_requested and self.session_store:
             await self.session_store.close_active_session(event.unified_msg_origin, status="done")
+            sanitized = sanitize_user_visible_output(
+                completion_text,
+                cfg.call_tag_name,
+            )
+            if sanitized != completion_text:
+                self._rewrite_response_text(resp, sanitized)
+            return
 
         if maid_call and maid_call.action in {"status", "stop", "steer", "continue"}:
             sanitized = sanitize_user_visible_output(
@@ -722,6 +730,26 @@ class MaidAgent(Star):
         )
         if maid_visible_text.strip():
             logger.debug("[大小姐模式] 已保留第一条大小姐回复，并挂起管家后续处理")
+            return
+
+        current_task = await self.background_tasks.get_active_by_umo(event.unified_msg_origin)
+        if current_task is not None:
+            logger.warning(
+                "[大小姐模式] 当前会话已有后台任务运行，将纯协议 call_maid 降级为状态查询: current_task_id=%s requested_agent=%s",
+                current_task.task_id,
+                agent_name,
+            )
+            status_text = await self._build_background_status_text(event)
+            if status_text.strip():
+                self._rewrite_response_text(resp, status_text)
+            else:
+                resp.result_chain = None
+                resp.completion_text = ""
+                resp.tools_call_name = []
+                resp.tools_call_args = []
+                resp.tools_call_ids = []
+                resp.tools_call_extra_content = {}
+            self._clear_pending_follow_up(event)
             return
 
         logger.debug("[大小姐模式] 首条回复仅含协议标签，直接投递后台管家任务")

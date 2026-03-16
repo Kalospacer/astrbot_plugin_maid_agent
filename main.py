@@ -807,7 +807,11 @@ class MaidAgent(Star):
                     self._clear_pending_follow_up(event)
                     steer_text = await self._steer_background_task(event, maid_request)
                     if steer_text.strip():
-                        await event.send(MessageChain(chain=[Comp.Plain(steer_text)]))
+                        self._set_internal_send_kind(event, "maid_follow_up")
+                        try:
+                            await event.send(MessageChain(chain=[Comp.Plain(steer_text)]))
+                        finally:
+                            self._set_internal_send_kind(event, None)
                     return
                 agent_name = pending.get("agent_name") or self.maid_mode_config.default_agent_name
                 maid_request = pending.get("maid_request") or ""

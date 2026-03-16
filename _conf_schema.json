@@ -51,9 +51,9 @@
   },
   "serving_prompt_template": {
     "description": "服侍模式续发提示词",
-    "hint": "系统自动再次请求 LLM 时使用的提示词，例如：根据上文，你决定继续说话。",
+    "hint": "系统自动再次请求 LLM 时使用的提示词模板。可用占位符：{maid_last_reply_block}。",
     "type": "string",
-    "default": "根据上文，你决定继续说话。"
+    "default": "<maid_think>{maid_last_reply_block}根据我之前的回复，我应该继续说话</maid_think>"
   },
   "session_timeout_minutes": {
     "description": "Session 超时时间（分钟）",

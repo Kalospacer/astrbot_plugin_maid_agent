@@ -140,7 +140,7 @@ include_raw_user_input: true
 session_enabled: true
 serving_mode_enabled: false
 serving_max_turns: 3
-serving_prompt_template: "根据上文，你决定继续说话。"
+serving_prompt_template: "<maid_think>{maid_last_reply_block}根据我之前的回复，我应该继续说话</maid_think>"
 session_timeout_minutes: 20
 \`\`\`
 
@@ -155,7 +155,7 @@ session_timeout_minutes: 20
 | \`session_enabled\` | 是否启用管家的 Session 上下文持久化/状态留存机制。 |
 | \`serving_mode_enabled\` | 服侍模式的全局总开关。开启后，会话仍需通过 \`/maid_serve\` 手动启用。 |
 | \`serving_max_turns\` | 单次用户发言后，大小姐最多还能主动续说几次。 |
-| \`serving_prompt_template\` | 服侍模式中系统自动再次请求 LLM 时使用的提示词。 |
+| \`serving_prompt_template\` | 服侍模式中系统自动再次请求 LLM 时使用的提示词模板，可用占位符：\`{maid_last_reply_block}\`。 |
 | \`session_timeout_minutes\` | 并发 Session 闲置自动失效的分钟数。 |
 | \`main_system_prompt_template\` | 注入给主模型（大小姐）的协议说明提示词模板。 |
 | \`dispatch_prompt_template\` | 发送给管家执行机时的中继调度系统提示词模板。 |
@@ -201,10 +201,13 @@ session_timeout_minutes: 20
 
 配置项：\`serving_prompt_template\`
 
+支持的注入占位符：
+- \`{maid_last_reply_block}\`：大小姐上一句刚刚发送出去的纯文本回复。
+
 默认值：
 
 \`\`\`text
-根据上文，你决定继续说话。
+<maid_think>{maid_last_reply_block}根据我之前的回复，我应该继续说话</maid_think>
 \`\`\`
 
 该提示词只在服侍模式自动续发时使用，不会影响正常的首轮回复或管家调度逻辑。

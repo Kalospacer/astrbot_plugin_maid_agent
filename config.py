@@ -9,11 +9,13 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
-DEFAULT_CALL_MAID_TAG_NAME = "call_maid"
-DEFAULT_MAID_AGENT_NAME = "butler"
+from .constants import DEFAULT_CALL_MAID_TAG_NAME, DEFAULT_MAID_AGENT_NAME
+
 DEFAULT_SESSION_TIMEOUT_MINUTES = 20
 DEFAULT_SERVING_MAX_TURNS = 3
-DEFAULT_SERVING_PROMPT_TEMPLATE = "根据上文，你决定继续说话。"
+DEFAULT_SERVING_PROMPT_TEMPLATE = (
+    "<maid_think>{maid_last_reply_block}根据我之前的回复，我应该继续说话</maid_think>"
+)
 DEFAULT_MAIN_SYSTEM_PROMPT_TEMPLATE = (
     "- 需要管家协助时，回复末尾附加："
     '<{call_tag_name} agent="{default_agent_name}">任务要求</{call_tag_name}>'

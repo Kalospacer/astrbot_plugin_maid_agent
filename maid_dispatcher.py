@@ -58,7 +58,10 @@ def _resolve_handoff(
         resolved_name = getattr(getattr(handoff, "agent", None), "name", None) or agent_name
         return handoff, str(resolved_name)
 
-    if fallback_agent_name and fallback_agent_name.strip().casefold() != agent_name.strip().casefold():
+    if (
+        fallback_agent_name
+        and fallback_agent_name.strip().casefold() != agent_name.strip().casefold()
+    ):
         fallback = _find_handoff(context, fallback_agent_name)
         if fallback is not None:
             fallback_name = (
@@ -151,9 +154,8 @@ def _ensure_provider_max_context_tokens(provider: Provider) -> int:
 
     inferred = _safe_int(model_info.get("limit", {}).get("context", 0), 0)
     if inferred > 0:
-        provider.provider_config["max_context_tokens"] = inferred
         logger.debug(
-            "[大小姐模式] 已为子 agent provider 自动补全 max_context_tokens: model=%s limit=%s",
+            "[大小姐模式] 已为子 agent provider 推断 max_context_tokens: model=%s limit=%s",
             model,
             inferred,
         )
@@ -176,6 +178,63 @@ def _should_stop_background_subagent(event: AstrMessageEvent) -> bool:
     return event.is_stopped() or bool(event.get_extra("agent_stop_requested"))
 
 
+def _format_assistant_message(message: Message) -> str:
+    parts: list[str] = []
+    content = message.content
+    if isinstance(content, str):
+        if content.strip():
+            parts.append(content.strip())
+    elif isinstance(content, list):
+        text_bits: list[str] = []
+        for item in content:
+            if getattr(item, "type", "") == "text":
+                text = getattr(item, "text", "")
+                if text:
+                    text_bits.append(str(text).strip())
+        if text_bits:
+            parts.append("\n".join(bit for bit in text_bits if bit))
+
+    tool_calls = message.tool_calls or []
+    if tool_calls:
+        tool_lines: list[str] = []
+        for tool_call in tool_calls:
+            function = getattr(tool_call, "function", None)
+            name = getattr(function, "name", "") or ""
+            arguments = getattr(function, "arguments", None)
+            if arguments:
+                tool_lines.append(f"调用工具 {name}: [参数已隐藏]")
+            else:
+                tool_lines.append(f"调用工具 {name}")
+        if tool_lines:
+            parts.append("\n".join(tool_lines))
+
+    return "\n".join(part for part in parts if part).strip()
+
+
+async def _publish_latest_assistant_output(
+    runner: ToolLoopAgentRunner,
+    on_assistant_output_updated,
+    last_published_output: str,
+) -> str:
+    if on_assistant_output_updated is None:
+        return last_published_output
+    latest_output = _get_latest_assistant_output(runner.run_context.messages)
+    if latest_output and latest_output != last_published_output:
+        await on_assistant_output_updated(latest_output)
+        return latest_output
+    return last_published_output
+
+
+def _get_latest_assistant_output(messages: list[Message]) -> str:
+    for message in reversed(messages):
+        if message.role != "assistant":
+            continue
+        rendered = _format_assistant_message(message)
+        if rendered:
+            return rendered
+    return ""
+
+
 async def _build_runner(
     *,
     context: Context,
@@ -194,6 +253,7 @@ async def _build_runner(
     truncate_turns: int,
     enforce_max_turns: int,
     tool_schema_mode: str,
+    max_context_tokens: int,
 ) -> ToolLoopAgentRunner:
     agent_context = AstrAgentContext(context=context, event=event)
     runner = ToolLoopAgentRunner()
@@ -207,23 +267,33 @@ async def _build_runner(
         system_prompt=system_prompt,
         session_id=event.unified_msg_origin,
     )
-    await runner.reset(
-        provider=provider,
-        request=request,
-        run_context=AgentContextWrapper(
-            context=agent_context,
-            tool_call_timeout=tool_call_timeout,
-        ),
-        tool_executor=FunctionToolExecutor(),
-        agent_hooks=BaseAgentRunHooks[AstrAgentContext](),
-        streaming=stream,
-        llm_compress_instruction=llm_compress_instruction,
-        llm_compress_keep_recent=llm_compress_keep_recent,
-        llm_compress_provider=llm_compress_provider,
-        truncate_turns=truncate_turns,
-        enforce_max_turns=enforce_max_turns,
-        tool_schema_mode=tool_schema_mode,
-    )
+    original_max_context_tokens = provider.provider_config.get("max_context_tokens")
+    if max_context_tokens > 0:
+        provider.provider_config["max_context_tokens"] = max_context_tokens
+    try:
+        await runner.reset(
+            provider=provider,
+            request=request,
+            run_context=AgentContextWrapper(
+                context=agent_context,
+                tool_call_timeout=tool_call_timeout,
+            ),
+            tool_executor=FunctionToolExecutor(),
+            agent_hooks=BaseAgentRunHooks[AstrAgentContext](),
+            streaming=stream,
+            llm_compress_instruction=llm_compress_instruction,
+            llm_compress_keep_recent=llm_compress_keep_recent,
+            llm_compress_provider=llm_compress_provider,
+            truncate_turns=truncate_turns,
+            enforce_max_turns=enforce_max_turns,
+            tool_schema_mode=tool_schema_mode,
+        )
+    finally:
+        if max_context_tokens > 0:
+            if original_max_context_tokens is None:
+                provider.provider_config.pop("max_context_tokens", None)
+            else:
+                provider.provider_config["max_context_tokens"] = original_max_context_tokens
     return runner
 
 
@@ -238,6 +308,7 @@ async def dispatch_to_maid_agent(
     image_urls_raw: Any = None,
     on_runner_registered=None,
     on_runner_unregistered=None,
+    on_assistant_output_updated=None,
 ) -> tuple[str, str]:
     """根据 agent 名调用对应子 agent，并返回其自然语言结果与实际命中的 agent 名。"""
     handoff, resolved_agent_name = _resolve_handoff(
@@ -310,6 +381,7 @@ async def dispatch_to_maid_agent(
         truncate_turns=truncate_turns,
         enforce_max_turns=enforce_max_turns,
         tool_schema_mode=tool_schema_mode,
+        max_context_tokens=max_context_tokens,
     )
     estimated_context_tokens = EstimateTokenCounter().count_tokens(runner.run_context.messages)
     logger.info(
@@ -324,6 +396,7 @@ async def dispatch_to_maid_agent(
     )
     event_registered = False
     step_count = 0
+    last_published_output = ""
     try:
         if on_runner_registered is not None:
             on_runner_registered(event.unified_msg_origin, runner)
@@ -335,6 +408,11 @@ async def dispatch_to_maid_agent(
             if _should_stop_background_subagent(event):
                 runner.request_stop()
             async for _ in runner.step():
+                last_published_output = await _publish_latest_assistant_output(
+                    runner,
+                    on_assistant_output_updated,
+                    last_published_output,
+                )
                 if _should_stop_background_subagent(event):
                     runner.request_stop()
 
@@ -352,6 +430,11 @@ async def dispatch_to_maid_agent(
                 )
             )
             async for _ in runner.step():
+                last_published_output = await _publish_latest_assistant_output(
+                    runner,
+                    on_assistant_output_updated,
+                    last_published_output,
+                )
                 if _should_stop_background_subagent(event):
                     runner.request_stop()
     finally:

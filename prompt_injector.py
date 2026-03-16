@@ -6,22 +6,30 @@
 
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from astrbot.api.provider import ProviderRequest
 
+logger = logging.getLogger(__name__)
+
 
 def build_maid_system_prompt_append(
     call_tag_name: str,
     default_agent_name: str,
-    serving_max_turns: int,
     prompt_template: str,
 ) -> str:
-    return (
-        prompt_template.replace("{call_tag_name}", call_tag_name)
-        .replace("{default_agent_name}", default_agent_name)
-        .replace("{serving_max_turns}", str(serving_max_turns))
+    cleaned_template = prompt_template
+    if "{serving_max_turns}" in cleaned_template:
+        logger.warning(
+            "Detected deprecated placeholder '{serving_max_turns}' in maid system "
+            "prompt template; it will be stripped. Please remove it from "
+            "'main_system_prompt_template'."
+        )
+        cleaned_template = cleaned_template.replace("{serving_max_turns}", "")
+    return cleaned_template.replace("{call_tag_name}", call_tag_name).replace(
+        "{default_agent_name}", default_agent_name
     )
 
 
@@ -29,7 +37,6 @@ def inject_maid_system_prompt(
     req: ProviderRequest,
     call_tag_name: str,
     default_agent_name: str,
-    serving_max_turns: int,
     prompt_template: str,
 ) -> bool:
     """
@@ -44,12 +51,13 @@ def inject_maid_system_prompt(
     prompt_append = build_maid_system_prompt_append(
         call_tag_name,
         default_agent_name,
-        serving_max_turns,
         prompt_template,
     )
     current_prompt = req.system_prompt or ""
     normalized_append = (
-        prompt_append if not current_prompt or current_prompt.endswith("\n") else f"\n{prompt_append}"
+        prompt_append
+        if not current_prompt or current_prompt.endswith("\n")
+        else f"\n{prompt_append}"
     )
     if prompt_append not in current_prompt:
         req.system_prompt = current_prompt + normalized_append

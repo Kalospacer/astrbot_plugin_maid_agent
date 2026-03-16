@@ -7,7 +7,7 @@ from __future__ import annotations
 import re
 from functools import lru_cache
 
-DEFAULT_CALL_MAID_TAG_NAME = "call_maid"
+from .constants import DEFAULT_CALL_MAID_TAG_NAME
 
 
 @lru_cache(maxsize=32)

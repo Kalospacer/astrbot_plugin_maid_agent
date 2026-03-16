@@ -22,6 +22,7 @@ class MaidBackgroundTaskInfo:
     status: str
     created_at: str
     updated_at: str
+    last_assistant_output: str = ""
     last_progress: str = ""
     last_agent_result: str = ""
     error: str = ""
@@ -93,6 +94,17 @@ class MaidBackgroundTaskRegistry:
             if info is None:
                 return None
             info.last_progress = progress
+            info.touch()
+            return info
+
+    async def update_assistant_output(
+        self, task_id: str, output: str
+    ) -> MaidBackgroundTaskInfo | None:
+        async with self._lock:
+            info = self._tasks.get(task_id)
+            if info is None:
+                return None
+            info.last_assistant_output = output
             info.touch()
             return info
 

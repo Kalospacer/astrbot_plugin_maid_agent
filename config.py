@@ -18,10 +18,8 @@ DEFAULT_MAIN_SYSTEM_PROMPT_TEMPLATE = (
     "- 需要管家协助时，回复末尾附加："
     '<{call_tag_name} agent="{default_agent_name}">任务要求</{call_tag_name}>'
     "\n- 不需要管家则不附加此标签"
-    '\n- 查询管家任务状态：<{call_tag_name} action="status" />'
     '\n- 停止管家任务：<{call_tag_name} action="stop" />'
     '\n- 补充或修正当前管家任务：<{call_tag_name} action="steer">补充要求</{call_tag_name}>'
-    '\n- 若你判断这次应在对方未继续发言时主动再说几次，可附加：<{call_tag_name} action="continue" turns="{serving_max_turns}" />'
     '\n- 管家任务结束时附加：<{call_tag_name} action="done" />，未结束不附加'
 )
 DEFAULT_DISPATCH_PROMPT_TEMPLATE = (

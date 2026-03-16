@@ -36,10 +36,8 @@
 当前协议默认收敛为单标签形态：
 
 - **调用管家**：\`<call_maid agent=\"...\">...</call_maid>\`
-- **查询状态**：\`<call_maid action=\"status\" />\`
 - **停止任务**：\`<call_maid action=\"stop\" />\`
 - **补充要求**：\`<call_maid action=\"steer\">补充要求</call_maid>\`
-- **服侍续发**：\`<call_maid action=\"continue\" turns=\"次数\" />\`
 - **结束任务**：\`<call_maid action=\"done\" />\`
 
 **标准交互执行流：**
@@ -53,13 +51,13 @@
 
 ### 服侍模式
 
-服侍模式用于打破传统的 `user -> assistant` 单轮回复节奏，让大小姐在**对方没有继续发言**时，也可以按协议主动追加几轮自然语言回复。
+服侍模式用于打破传统的 `user -> assistant` 单轮回复节奏，让大小姐在**对方没有继续发言**时，也可以主动追加几轮自然语言回复。
 
-- 大小姐可在回复中附加：\`<call_maid action=\"continue\" turns=\"{serving_max_turns}\" />\`
-- 插件会在首条回复发送后，自动再次请求 LLM，并按 \`serving_prompt_template\` 续发
-- 单次用户发言最多可触发 \`serving_max_turns\` 次自动续发，默认上限为 `3`
-- 当前实现下，自动续发预算不会被无限“续杯”；即使自动回复中再次输出 \`continue\`，也只会在本轮剩余预算内继续
-- 服侍模式与后台任务系统打通，可通过 \`/maid status\`、\`/maid stop\` 或 \`<call_maid action=\"status\" />\`、\`<call_maid action=\"stop\" />\` 查询和停止
+- 通过命令 \`/maid_serve\` 切换当前会话的服侍模式开关
+- 服侍模式会先检查插件配置里的全局开关 \`serving_mode_enabled\`；全局关闭时，任何会话都不会自动连发
+- 即使全局开关已开启，当前会话也仍需手动执行一次 \`/maid_serve\` 才会真正启用
+- 当前会话开启后，每次对方发言并收到大小姐首条回复后，插件都会自动再次请求 LLM，并按 \`serving_prompt_template\` 续发
+- 单次对话触发的自动续发最多执行 \`serving_max_turns\` 次，默认上限为 `3`
 
 ## ✨ 当前能力
 
@@ -155,7 +153,7 @@ session_timeout_minutes: 20
 | \`call_tag_name\` | 调度管家时主模型输出的 XML 标签名。 |
 | \`include_raw_user_input\` | 是否把真实的用户原话一并透传给管家。 |
 | \`session_enabled\` | 是否启用管家的 Session 上下文持久化/状态留存机制。 |
-| \`serving_mode_enabled\` | 是否启用服侍模式自动连发。 |
+| \`serving_mode_enabled\` | 服侍模式的全局总开关。开启后，会话仍需通过 \`/maid_serve\` 手动启用。 |
 | \`serving_max_turns\` | 单次用户发言后，大小姐最多还能主动续说几次。 |
 | \`serving_prompt_template\` | 服侍模式中系统自动再次请求 LLM 时使用的提示词。 |
 | \`session_timeout_minutes\` | 并发 Session 闲置自动失效的分钟数。 |
@@ -173,17 +171,14 @@ session_timeout_minutes: 20
 支持的注入占位符：
 - \`{call_tag_name}\`
 - \`{default_agent_name}\`
-- \`{serving_max_turns}\`
 
 **默认模板效果：**
 
 \`\`\`text
 - 需要管家协助时，回复末尾附加：<{call_tag_name} agent=\"{default_agent_name}\">任务要求</{call_tag_name}>
 - 不需要管家则不附加此标签
-- 查询管家任务状态：<{call_tag_name} action=\"status\" />
 - 停止管家任务：<{call_tag_name} action=\"stop\" />
 - 补充或修正当前管家任务：<{call_tag_name} action=\"steer\">补充要求</{call_tag_name}>
-- 若你判断这次应在对方未继续发言时主动再说几次，可附加：<{call_tag_name} action=\"continue\" turns=\"{serving_max_turns}\" />
 - 管家任务结束时附加：<{call_tag_name} action=\"done\" />，未结束不附加
 \`\`\`
 
@@ -213,6 +208,12 @@ session_timeout_minutes: 20
 \`\`\`
 
 该提示词只在服侍模式自动续发时使用，不会影响正常的首轮回复或管家调度逻辑。
+
+### 4. 命令入口
+
+- \`/maid_serve\`：切换当前会话的服侍模式开关
+- \`/maid status\`：查看当前后台管家任务状态
+- \`/maid stop\`：请求停止当前后台管家任务
 
 ---
 

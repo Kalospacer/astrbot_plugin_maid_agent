@@ -326,6 +326,8 @@ class MaidAgent(Star):
             contexts=req.contexts,
             system_prompt=req.system_prompt,
             model=req.model,
+            session_id=req.session_id,
+            extra_user_content_parts=req.extra_user_content_parts,
         )
         if self.maid_mode_config.log_raw_llm_io:
             logger.debug(
@@ -369,7 +371,8 @@ class MaidAgent(Star):
                 if sanitized != completion_text:
                     self._rewrite_response_text(follow_up_resp, sanitized)
 
-                if follow_up_resp.result_chain is not None or sanitized.strip():
+                sanitized_stripped = sanitized.strip()
+                if sanitized_stripped:
                     chain = follow_up_resp.result_chain or MessageChain(
                         chain=[Comp.Plain(sanitized)]
                     )
@@ -378,7 +381,7 @@ class MaidAgent(Star):
                     self._set_internal_send_kind(event, None)
                     latest_assistant_text = sanitized or completion_text
                 budget -= 1
-                if not sanitized.strip():
+                if not sanitized_stripped:
                     break
         except Exception as exc:
             logger.error("[大小姐模式] 服侍模式自动连发失败: %s", exc, exc_info=True)

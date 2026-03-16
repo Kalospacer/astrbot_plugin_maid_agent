@@ -191,10 +191,6 @@ def _format_assistant_message(message: Message) -> str:
                 text = getattr(item, "text", "")
                 if text:
                     text_bits.append(str(text).strip())
-            elif getattr(item, "type", "") == "think":
-                think = getattr(item, "think", "")
-                if think:
-                    text_bits.append(f"[thinking] {str(think).strip()}")
         if text_bits:
             parts.append("\n".join(bit for bit in text_bits if bit))
 
@@ -206,13 +202,27 @@ def _format_assistant_message(message: Message) -> str:
             name = getattr(function, "name", "") or ""
             arguments = getattr(function, "arguments", None)
             if arguments:
-                tool_lines.append(f"调用工具 {name}: {arguments}")
+                tool_lines.append(f"调用工具 {name}: [参数已隐藏]")
             else:
                 tool_lines.append(f"调用工具 {name}")
         if tool_lines:
             parts.append("\n".join(tool_lines))
 
     return "\n".join(part for part in parts if part).strip()
+
+
+async def _publish_latest_assistant_output(
+    runner: ToolLoopAgentRunner,
+    on_assistant_output_updated,
+    last_published_output: str,
+) -> str:
+    if on_assistant_output_updated is None:
+        return last_published_output
+    latest_output = _get_latest_assistant_output(runner.run_context.messages)
+    if latest_output and latest_output != last_published_output:
+        await on_assistant_output_updated(latest_output)
+        return latest_output
+    return last_published_output
 
 
 def _get_latest_assistant_output(messages: list[Message]) -> str:
@@ -386,6 +396,7 @@ async def dispatch_to_maid_agent(
     )
     event_registered = False
     step_count = 0
+    last_published_output = ""
     try:
         if on_runner_registered is not None:
             on_runner_registered(event.unified_msg_origin, runner)
@@ -397,10 +408,11 @@ async def dispatch_to_maid_agent(
             if _should_stop_background_subagent(event):
                 runner.request_stop()
             async for _ in runner.step():
-                if on_assistant_output_updated is not None:
-                    latest_output = _get_latest_assistant_output(runner.run_context.messages)
-                    if latest_output:
-                        await on_assistant_output_updated(latest_output)
+                last_published_output = await _publish_latest_assistant_output(
+                    runner,
+                    on_assistant_output_updated,
+                    last_published_output,
+                )
                 if _should_stop_background_subagent(event):
                     runner.request_stop()
 
@@ -418,10 +430,11 @@ async def dispatch_to_maid_agent(
                 )
             )
             async for _ in runner.step():
-                if on_assistant_output_updated is not None:
-                    latest_output = _get_latest_assistant_output(runner.run_context.messages)
-                    if latest_output:
-                        await on_assistant_output_updated(latest_output)
+                last_published_output = await _publish_latest_assistant_output(
+                    runner,
+                    on_assistant_output_updated,
+                    last_published_output,
+                )
                 if _should_stop_background_subagent(event):
                     runner.request_stop()
     finally:

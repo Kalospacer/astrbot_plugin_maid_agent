@@ -34,7 +34,6 @@ class MaidCall:
     request_text: str
     raw_block: str
     action: str = ""
-    turns: int = 0
 
 
 def parse_maid_call(
@@ -68,28 +67,12 @@ def parse_maid_call(
     )
     action = action_match.group("action").strip().casefold() if action_match else ""
 
-    turns_match = re.search(
-        r'turns\s*=\s*["\'](?P<turns>\d+)["\']',
-        attrs,
-        re.IGNORECASE,
-    )
-    turns = int(turns_match.group("turns")) if turns_match else 0
-
-    if action in {"status", "stop", "done"}:
+    if action in {"stop", "done"}:
         return MaidCall(
             agent_name=agent_name,
             request_text="",
             raw_block=raw_block,
             action=action,
-            turns=turns,
-        )
-    if action == "continue" and turns > 0:
-        return MaidCall(
-            agent_name=agent_name,
-            request_text="",
-            raw_block=raw_block,
-            action=action,
-            turns=turns,
         )
     if action == "steer" and body:
         return MaidCall(
@@ -97,7 +80,6 @@ def parse_maid_call(
             request_text=body,
             raw_block=raw_block,
             action=action,
-            turns=turns,
         )
     if not body:
         return None
@@ -107,5 +89,4 @@ def parse_maid_call(
         request_text=body,
         raw_block=raw_block,
         action=action,
-        turns=turns,
     )

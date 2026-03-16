@@ -58,7 +58,10 @@ def _resolve_handoff(
         resolved_name = getattr(getattr(handoff, "agent", None), "name", None) or agent_name
         return handoff, str(resolved_name)
 
-    if fallback_agent_name and fallback_agent_name.strip().casefold() != agent_name.strip().casefold():
+    if (
+        fallback_agent_name
+        and fallback_agent_name.strip().casefold() != agent_name.strip().casefold()
+    ):
         fallback = _find_handoff(context, fallback_agent_name)
         if fallback is not None:
             fallback_name = (
@@ -176,6 +179,53 @@ def _should_stop_background_subagent(event: AstrMessageEvent) -> bool:
     return event.is_stopped() or bool(event.get_extra("agent_stop_requested"))
 
 
+def _format_assistant_message(message: Message) -> str:
+    parts: list[str] = []
+    content = message.content
+    if isinstance(content, str):
+        if content.strip():
+            parts.append(content.strip())
+    elif isinstance(content, list):
+        text_bits: list[str] = []
+        for item in content:
+            if getattr(item, "type", "") == "text":
+                text = getattr(item, "text", "")
+                if text:
+                    text_bits.append(str(text).strip())
+            elif getattr(item, "type", "") == "think":
+                think = getattr(item, "think", "")
+                if think:
+                    text_bits.append(f"[thinking] {str(think).strip()}")
+        if text_bits:
+            parts.append("\n".join(bit for bit in text_bits if bit))
+
+    tool_calls = message.tool_calls or []
+    if tool_calls:
+        tool_lines: list[str] = []
+        for tool_call in tool_calls:
+            function = getattr(tool_call, "function", None)
+            name = getattr(function, "name", "") or ""
+            arguments = getattr(function, "arguments", None)
+            if arguments:
+                tool_lines.append(f"调用工具 {name}: {arguments}")
+            else:
+                tool_lines.append(f"调用工具 {name}")
+        if tool_lines:
+            parts.append("\n".join(tool_lines))
+
+    return "\n".join(part for part in parts if part).strip()
+
+
+def _get_latest_assistant_output(messages: list[Message]) -> str:
+    for message in reversed(messages):
+        if message.role != "assistant":
+            continue
+        rendered = _format_assistant_message(message)
+        if rendered:
+            return rendered
+    return ""
+
+
 async def _build_runner(
     *,
     context: Context,
@@ -238,6 +288,7 @@ async def dispatch_to_maid_agent(
     image_urls_raw: Any = None,
     on_runner_registered=None,
     on_runner_unregistered=None,
+    on_assistant_output_updated=None,
 ) -> tuple[str, str]:
     """根据 agent 名调用对应子 agent，并返回其自然语言结果与实际命中的 agent 名。"""
     handoff, resolved_agent_name = _resolve_handoff(
@@ -335,6 +386,10 @@ async def dispatch_to_maid_agent(
             if _should_stop_background_subagent(event):
                 runner.request_stop()
             async for _ in runner.step():
+                if on_assistant_output_updated is not None:
+                    latest_output = _get_latest_assistant_output(runner.run_context.messages)
+                    if latest_output:
+                        await on_assistant_output_updated(latest_output)
                 if _should_stop_background_subagent(event):
                     runner.request_stop()
 
@@ -352,6 +407,10 @@ async def dispatch_to_maid_agent(
                 )
             )
             async for _ in runner.step():
+                if on_assistant_output_updated is not None:
+                    latest_output = _get_latest_assistant_output(runner.run_context.messages)
+                    if latest_output:
+                        await on_assistant_output_updated(latest_output)
                 if _should_stop_background_subagent(event):
                     runner.request_stop()
     finally:

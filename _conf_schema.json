@@ -38,8 +38,8 @@
     "default": false
   },
   "serving_mode_enabled": {
-    "description": "启用服侍模式自动连发",
-    "hint": "开启后，大小姐可通过 <call_maid action=\"continue\" turns=\"{serving_max_turns}\" /> 在用户未继续发言时主动追加多条回复。",
+    "description": "启用服侍模式",
+    "hint": "作为服侍模式的全局总开关。关闭时所有会话都不会自动连发；开启后仍需在会话中通过 /maid_serve 手动启用。",
     "type": "bool",
     "default": false
   },
@@ -51,9 +51,9 @@
   },
   "serving_prompt_template": {
     "description": "服侍模式续发提示词",
-    "hint": "系统自动再次请求 LLM 时使用的提示词，例如：根据上文，你决定继续说话。",
+    "hint": "系统自动再次请求 LLM 时使用的提示词模板。可用占位符：{maid_last_reply_block}。",
     "type": "string",
-    "default": "根据上文，你决定继续说话。"
+    "default": "<maid_think>{maid_last_reply_block}根据我之前的回复，我应该继续说话</maid_think>"
   },
   "session_timeout_minutes": {
     "description": "Session 超时时间（分钟）",
@@ -63,9 +63,9 @@
   },
   "main_system_prompt_template": {
     "description": "主模型协议提示模板",
-    "hint": "追加到主模型 system prompt 的模板。可用占位符：{call_tag_name}、{default_agent_name}、{serving_max_turns}。",
+    "hint": "追加到主模型 system prompt 的模板。可用占位符：{call_tag_name}、{default_agent_name}。",
     "type": "string",
-    "default": "- 需要管家协助时，回复末尾附加：<{call_tag_name} agent=\"{default_agent_name}\">任务要求</{call_tag_name}>\n- 不需要管家则不附加此标签\n- 查询管家任务状态：<{call_tag_name} action=\"status\" />\n- 停止管家任务：<{call_tag_name} action=\"stop\" />\n- 补充或修正当前管家任务：<{call_tag_name} action=\"steer\">补充要求</{call_tag_name}>\n- 若你判断这次应在对方未继续发言时主动再说几次，可附加：<{call_tag_name} action=\"continue\" turns=\"{serving_max_turns}\" />\n- 管家任务结束时附加：<{call_tag_name} action=\"done\" />，未结束不附加"
+    "default": "- 需要管家协助时，回复末尾附加：<{call_tag_name} agent=\"{default_agent_name}\">任务要求</{call_tag_name}>\n- 不需要管家则不附加此标签\n- 停止管家任务：<{call_tag_name} action=\"stop\" />\n- 补充或修正当前管家任务：<{call_tag_name} action=\"steer\">补充要求</{call_tag_name}>\n- 管家任务结束时附加：<{call_tag_name} action=\"done\" />，未结束不附加"
   },
   "dispatch_prompt_template": {
     "description": "管家调度提示模板",

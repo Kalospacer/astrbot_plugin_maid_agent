@@ -154,9 +154,8 @@ def _ensure_provider_max_context_tokens(provider: Provider) -> int:
 
     inferred = _safe_int(model_info.get("limit", {}).get("context", 0), 0)
     if inferred > 0:
-        provider.provider_config["max_context_tokens"] = inferred
         logger.debug(
-            "[大小姐模式] 已为子 agent provider 自动补全 max_context_tokens: model=%s limit=%s",
+            "[大小姐模式] 已为子 agent provider 推断 max_context_tokens: model=%s limit=%s",
             model,
             inferred,
         )
@@ -244,6 +243,7 @@ async def _build_runner(
     truncate_turns: int,
     enforce_max_turns: int,
     tool_schema_mode: str,
+    max_context_tokens: int,
 ) -> ToolLoopAgentRunner:
     agent_context = AstrAgentContext(context=context, event=event)
     runner = ToolLoopAgentRunner()
@@ -257,23 +257,33 @@ async def _build_runner(
         system_prompt=system_prompt,
         session_id=event.unified_msg_origin,
     )
-    await runner.reset(
-        provider=provider,
-        request=request,
-        run_context=AgentContextWrapper(
-            context=agent_context,
-            tool_call_timeout=tool_call_timeout,
-        ),
-        tool_executor=FunctionToolExecutor(),
-        agent_hooks=BaseAgentRunHooks[AstrAgentContext](),
-        streaming=stream,
-        llm_compress_instruction=llm_compress_instruction,
-        llm_compress_keep_recent=llm_compress_keep_recent,
-        llm_compress_provider=llm_compress_provider,
-        truncate_turns=truncate_turns,
-        enforce_max_turns=enforce_max_turns,
-        tool_schema_mode=tool_schema_mode,
-    )
+    original_max_context_tokens = provider.provider_config.get("max_context_tokens")
+    if max_context_tokens > 0:
+        provider.provider_config["max_context_tokens"] = max_context_tokens
+    try:
+        await runner.reset(
+            provider=provider,
+            request=request,
+            run_context=AgentContextWrapper(
+                context=agent_context,
+                tool_call_timeout=tool_call_timeout,
+            ),
+            tool_executor=FunctionToolExecutor(),
+            agent_hooks=BaseAgentRunHooks[AstrAgentContext](),
+            streaming=stream,
+            llm_compress_instruction=llm_compress_instruction,
+            llm_compress_keep_recent=llm_compress_keep_recent,
+            llm_compress_provider=llm_compress_provider,
+            truncate_turns=truncate_turns,
+            enforce_max_turns=enforce_max_turns,
+            tool_schema_mode=tool_schema_mode,
+        )
+    finally:
+        if max_context_tokens > 0:
+            if original_max_context_tokens is None:
+                provider.provider_config.pop("max_context_tokens", None)
+            else:
+                provider.provider_config["max_context_tokens"] = original_max_context_tokens
     return runner
 
 
@@ -361,6 +371,7 @@ async def dispatch_to_maid_agent(
         truncate_turns=truncate_turns,
         enforce_max_turns=enforce_max_turns,
         tool_schema_mode=tool_schema_mode,
+        max_context_tokens=max_context_tokens,
     )
     estimated_context_tokens = EstimateTokenCounter().count_tokens(runner.run_context.messages)
     logger.info(

@@ -10,8 +10,7 @@ import re
 from dataclasses import dataclass
 from functools import lru_cache
 
-DEFAULT_CALL_MAID_TAG_NAME = "call_maid"
-DEFAULT_MAID_AGENT_NAME = "butler"
+from .constants import DEFAULT_CALL_MAID_TAG_NAME, DEFAULT_MAID_AGENT_NAME
 
 
 @lru_cache(maxsize=32)

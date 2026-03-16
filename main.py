@@ -17,7 +17,7 @@ from typing import TYPE_CHECKING
 import astrbot.api.message_components as Comp
 from astrbot.api import logger
 from astrbot.api.event import MessageChain, filter
-from astrbot.api.star import Star, register
+from astrbot.api.star import Star
 from astrbot.core.agent.message import (
     AssistantMessageSegment,
     TextPart,
@@ -52,12 +52,6 @@ if TYPE_CHECKING:
     from astrbot.api.star import Context
 
 
-@register(
-    "MaidAgent",
-    "大小姐管家模式",
-    "主模型仅保留自然语言上下文，通过 XML 协议请求幕后执行",
-    "1.0.0",
-)
 class MaidAgent(Star):
     """大小姐管家模式插件"""
 
@@ -89,6 +83,15 @@ class MaidAgent(Star):
         """以兼容 AstrBot 的方式回写响应文本。"""
         resp.result_chain = MessageChain(chain=[Comp.Plain(text)])
         resp.completion_text = text
+        resp.tools_call_name = []
+        resp.tools_call_args = []
+        resp.tools_call_ids = []
+        resp.tools_call_extra_content = {}
+
+    @staticmethod
+    def _clear_response(resp: LLMResponse) -> None:
+        resp.result_chain = None
+        resp.completion_text = ""
         resp.tools_call_name = []
         resp.tools_call_args = []
         resp.tools_call_ids = []
@@ -154,6 +157,16 @@ class MaidAgent(Star):
 
         task.add_done_callback(_on_done)
 
+    @staticmethod
+    def _extract_latest_assistant_text(event: AstrMessageEvent) -> str:
+        result = event.get_result()
+        if result is None:
+            return ""
+        try:
+            return (result.get_plain_text() or "").strip()
+        except Exception:
+            return ""
+
     @filter.on_llm_request()
     async def sanitize_main_model_request(
         self,
@@ -171,16 +184,19 @@ class MaidAgent(Star):
         raw_input = req.prompt or event.message_str or ""
         if raw_input:
             event.set_extra(RAW_INPUT_EXTRA_KEY, raw_input)
-            logger.debug(f"[大小姐模式] 已保存原始输入: {raw_input[:100]}...")
+            logger.debug("[大小姐模式] 已保存原始输入: %s...", raw_input[:100])
 
         true_user_input = event.message_str or ""
         if true_user_input:
             event.set_extra(TRUE_USER_INPUT_EXTRA_KEY, true_user_input)
-            logger.debug(f"[大小姐模式] 已保存真实用户文本: {true_user_input[:100]}...")
+            logger.debug("[大小姐模式] 已保存真实用户文本: %s...", true_user_input[:100])
 
         removed_count = sanitize_contexts(req)
         if removed_count > 0:
-            logger.debug(f"[大小姐模式] 已清洗 contexts，移除 {removed_count} 条非自然语言消息")
+            logger.debug(
+                "[大小姐模式] 已清洗 contexts，移除 %s 条非自然语言消息",
+                removed_count,
+            )
 
         req.func_tool = ToolSet()
         logger.debug("[大小姐模式] 已注入空工具集，禁用主模型原生工具暴露")
@@ -277,41 +293,56 @@ class MaidAgent(Star):
         self,
         event: AstrMessageEvent,
         req: ProviderRequest,
-        contexts: list[dict],
+        latest_assistant_text: str,
     ) -> LLMResponse:
         provider_id = await self.context.get_current_chat_provider_id(event.unified_msg_origin)
         provider = self.context.get_provider_by_id(provider_id)
         if provider is None:
             raise RuntimeError(f"未找到用于服侍模式追答的 provider: {provider_id}")
-        return await provider.text_chat(
-            prompt=self.maid_mode_config.serving_prompt_template,
+        serving_prompt = self.maid_mode_config.serving_prompt_template.replace(
+            "{maid_last_reply_block}",
+            latest_assistant_text.strip(),
+        )
+        request_payload = {
+            "request_kind": "serving_follow_up",
+            "prompt": serving_prompt,
+            "system_prompt": req.system_prompt,
+            "contexts": req.contexts,
+            "image_urls": None,
+            "func_tool": [],
+            "session_id": req.session_id,
+            "model": req.model,
+            "extra_user_content_parts": req.extra_user_content_parts,
+        }
+        if self.maid_mode_config.log_raw_llm_io:
+            logger.debug(
+                "[大小姐模式] LLM请求原文:\n%s",
+                self._dump_json(request_payload),
+            )
+        resp = await provider.text_chat(
+            prompt=serving_prompt,
             image_urls=None,
             func_tool=ToolSet(),
-            contexts=contexts,
+            contexts=req.contexts,
             system_prompt=req.system_prompt,
             model=req.model,
         )
-
-    async def _build_serving_contexts(
-        self,
-        req: ProviderRequest,
-        latest_assistant_text: str,
-    ) -> list[dict]:
-        contexts: list[dict] = []
-        for msg in req.contexts or []:
-            if isinstance(msg, dict):
-                contexts.append(dict(msg))
-            elif hasattr(msg, "model_dump"):
-                contexts.append(msg.model_dump())
-        if req.prompt is not None:
-            assembled = await req.assemble_context()
-            if isinstance(assembled, dict):
-                contexts.append(assembled)
-            elif hasattr(assembled, "model_dump"):
-                contexts.append(assembled.model_dump())
-        if latest_assistant_text.strip():
-            contexts.append({"role": "assistant", "content": latest_assistant_text.strip()})
-        return contexts
+        if self.maid_mode_config.log_raw_llm_io:
+            logger.debug(
+                "[大小姐模式] LLM响应原文:\n%s",
+                self._dump_json(
+                    {
+                        "request_kind": "serving_follow_up",
+                        "completion_text": resp.completion_text,
+                        "tools_call_name": resp.tools_call_name,
+                        "tools_call_args": resp.tools_call_args,
+                        "tools_call_ids": resp.tools_call_ids,
+                        "tools_call_extra_content": resp.tools_call_extra_content,
+                        "reasoning_content": resp.reasoning_content,
+                    }
+                ),
+            )
+        return resp
 
     async def _run_self_serving_background_task(
         self,
@@ -321,7 +352,6 @@ class MaidAgent(Star):
     ) -> None:
         self._active_self_serving_tasks_by_umo[event.unified_msg_origin] = asyncio.current_task()
         try:
-            contexts = await self._build_serving_contexts(req, latest_assistant_text)
             budget = self.maid_mode_config.serving_max_turns
             while budget > 0:
                 if event.is_stopped() or bool(event.get_extra("agent_stop_requested")):
@@ -329,7 +359,7 @@ class MaidAgent(Star):
                 follow_up_resp = await self._request_serving_follow_up(
                     event=event,
                     req=req,
-                    contexts=contexts,
+                    latest_assistant_text=latest_assistant_text,
                 )
                 completion_text = follow_up_resp.completion_text or ""
                 sanitized = sanitize_user_visible_output(
@@ -347,11 +377,6 @@ class MaidAgent(Star):
                     await event.send(chain)
                     self._set_internal_send_kind(event, None)
                     latest_assistant_text = sanitized or completion_text
-
-                contexts.append(
-                    {"role": "user", "content": self.maid_mode_config.serving_prompt_template}
-                )
-                contexts.append({"role": "assistant", "content": sanitized or completion_text})
                 budget -= 1
                 if not sanitized.strip():
                     break
@@ -417,7 +442,7 @@ class MaidAgent(Star):
                         f"管家已完成执行，等待大小姐整理结果: {resolved_agent_name}",
                     )
             except Exception as exc:
-                logger.error(f"[大小姐模式] 子 agent 调度失败: {exc!s}", exc_info=True)
+                logger.error("[大小姐模式] 子 agent 调度失败: %s", exc, exc_info=True)
                 agent_result = f"执行过程中出现问题：{exc!s}"
                 resolved_agent_name = agent_name
                 dispatch_error = str(exc)
@@ -597,7 +622,7 @@ class MaidAgent(Star):
         """
         native_tools = validate_llm_response(resp)
         if native_tools:
-            logger.debug(f"[大小姐模式] 观测到主模型残留原生工具调用倾向: {native_tools}")
+            logger.debug("[大小姐模式] 观测到主模型残留原生工具调用倾向: %s", native_tools)
 
         if self.maid_mode_config.log_raw_llm_io:
             logger.debug(
@@ -661,15 +686,17 @@ class MaidAgent(Star):
         if cfg.allowed_agent_names and not self._contains_agent_name(
             cfg.allowed_agent_names, agent_name
         ):
-            logger.warning(f"[大小姐模式] XML 请求的目标 agent 不在白名单中: {agent_name}")
+            logger.warning("[大小姐模式] XML 请求的目标 agent 不在白名单中: %s", agent_name)
             agent_name = cfg.default_agent_name
 
         true_user_input = event.get_extra(TRUE_USER_INPUT_EXTRA_KEY, "") or ""
         image_urls_raw = getattr(getattr(event, "message_obj", None), "image_urls", None)
 
         logger.debug(
-            f"[大小姐模式] 检测到 <{cfg.call_tag_name}>，目标 agent={agent_name}，"
-            f"请求摘要: {maid_call.request_text[:100]}..."
+            "[大小姐模式] 检测到 <%s>，目标 agent=%s，请求摘要: %s...",
+            cfg.call_tag_name,
+            agent_name,
+            maid_call.request_text[:100],
         )
 
         req = event.get_extra("provider_request")
@@ -694,12 +721,7 @@ class MaidAgent(Star):
         if maid_visible_text != completion_text and maid_visible_text.strip():
             self._rewrite_response_text(resp, maid_visible_text)
         elif not maid_visible_text.strip():
-            resp.result_chain = None
-            resp.completion_text = ""
-            resp.tools_call_name = []
-            resp.tools_call_args = []
-            resp.tools_call_ids = []
-            resp.tools_call_extra_content = {}
+            self._clear_response(resp)
         event.set_extra(
             PENDING_MAID_FOLLOW_UP_EXTRA_KEY,
             {
@@ -728,12 +750,7 @@ class MaidAgent(Star):
             if steer_text.strip():
                 self._rewrite_response_text(resp, steer_text)
             else:
-                resp.result_chain = None
-                resp.completion_text = ""
-                resp.tools_call_name = []
-                resp.tools_call_args = []
-                resp.tools_call_ids = []
-                resp.tools_call_extra_content = {}
+                self._clear_response(resp)
             self._clear_pending_follow_up(event)
             return
 
@@ -755,21 +772,17 @@ class MaidAgent(Star):
             )
         )
         self._track_background_task(task)
-        resp.result_chain = None
-        resp.completion_text = ""
-        resp.tools_call_name = []
-        resp.tools_call_args = []
-        resp.tools_call_ids = []
-        resp.tools_call_extra_content = {}
+        self._clear_response(resp)
         return
 
     @filter.after_message_sent()
     async def continue_maid_follow_up_after_send(self, event: AstrMessageEvent) -> None:
         pending = event.get_extra(PENDING_MAID_FOLLOW_UP_EXTRA_KEY)
         try:
+            logger.debug("[大小姐模式] after_message_sent 进入后续处理")
             req = event.get_extra("provider_request")
             if not self._is_provider_request_like(req):
-                if isinstance(pending, dict) or await self._get_serving_enabled(event):
+                if isinstance(pending, dict):
                     logger.error(
                         "[大小姐模式] after_message_sent 阶段 provider_request 不存在或类型错误: type=%s missing=%s",
                         type(req).__name__ if req is not None else "NoneType",
@@ -818,20 +831,22 @@ class MaidAgent(Star):
                 )
             internal_send_kind = event.get_extra(INTERNAL_SEND_KIND_EXTRA_KEY)
             if internal_send_kind:
+                logger.debug(
+                    "[大小姐模式] 当前消息属于插件内部发送，跳过服侍模式自动连发: kind=%s",
+                    internal_send_kind,
+                )
                 return
             if not await self._get_serving_enabled(event):
+                logger.debug("[大小姐模式] 当前会话服侍模式未启用，跳过自动连发")
                 return
             if event.unified_msg_origin in self._active_self_serving_tasks_by_umo:
                 logger.debug("[大小姐模式] 当前会话已有服侍模式自动连发任务，跳过重复投递")
                 return
-
-            latest_assistant_text = ""
-            result = getattr(event, "result", None)
-            chain = getattr(result, "chain", None)
-            if chain is not None and hasattr(chain, "get_plain_text"):
-                latest_assistant_text = chain.get_plain_text() or ""
-            if not latest_assistant_text.strip():
-                return
+            latest_assistant_text = self._extract_latest_assistant_text(event)
+            logger.debug(
+                "[大小姐模式] 服侍模式捕获到上一句大小姐回复: %s",
+                latest_assistant_text[:80] if latest_assistant_text else "",
+            )
 
             task = asyncio.create_task(
                 self._run_self_serving_background_task(
@@ -872,4 +887,4 @@ class MaidAgent(Star):
         """
         raw_input = event.get_extra(RAW_INPUT_EXTRA_KEY)
         if raw_input:
-            logger.debug(f"[大小姐模式] 本轮对话原始输入: {raw_input[:100]}...")
+            logger.debug("[大小姐模式] 本轮对话原始输入: %s...", raw_input[:100])

@@ -987,6 +987,7 @@ class MaidAgent(Star):
         if not runners:
             self._batch_runners_by_batch_id.pop(batch_id, None)
 
+    @filter.on_llm_response()
     async def sanitize_llm_response(
         self,
         event: AstrMessageEvent,

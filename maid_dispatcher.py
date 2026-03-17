@@ -254,6 +254,7 @@ async def _build_runner(
     enforce_max_turns: int,
     tool_schema_mode: str,
     max_context_tokens: int,
+    session_id: str,
 ) -> ToolLoopAgentRunner:
     agent_context = AstrAgentContext(context=context, event=event)
     runner = ToolLoopAgentRunner()
@@ -265,7 +266,7 @@ async def _build_runner(
             msg.model_dump() if isinstance(msg, Message) else msg for msg in (contexts or [])
         ],
         system_prompt=system_prompt,
-        session_id=event.unified_msg_origin,
+        session_id=session_id,
     )
     original_max_context_tokens = provider.provider_config.get("max_context_tokens")
     if max_context_tokens > 0:
@@ -306,6 +307,7 @@ async def dispatch_to_maid_agent(
     maid_request: str,
     true_user_input: str | None,
     image_urls_raw: Any = None,
+    explicit_session_id: str | None = None,
     on_runner_registered=None,
     on_runner_unregistered=None,
     on_assistant_output_updated=None,
@@ -353,16 +355,29 @@ async def dispatch_to_maid_agent(
 
     session: MaidAgentSession | None = None
     if session_store.config.session_enabled:
-        session, reused = await session_store.get_or_create_active_session(
-            event.unified_msg_origin,
-            resolved_agent_name,
-        )
+        if explicit_session_id:
+            session, reused = await session_store.get_or_create_detached_session(
+                event.unified_msg_origin,
+                resolved_agent_name,
+                session_id=explicit_session_id,
+            )
+        else:
+            session, reused = await session_store.get_or_create_active_session(
+                event.unified_msg_origin,
+                resolved_agent_name,
+            )
         if reused:
             logger.info(
                 "[大小姐模式] 已续接现有管家 session: umo=%s session_id=%s",
                 event.unified_msg_origin,
                 session.session_id,
             )
+
+    request_session_id = (
+        explicit_session_id
+        or (session.session_id if session is not None else "")
+        or event.unified_msg_origin
+    )
 
     runner = await _build_runner(
         context=context,
@@ -382,8 +397,10 @@ async def dispatch_to_maid_agent(
         enforce_max_turns=enforce_max_turns,
         tool_schema_mode=tool_schema_mode,
         max_context_tokens=max_context_tokens,
+        session_id=request_session_id,
     )
     estimated_context_tokens = EstimateTokenCounter().count_tokens(runner.run_context.messages)
+
     logger.info(
         "[大小姐模式] 子 agent 上下文预算: agent=%s provider=%s model=%s estimated_context_tokens=%s max_context_tokens=%s strategy=%s compress_provider=%s",
         resolved_agent_name,
@@ -394,9 +411,11 @@ async def dispatch_to_maid_agent(
         provider_settings.get("context_limit_reached_strategy", "truncate_by_turns"),
         provider_settings.get("llm_compress_provider_id", "") or "<none>",
     )
+
     event_registered = False
     step_count = 0
     last_published_output = ""
+
     try:
         if on_runner_registered is not None:
             on_runner_registered(event.unified_msg_origin, runner)

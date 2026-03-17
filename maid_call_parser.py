@@ -35,21 +35,7 @@ class MaidCall:
     action: str = ""
 
 
-def parse_maid_call(
-    text: str,
-    call_tag_name: str = DEFAULT_CALL_MAID_TAG_NAME,
-) -> MaidCall | None:
-    if not text:
-        return None
-
-    match = None
-    for pattern in _get_call_patterns(call_tag_name):
-        match = pattern.search(text)
-        if match:
-            break
-    if not match:
-        return None
-
+def _parse_match(match: re.Match[str]) -> MaidCall | None:
     raw_block = match.group(0)
     body = (match.groupdict().get("body") or "").strip()
     attrs = match.group("attrs") or ""
@@ -89,3 +75,31 @@ def parse_maid_call(
         raw_block=raw_block,
         action=action,
     )
+
+
+def parse_maid_calls(
+    text: str,
+    call_tag_name: str = DEFAULT_CALL_MAID_TAG_NAME,
+) -> list[MaidCall]:
+    if not text:
+        return []
+
+    matches: list[re.Match[str]] = []
+    for pattern in _get_call_patterns(call_tag_name):
+        matches.extend(pattern.finditer(text))
+    matches.sort(key=lambda item: item.start())
+
+    result: list[MaidCall] = []
+    for match in matches:
+        parsed = _parse_match(match)
+        if parsed is not None:
+            result.append(parsed)
+    return result
+
+
+def parse_maid_call(
+    text: str,
+    call_tag_name: str = DEFAULT_CALL_MAID_TAG_NAME,
+) -> MaidCall | None:
+    calls = parse_maid_calls(text, call_tag_name)
+    return calls[0] if calls else None

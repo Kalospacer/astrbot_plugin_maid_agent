@@ -65,6 +65,8 @@ class MaidAgent(Star):
         self.batch_registry = MaidBatchRegistry()
         self._active_asyncio_tasks: set[asyncio.Task] = set()
         self._background_runners_by_umo: dict[str, object] = {}
+        self._background_runner_events_by_runner_id: dict[int, AstrMessageEvent] = {}
+        self._batch_runners_by_batch_id: dict[str, dict[int, object]] = {}
         self._active_self_serving_tasks_by_umo: dict[str, asyncio.Task] = {}
 
     async def initialize(self) -> None:
@@ -455,6 +457,7 @@ class MaidAgent(Star):
         req: ProviderRequest,
         pending: dict,
     ) -> None:
+        """执行单任务后台追答，并在停止/失败时主动收尾 active session。"""
         cfg = self.maid_mode_config
         task_id = str(pending.get("task_id") or "")
         agent_name = pending.get("agent_name") or cfg.default_agent_name
@@ -466,6 +469,7 @@ class MaidAgent(Star):
         reasoning_content = str(pending.get("reasoning_content", "") or "")
         reasoning_signature = pending.get("reasoning_signature")
         dispatch_error: str | None = None
+        final_status = "done"
 
         try:
             if task_id:
@@ -545,17 +549,25 @@ class MaidAgent(Star):
                 await event.send(chain)
                 self._set_internal_send_kind(event, None)
 
-            if (session_done_requested or follow_up_done_requested) and self.session_store:
+            final_status = (
+                "error"
+                if dispatch_error
+                else ("stopped" if event.get_extra("agent_stop_requested") else "done")
+            )
+            if self.session_store and (
+                session_done_requested
+                or follow_up_done_requested
+                or final_status in {"stopped", "error"}
+            ):
                 await self.session_store.close_active_session(
                     event.unified_msg_origin,
-                    status="done",
+                    status=(
+                        "done"
+                        if session_done_requested or follow_up_done_requested
+                        else final_status
+                    ),
                 )
             if task_id:
-                final_status = (
-                    "error"
-                    if dispatch_error
-                    else ("stopped" if event.get_extra("agent_stop_requested") else "done")
-                )
                 await self.background_tasks.finish(
                     task_id,
                     status=final_status,
@@ -563,10 +575,16 @@ class MaidAgent(Star):
                     error=dispatch_error or "",
                 )
         except Exception as exc:
+            final_status = "error"
+            if self.session_store:
+                await self.session_store.close_active_session(
+                    event.unified_msg_origin,
+                    status=final_status,
+                )
             if task_id:
                 await self.background_tasks.finish(
                     task_id,
-                    status="error",
+                    status=final_status,
                     error=str(exc),
                 )
             logger.error("[大小姐模式] 后台追答任务失败: %s", exc, exc_info=True)
@@ -586,6 +604,7 @@ class MaidAgent(Star):
         true_user_input: str | None,
         image_urls_raw: object,
     ) -> None:
+        """执行 batch 子任务；批量停止依赖 batch_registry 与 runner.request_stop。"""
         dispatch_error: str | None = None
         resolved_agent_name = agent_name
         result_text = ""
@@ -621,6 +640,12 @@ class MaidAgent(Star):
                 true_user_input=true_user_input,
                 image_urls_raw=image_urls_raw,
                 explicit_session_id=session_id,
+                on_runner_registered=(
+                    lambda _umo, runner: self._register_batch_runner(batch_id, runner)
+                ),
+                on_runner_unregistered=(
+                    lambda _umo, runner: self._unregister_batch_runner(batch_id, runner)
+                ),
                 on_assistant_output_updated=(
                     lambda output: self.batch_registry.update_item_assistant_output(
                         batch_id,
@@ -774,6 +799,8 @@ class MaidAgent(Star):
             )
             logger.error("[大小姐模式] 批量后台追答任务失败: %s", exc, exc_info=True)
         finally:
+            await self.batch_registry.discard_batch(batch_id)
+            self._batch_runners_by_batch_id.pop(batch_id, None)
             self._set_internal_send_kind(event, None)
 
     async def _build_background_status_text(self, event: AstrMessageEvent) -> str:
@@ -838,16 +865,24 @@ class MaidAgent(Star):
 
         if current.kind == "batch":
             await self.batch_registry.request_stop(current.task_id)
-            stopped = active_event_registry.request_agent_stop_all(
-                event.unified_msg_origin,
-                exclude=event,
+            batch_runners = list(
+                (self._batch_runners_by_batch_id.get(current.task_id) or {}).values()
             )
+            for runner in batch_runners:
+                try:
+                    runner.request_stop()
+                except Exception as exc:
+                    logger.warning(
+                        "[大小姐模式] 批量 runner 停止请求失败: batch_id=%s error=%s",
+                        current.task_id,
+                        exc,
+                    )
             await self.background_tasks.update_progress(
                 current.task_id,
                 "已收到批量任务停止请求，等待当前步骤结束后中断。",
             )
             lines = [f"已请求停止当前会话的批量管家任务。batch_id={current.task_id}"]
-            lines.append(f"命中的活跃事件数: {stopped}")
+            lines.append(f"命中的批量执行器数: {len(batch_runners)}")
             lines.append("批量任务中的所有仍在运行的子任务都会在当前步骤结束后尝试停止。")
             return "\n".join(lines)
 
@@ -898,7 +933,7 @@ class MaidAgent(Star):
         if runner is None:
             return "当前没有可引导的活跃管家执行器，请稍后再试。"
 
-        runner_event = getattr(getattr(runner.run_context, "context", None), "event", None)
+        runner_event = self._background_runner_events_by_runner_id.get(id(runner))
         active_sender_id = runner_event.get_sender_id() if runner_event is not None else None
         sender_id = event.get_sender_id()
         if sender_id != active_sender_id:
@@ -918,10 +953,27 @@ class MaidAgent(Star):
 
     def _register_background_runner(self, umo: str, runner: object) -> None:
         self._background_runners_by_umo[umo] = runner
+        runner_context = getattr(runner, "run_context", None)
+        wrapped_context = getattr(runner_context, "context", None)
+        runner_event = getattr(wrapped_context, "event", None)
+        if runner_event is not None:
+            self._background_runner_events_by_runner_id[id(runner)] = runner_event
 
     def _unregister_background_runner(self, umo: str, runner: object) -> None:
+        self._background_runner_events_by_runner_id.pop(id(runner), None)
         if self._background_runners_by_umo.get(umo) is runner:
             self._background_runners_by_umo.pop(umo, None)
+
+    def _register_batch_runner(self, batch_id: str, runner: object) -> None:
+        self._batch_runners_by_batch_id.setdefault(batch_id, {})[id(runner)] = runner
+
+    def _unregister_batch_runner(self, batch_id: str, runner: object) -> None:
+        runners = self._batch_runners_by_batch_id.get(batch_id)
+        if runners is None:
+            return
+        runners.pop(id(runner), None)
+        if not runners:
+            self._batch_runners_by_batch_id.pop(batch_id, None)
 
     @filter.on_llm_response()
     async def sanitize_llm_response(

@@ -19,6 +19,7 @@ class MaidBackgroundTaskInfo:
     sender_id: str
     agent_name: str
     maid_request: str
+    kind: str
     status: str
     created_at: str
     updated_at: str
@@ -35,14 +36,17 @@ class MaidBackgroundTaskInfo:
         sender_id: str,
         agent_name: str,
         maid_request: str,
+        kind: str = "single",
+        task_id: str | None = None,
     ) -> MaidBackgroundTaskInfo:
         now = _utcnow().isoformat()
         return cls(
-            task_id=uuid.uuid4().hex,
+            task_id=(task_id or uuid.uuid4().hex),
             unified_msg_origin=unified_msg_origin,
             sender_id=sender_id,
             agent_name=agent_name,
             maid_request=maid_request,
+            kind=kind,
             status="queued",
             created_at=now,
             updated_at=now,
@@ -65,6 +69,8 @@ class MaidBackgroundTaskRegistry:
         sender_id: str,
         agent_name: str,
         maid_request: str,
+        kind: str = "single",
+        task_id: str | None = None,
     ) -> MaidBackgroundTaskInfo:
         async with self._lock:
             info = MaidBackgroundTaskInfo.create(
@@ -72,6 +78,8 @@ class MaidBackgroundTaskRegistry:
                 sender_id=sender_id,
                 agent_name=agent_name,
                 maid_request=maid_request,
+                kind=kind,
+                task_id=task_id,
             )
             self._tasks[info.task_id] = info
             self._active_by_umo[unified_msg_origin] = info.task_id

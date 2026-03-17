@@ -319,15 +319,36 @@ class MaidSessionStore:
         session_id: str | None = None,
     ) -> tuple[MaidAgentSession, bool]:
         async with self._hold_umo_lock(unified_msg_origin):
+            existing_session: MaidAgentSession | None = None
             if session_id:
-                session = await self.load_session(session_id)
-                if session is not None and session.status == "active":
-                    if not session.is_expired(self.config.session_timeout_minutes):
-                        if session.agent_name.strip().casefold() == agent_name.strip().casefold():
-                            return session, True
-                    else:
-                        session.status = "expired"
-                        await self.save_session(session)
+                existing_session = await self.load_session(session_id)
+                if existing_session is not None:
+                    if existing_session.status == "active":
+                        if not existing_session.is_expired(self.config.session_timeout_minutes):
+                            if (
+                                existing_session.agent_name.strip().casefold()
+                                == agent_name.strip().casefold()
+                            ):
+                                return existing_session, True
+                            existing_session.status = "expired"
+                            await self.save_session(existing_session)
+                            logger.info(
+                                "[大小姐模式] 检测到跨 agent 独立 session 复用，已关闭旧 session: umo=%s old_session_id=%s old_agent=%s new_agent=%s",
+                                unified_msg_origin,
+                                existing_session.session_id,
+                                existing_session.agent_name,
+                                agent_name,
+                            )
+                        else:
+                            existing_session.status = "expired"
+                            await self.save_session(existing_session)
+                            logger.info(
+                                "[大小姐模式] 独立管家 session 已过期，已关闭旧 session: umo=%s old_session_id=%s agent=%s",
+                                unified_msg_origin,
+                                existing_session.session_id,
+                                existing_session.agent_name,
+                            )
+                    session_id = None
 
             session = MaidAgentSession.create(
                 unified_msg_origin,

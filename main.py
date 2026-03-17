@@ -67,6 +67,7 @@ class MaidAgent(Star):
         self._background_runners_by_umo: dict[str, object] = {}
         self._background_runner_events_by_runner_id: dict[int, AstrMessageEvent] = {}
         self._batch_runners_by_batch_id: dict[str, dict[int, object]] = {}
+        self._stop_requested_batch_ids: set[str] = set()
         self._active_self_serving_tasks_by_umo: dict[str, asyncio.Task] = {}
 
     async def initialize(self) -> None:
@@ -801,6 +802,7 @@ class MaidAgent(Star):
         finally:
             await self.batch_registry.discard_batch(batch_id)
             self._batch_runners_by_batch_id.pop(batch_id, None)
+            self._stop_requested_batch_ids.discard(batch_id)
             self._set_internal_send_kind(event, None)
 
     async def _build_background_status_text(self, event: AstrMessageEvent) -> str:
@@ -865,6 +867,7 @@ class MaidAgent(Star):
 
         if current.kind == "batch":
             await self.batch_registry.request_stop(current.task_id)
+            self._stop_requested_batch_ids.add(current.task_id)
             batch_runners = list(
                 (self._batch_runners_by_batch_id.get(current.task_id) or {}).values()
             )
@@ -966,6 +969,15 @@ class MaidAgent(Star):
 
     def _register_batch_runner(self, batch_id: str, runner: object) -> None:
         self._batch_runners_by_batch_id.setdefault(batch_id, {})[id(runner)] = runner
+        if batch_id in self._stop_requested_batch_ids:
+            try:
+                runner.request_stop()
+            except Exception as exc:
+                logger.warning(
+                    "[大小姐模式] 延迟注册的批量 runner 停止请求失败: batch_id=%s error=%s",
+                    batch_id,
+                    exc,
+                )
 
     def _unregister_batch_runner(self, batch_id: str, runner: object) -> None:
         runners = self._batch_runners_by_batch_id.get(batch_id)
@@ -975,7 +987,6 @@ class MaidAgent(Star):
         if not runners:
             self._batch_runners_by_batch_id.pop(batch_id, None)
 
-    @filter.on_llm_response()
     async def sanitize_llm_response(
         self,
         event: AstrMessageEvent,

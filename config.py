@@ -40,6 +40,7 @@ class MaidModeConfig:
     default_agent_name: str = DEFAULT_MAID_AGENT_NAME
     allowed_agent_names: list[str] | None = None
     call_tag_name: str = DEFAULT_CALL_MAID_TAG_NAME
+    hide_native_tools: bool = True
     include_raw_user_input: bool = True
     session_enabled: bool = True
     log_raw_llm_io: bool = False
@@ -103,6 +104,7 @@ def load_maid_mode_config(config: Mapping[str, Any] | None = None) -> MaidModeCo
         cfg.get("call_tag_name", DEFAULT_CALL_MAID_TAG_NAME),
         DEFAULT_CALL_MAID_TAG_NAME,
     )
+    hide_native_tools = _parse_bool(cfg.get("hide_native_tools", True), True)
     include_raw_user_input = _parse_bool(cfg.get("include_raw_user_input", True), True)
     session_enabled = _parse_bool(cfg.get("session_enabled", True), True)
     log_raw_llm_io = _parse_bool(cfg.get("log_raw_llm_io", False), False)
@@ -142,6 +144,7 @@ def load_maid_mode_config(config: Mapping[str, Any] | None = None) -> MaidModeCo
         default_agent_name=default_agent_name,
         allowed_agent_names=allowed_agent_names,
         call_tag_name=call_tag_name,
+        hide_native_tools=hide_native_tools,
         include_raw_user_input=include_raw_user_input,
         session_enabled=session_enabled,
         log_raw_llm_io=log_raw_llm_io,

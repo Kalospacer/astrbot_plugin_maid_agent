@@ -136,6 +136,7 @@ default_agent_name: \"muiceagent\"
 allowed_agent_names:
   - \"muiceagent\"
 call_tag_name: \"call_maid\"
+hide_native_tools: true
 include_raw_user_input: true
 session_enabled: true
 serving_mode_enabled: false
@@ -151,6 +152,7 @@ session_timeout_minutes: 20
 | \`default_agent_name\` | 默认被调度的 SubAgent 名称。 |
 | \`allowed_agent_names\` | 允许的大小姐 XML 显式指定的 Agent 白名单列表。 |
 | \`call_tag_name\` | 调度管家时主模型输出的 XML 标签名。 |
+| \`hide_native_tools\` | 是否隐藏大小姐可见的 AstrBot 原生工具。关闭后，大小姐仍保留原生工具，同时也能继续使用管家协议。 |
 | \`include_raw_user_input\` | 是否把真实的用户原话一并透传给管家。 |
 | \`session_enabled\` | 是否启用管家的 Session 上下文持久化/状态留存机制。 |
 | \`serving_mode_enabled\` | 服侍模式的全局总开关。开启后，会话仍需通过 \`/maid_serve\` 手动启用。 |

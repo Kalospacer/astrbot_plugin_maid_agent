@@ -178,7 +178,7 @@ class MaidAgent(Star):
 
         1. 保存原始对话输入到 event.extra
         2. 清洗 contexts - 过滤 tool role 和 tool_calls
-        3. 禁用主模型原生工具
+        3. 按配置决定是否隐藏主模型原生工具
         4. 注入大小姐 XML 协议说明
         """
         raw_input = req.prompt or event.message_str or ""
@@ -198,8 +198,11 @@ class MaidAgent(Star):
                 removed_count,
             )
 
-        req.func_tool = ToolSet()
-        logger.debug("[大小姐模式] 已注入空工具集，禁用主模型原生工具暴露")
+        if self.maid_mode_config.hide_native_tools:
+            req.func_tool = ToolSet()
+            logger.debug("[大小姐模式] 已注入空工具集，隐藏主模型原生工具暴露")
+        else:
+            logger.debug("[大小姐模式] 保留主模型原生工具暴露")
 
         if inject_maid_system_prompt(
             req,

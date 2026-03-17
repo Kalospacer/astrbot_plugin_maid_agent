@@ -19,6 +19,12 @@
     "type": "string",
     "default": "call_maid"
   },
+  "hide_native_tools": {
+    "description": "隐藏主模型原生工具",
+    "hint": "开启后，大小姐看不到 AstrBot 原生工具，只能通过管家协议间接调度。关闭后，大小姐仍保留 AstrBot 原生工具，同时也能继续使用管家系统。",
+    "type": "bool",
+    "default": true
+  },
   "include_raw_user_input": {
     "description": "附带用户原话",
     "hint": "开启后，转交给管家 subagent 时会同时附带用户原话与大小姐的自然语言要求。",

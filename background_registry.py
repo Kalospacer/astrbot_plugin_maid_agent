@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 
 UTC = timezone.utc
+TERMINAL_TASK_STATUSES = {"done", "error", "stopped"}
 
 
 def _utcnow() -> datetime:
@@ -57,6 +58,8 @@ class MaidBackgroundTaskInfo:
 
 
 class MaidBackgroundTaskRegistry:
+    """仅保留活跃任务与正在收尾的任务，避免历史任务无限堆积。"""
+
     def __init__(self) -> None:
         self._lock = asyncio.Lock()
         self._tasks: dict[str, MaidBackgroundTaskInfo] = {}
@@ -134,6 +137,8 @@ class MaidBackgroundTaskRegistry:
             info.touch()
             if self._active_by_umo.get(info.unified_msg_origin) == task_id:
                 self._active_by_umo.pop(info.unified_msg_origin, None)
+            if status in TERMINAL_TASK_STATUSES:
+                self._tasks.pop(task_id, None)
             return info
 
     async def get_active_by_umo(self, unified_msg_origin: str) -> MaidBackgroundTaskInfo | None:

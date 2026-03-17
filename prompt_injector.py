@@ -6,13 +6,12 @@
 
 from __future__ import annotations
 
-import logging
 from typing import TYPE_CHECKING
+
+from astrbot.api import logger
 
 if TYPE_CHECKING:
     from astrbot.api.provider import ProviderRequest
-
-logger = logging.getLogger(__name__)
 
 
 def build_maid_system_prompt_append(

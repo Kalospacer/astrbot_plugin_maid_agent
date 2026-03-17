@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
 UTC = timezone.utc
+TERMINAL_BATCH_ITEM_STATUSES = {"done", "error", "stopped"}
 
 
 def _utcnow() -> datetime:
@@ -46,6 +47,8 @@ class MaidBatchInfo:
 
 
 class MaidBatchRegistry:
+    """仅在批量任务活跃期间保留明细，完成后由协调器统一清理。"""
+
     def __init__(self) -> None:
         self._lock = asyncio.Lock()
         self._batches: dict[str, MaidBatchInfo] = {}
@@ -73,7 +76,7 @@ class MaidBatchRegistry:
             batch.status = "running"
             return
         if batch.stop_requested and all(
-            status in {"done", "error", "stopped"} for status in statuses
+            status in TERMINAL_BATCH_ITEM_STATUSES for status in statuses
         ):
             batch.status = "stopped"
             return
@@ -215,9 +218,18 @@ class MaidBatchRegistry:
                     batch.touch()
                     self._refresh_batch_status(batch)
                     if (
-                        all(entry.status in {"done", "error", "stopped"} for entry in batch.items)
+                        all(entry.status in TERMINAL_BATCH_ITEM_STATUSES for entry in batch.items)
                         and self._active_by_umo.get(batch.unified_msg_origin) == batch_id
                     ):
                         self._active_by_umo.pop(batch.unified_msg_origin, None)
                     return item
             return None
+
+    async def discard_batch(self, batch_id: str) -> MaidBatchInfo | None:
+        async with self._lock:
+            batch = self._batches.pop(batch_id, None)
+            if batch is None:
+                return None
+            if self._active_by_umo.get(batch.unified_msg_origin) == batch_id:
+                self._active_by_umo.pop(batch.unified_msg_origin, None)
+            return batch

@@ -9,15 +9,19 @@
     "description": "允许调度的 Agent 白名单",
     "hint": "仅允许 XML 调度这些 subagent 名称。为空时仍会自动包含默认 agent。",
     "type": "list",
-    "default": [
-      "butler"
-    ]
+    "default": ["butler"]
   },
   "call_tag_name": {
     "description": "XML 调度标签名",
     "hint": "主模型输出的 XML 标签名，例如 call_maid。修改后需与提示词和解析逻辑保持一致。",
     "type": "string",
     "default": "call_maid"
+  },
+  "hide_native_tools": {
+    "description": "隐藏主模型原生工具",
+    "hint": "开启后，大小姐看不到 AstrBot 原生工具，只能通过管家协议间接调度。关闭后，大小姐仍保留 AstrBot 原生工具，同时也能继续使用管家系统。",
+    "type": "bool",
+    "default": true
   },
   "include_raw_user_input": {
     "description": "附带用户原话",
@@ -63,9 +67,9 @@
   },
   "main_system_prompt_template": {
     "description": "主模型协议提示模板",
-    "hint": "追加到主模型 system prompt 的模板。可用占位符：{call_tag_name}、{default_agent_name}。",
+    "hint": "追加到主模型 system prompt 的模板。可用占位符：{call_tag_name}、{default_agent_name}；默认模板会说明单任务、同轮多标签 batch、stop、steer、done 的用法。",
     "type": "string",
-    "default": "- 需要管家协助时，回复末尾附加：<{call_tag_name} agent=\"{default_agent_name}\">任务要求</{call_tag_name}>\n- 不需要管家则不附加此标签\n- 停止管家任务：<{call_tag_name} action=\"stop\" />\n- 补充或修正当前管家任务：<{call_tag_name} action=\"steer\">补充要求</{call_tag_name}>\n- 管家任务结束时附加：<{call_tag_name} action=\"done\" />，未结束不附加"
+    "default": "- 需要单个管家协助时，回复末尾附加：<{call_tag_name} agent=\"{default_agent_name}\">任务要求</{call_tag_name}>\n- 需要多个管家并发处理时，可在同一轮回复末尾连续附加多个 <{call_tag_name} agent=\"agent名\">任务要求</{call_tag_name}>，系统会将它们视为同一个 batch 并发执行\n- 不需要管家则不附加这些标签\n- 停止管家任务：<{call_tag_name} action=\"stop\" />\n- 补充或修正当前单个管家任务：<{call_tag_name} action=\"steer\">补充要求</{call_tag_name}>；批量任务暂不支持 steer\n- 管家任务结束时附加：<{call_tag_name} action=\"done\" />，未结束不附加"
   },
   "dispatch_prompt_template": {
     "description": "管家调度提示模板",

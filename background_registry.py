@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 
 UTC = timezone.utc
-TERMINAL_TASK_STATUSES = {"done", "error", "stopped"}
+TERMINAL_TASK_STATUSES = {"done", "error", "stopped", "partial_done"}
 
 
 def _utcnow() -> datetime:

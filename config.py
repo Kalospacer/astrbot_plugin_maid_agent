@@ -17,11 +17,12 @@ DEFAULT_SERVING_PROMPT_TEMPLATE = (
     "<maid_think>{maid_last_reply_block}根据我之前的回复，我应该继续说话</maid_think>"
 )
 DEFAULT_MAIN_SYSTEM_PROMPT_TEMPLATE = (
-    "- 需要管家协助时，回复末尾附加："
+    "- 需要单个管家协助时，回复末尾附加："
     '<{call_tag_name} agent="{default_agent_name}">任务要求</{call_tag_name}>'
-    "\n- 不需要管家则不附加此标签"
+    "\n- 需要多个管家并发处理时，可在同一轮回复末尾连续附加多个 <{call_tag_name} agent=\"agent名\">任务要求</{call_tag_name}>，系统会将它们视为同一个 batch 并发执行"
+    "\n- 不需要管家则不附加这些标签"
     '\n- 停止管家任务：<{call_tag_name} action="stop" />'
-    '\n- 补充或修正当前管家任务：<{call_tag_name} action="steer">补充要求</{call_tag_name}>'
+    '\n- 补充或修正当前单个管家任务：<{call_tag_name} action="steer">补充要求</{call_tag_name}>；批量任务暂不支持 steer'
     '\n- 管家任务结束时附加：<{call_tag_name} action="done" />，未结束不附加'
 )
 DEFAULT_DISPATCH_PROMPT_TEMPLATE = (
@@ -40,6 +41,7 @@ class MaidModeConfig:
     default_agent_name: str = DEFAULT_MAID_AGENT_NAME
     allowed_agent_names: list[str] | None = None
     call_tag_name: str = DEFAULT_CALL_MAID_TAG_NAME
+    hide_native_tools: bool = True
     include_raw_user_input: bool = True
     session_enabled: bool = True
     log_raw_llm_io: bool = False
@@ -103,6 +105,7 @@ def load_maid_mode_config(config: Mapping[str, Any] | None = None) -> MaidModeCo
         cfg.get("call_tag_name", DEFAULT_CALL_MAID_TAG_NAME),
         DEFAULT_CALL_MAID_TAG_NAME,
     )
+    hide_native_tools = _parse_bool(cfg.get("hide_native_tools", True), True)
     include_raw_user_input = _parse_bool(cfg.get("include_raw_user_input", True), True)
     session_enabled = _parse_bool(cfg.get("session_enabled", True), True)
     log_raw_llm_io = _parse_bool(cfg.get("log_raw_llm_io", False), False)
@@ -142,6 +145,7 @@ def load_maid_mode_config(config: Mapping[str, Any] | None = None) -> MaidModeCo
         default_agent_name=default_agent_name,
         allowed_agent_names=allowed_agent_names,
         call_tag_name=call_tag_name,
+        hide_native_tools=hide_native_tools,
         include_raw_user_input=include_raw_user_input,
         session_enabled=session_enabled,
         log_raw_llm_io=log_raw_llm_io,

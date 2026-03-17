@@ -1,6 +1,18 @@
 # Changelog
 
+## 1.0.1 - 2026-03-17
+
+- 新增 `hide_native_tools` 配置开关，可按需保留或隐藏大小姐可见的 AstrBot 原生工具。
+- 支持单轮回复中解析多个 `<call_maid ...>` 标签，并以 batch 方式并发调度多个管家子任务。
+- 为 batch 子任务补齐独立 session、统一汇总回灌、批量 `/maid status`、整批 `/maid stop` 与 batch steering 拒绝语义。
+- 修复 `prompt_injector.py` 日志导入，统一改为 `from astrbot.api import logger`。
+- 修复单任务在 `stopped / error` 终态下的 session 收尾，避免脏上下文污染下次复用。
+- 为 `background_registry` 与 `batch_registry` 增加完成态清理，避免后台任务与 batch 记录长期堆积。
+- 调整 batch 停止链路，改为按 batch runner 显式 `request_stop()`，避免共享 event 注册表导致的停止遗漏。
+- 重新通过 `ruff format`、`ruff check --fix`、`py_compile`、`compileall` 与 IDE 诊断验证。
+
 ## 1.0.0 - 2026-03-15
+
 - 初始化 `代理女仆` 插件，提供“大小姐 + 管家”双代理模式。
 - 主模型默认禁用原生工具，仅通过 XML 协议块调用后台管家 subagent。
 - 新增基于 `<call_maid ...>` 的协议解析与用户可见输出清洗。

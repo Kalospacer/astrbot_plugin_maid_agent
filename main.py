@@ -34,12 +34,12 @@ from .batch_registry import MaidBatchRegistry
 from .config import load_maid_mode_config
 from .constants import (
     CALL_MAID_TOOL_NAME,
-    PENDING_MAID_FOLLOW_UP_EXTRA_KEY,
     PENDING_MAID_DISPATCHES_EXTRA_KEY,
+    PENDING_MAID_FOLLOW_UP_EXTRA_KEY,
+    PENDING_MAID_TOOL_HISTORY_EXTRA_KEY,
     RAW_INPUT_EXTRA_KEY,
     TRUE_USER_INPUT_EXTRA_KEY,
 )
-from .context_sanitizer import sanitize_contexts
 from .maid_dispatcher import dispatch_to_maid_agent
 from .session_store import MaidSessionStore
 
@@ -221,11 +221,7 @@ class MaidAgent(Star):
         maid_request: str,
     ) -> int:
         pending = event.get_extra(PENDING_MAID_DISPATCHES_EXTRA_KEY)
-        items: list[dict[str, str]]
-        if isinstance(pending, list):
-            items = list(pending)
-        else:
-            items = []
+        items: list[dict[str, str]] = list(pending) if isinstance(pending, list) else []
         items.append(
             {
                 "agent_name": agent_name,
@@ -249,6 +245,57 @@ class MaidAgent(Star):
             for item in pending
             if isinstance(item, dict) and str(item.get("maid_request") or "").strip()
         ]
+
+    @staticmethod
+    def _queue_call_maid_tool_history(
+        event: AstrMessageEvent,
+        *,
+        action: str,
+        request_text: str,
+        agent_name: str,
+        tool_result: str,
+    ) -> None:
+        pending = event.get_extra(PENDING_MAID_TOOL_HISTORY_EXTRA_KEY)
+        items = list(pending) if isinstance(pending, list) else []
+        items.append(
+            {
+                "action": action,
+                "request_text": request_text,
+                "agent_name": agent_name,
+                "tool_result": tool_result,
+            }
+        )
+        event.set_extra(PENDING_MAID_TOOL_HISTORY_EXTRA_KEY, items)
+
+    @staticmethod
+    def _consume_call_maid_tool_history(event: AstrMessageEvent) -> list[dict[str, str]]:
+        pending = event.get_extra(PENDING_MAID_TOOL_HISTORY_EXTRA_KEY)
+        event.set_extra(PENDING_MAID_TOOL_HISTORY_EXTRA_KEY, None)
+        if not isinstance(pending, list):
+            return []
+        return [
+            {
+                "action": str(item.get("action") or ""),
+                "request_text": str(item.get("request_text") or ""),
+                "agent_name": str(item.get("agent_name") or ""),
+                "tool_result": str(item.get("tool_result") or ""),
+            }
+            for item in pending
+            if isinstance(item, dict)
+        ]
+
+    @staticmethod
+    def _history_message_plain_text(message: dict) -> str:
+        content = message.get("content")
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            return "\n".join(
+                str(part.get("text") or "").strip()
+                for part in content
+                if isinstance(part, dict) and part.get("type") == "text"
+            ).strip()
+        return ""
 
     async def _persist_assistant_reply(
         self,
@@ -283,6 +330,98 @@ class MaidAgent(Star):
             if not isinstance(latest_history, list):
                 latest_history = []
             latest_history.append({"role": "assistant", "content": reply_text})
+            await self.context.conversation_manager.update_conversation(
+                event.unified_msg_origin,
+                req.conversation.cid,
+                history=latest_history,
+            )
+
+    async def _persist_call_maid_tool_history(
+        self,
+        event: AstrMessageEvent,
+        req: ProviderRequest,
+        records: list[dict[str, str]],
+    ) -> None:
+        if not req or not getattr(req, "conversation", None) or not records:
+            return
+
+        try:
+            history = json.loads(req.conversation.history or "[]")
+        except Exception as exc:
+            logger.warning("[大小姐模式] 读取主对话历史失败，无法写入 call_maid 工具记录: %s", exc)
+            return
+
+        lock = self._conversation_history_locks.setdefault(
+            event.unified_msg_origin,
+            asyncio.Lock(),
+        )
+        async with lock:
+            try:
+                curr_conv = await self.context.conversation_manager.get_conversation(
+                    event.unified_msg_origin,
+                    req.conversation.cid,
+                )
+                latest_history = json.loads(curr_conv.history or "[]") if curr_conv else history
+            except Exception as exc:
+                logger.warning(
+                    "[大小姐模式] 读取最新主对话历史失败，使用当前快照回写 call_maid 工具记录: %s",
+                    exc,
+                )
+                latest_history = history
+
+            if not isinstance(latest_history, list):
+                latest_history = []
+
+            insertion_index = len(latest_history)
+            latest_assistant_text = self._extract_latest_assistant_text(event)
+            if latest_history and latest_assistant_text:
+                last_message = latest_history[-1]
+                if (
+                    isinstance(last_message, dict)
+                    and last_message.get("role") == "assistant"
+                    and self._history_message_plain_text(last_message).strip()
+                    == latest_assistant_text
+                ):
+                    insertion_index -= 1
+
+            tool_history_messages: list[dict] = []
+            for record in records:
+                action = str(record.get("action") or "").strip()
+                request_text = str(record.get("request_text") or "")
+                agent_name = str(record.get("agent_name") or "")
+                tool_result = str(record.get("tool_result") or "")
+                tool_call_id = f"maid_hist_{uuid.uuid4().hex}"
+
+                arguments = {"action": action}
+                if request_text.strip():
+                    arguments["request_text"] = request_text
+                if agent_name.strip():
+                    arguments["agent_name"] = agent_name
+
+                tool_history_messages.append(
+                    {
+                        "role": "assistant",
+                        "tool_calls": [
+                            {
+                                "type": "function",
+                                "id": tool_call_id,
+                                "function": {
+                                    "name": CALL_MAID_TOOL_NAME,
+                                    "arguments": json.dumps(arguments, ensure_ascii=False),
+                                },
+                            }
+                        ],
+                    }
+                )
+                tool_history_messages.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": tool_call_id,
+                        "content": tool_result,
+                    }
+                )
+
+            latest_history[insertion_index:insertion_index] = tool_history_messages
             await self.context.conversation_manager.update_conversation(
                 event.unified_msg_origin,
                 req.conversation.cid,
@@ -366,8 +505,7 @@ class MaidAgent(Star):
         清洗主模型请求，实现大小姐模式。
 
         1. 保存原始对话输入到 event.extra
-        2. 清洗 contexts - 过滤 tool role 和 tool_calls
-        3. 按配置重建主模型可见工具
+        2. 按配置重建主模型可见工具
         """
         raw_input = req.prompt or event.message_str or ""
         if raw_input:
@@ -378,13 +516,6 @@ class MaidAgent(Star):
         if true_user_input:
             event.set_extra(TRUE_USER_INPUT_EXTRA_KEY, true_user_input)
             logger.debug("[大小姐模式] 已保存真实用户文本: %s...", true_user_input[:100])
-
-        removed_count = sanitize_contexts(req)
-        if removed_count > 0:
-            logger.debug(
-                "[大小姐模式] 已清洗 contexts，移除 %s 条非自然语言消息",
-                removed_count,
-            )
 
         req.func_tool = self._build_main_model_toolset(req)
         logger.debug(
@@ -432,12 +563,29 @@ class MaidAgent(Star):
             agent_name(string): dispatch 时可选。目标管家名称；留空时使用默认管家。
         """
         normalized_action = (action or "").strip().casefold()
+        result_text: str
         if normalized_action not in {"dispatch", "steer", "stop", "done"}:
-            return "call_maid 的 action 非法，仅支持 dispatch、steer、stop、done。"
+            result_text = "call_maid 的 action 非法，仅支持 dispatch、steer、stop、done。"
+            self._queue_call_maid_tool_history(
+                event,
+                action=normalized_action or str(action or ""),
+                request_text=request_text,
+                agent_name=agent_name,
+                tool_result=result_text,
+            )
+            return result_text
 
         if normalized_action == "stop":
             event.set_extra(PENDING_MAID_DISPATCHES_EXTRA_KEY, None)
-            return await self._request_stop_background_tasks(event)
+            result_text = await self._request_stop_background_tasks(event)
+            self._queue_call_maid_tool_history(
+                event,
+                action=normalized_action,
+                request_text=request_text,
+                agent_name=agent_name,
+                tool_result=result_text,
+            )
+            return result_text
 
         if normalized_action == "done":
             event.set_extra(PENDING_MAID_DISPATCHES_EXTRA_KEY, None)
@@ -446,14 +594,38 @@ class MaidAgent(Star):
                     event.unified_msg_origin,
                     status="done",
                 )
-            return "当前管家 session 已结束。"
+            result_text = "当前管家 session 已结束。"
+            self._queue_call_maid_tool_history(
+                event,
+                action=normalized_action,
+                request_text=request_text,
+                agent_name=agent_name,
+                tool_result=result_text,
+            )
+            return result_text
 
         if not request_text.strip():
-            return "call_maid 需要提供非空的 request_text。"
+            result_text = "call_maid 需要提供非空的 request_text。"
+            self._queue_call_maid_tool_history(
+                event,
+                action=normalized_action,
+                request_text=request_text,
+                agent_name=agent_name,
+                tool_result=result_text,
+            )
+            return result_text
 
         if normalized_action == "steer":
             event.set_extra(PENDING_MAID_DISPATCHES_EXTRA_KEY, None)
-            return await self._steer_background_task(event, request_text)
+            result_text = await self._steer_background_task(event, request_text)
+            self._queue_call_maid_tool_history(
+                event,
+                action=normalized_action,
+                request_text=request_text,
+                agent_name=agent_name,
+                tool_result=result_text,
+            )
+            return result_text
 
         resolved_agent_name = self._resolve_allowed_agent_name(
             self.maid_mode_config.allowed_agent_names,
@@ -466,14 +638,23 @@ class MaidAgent(Star):
             maid_request=request_text,
         )
         if pending_count == 1:
-            return (
+            result_text = (
                 "已记录管家任务请求，当前回复发送后将开始执行。"
                 f" agent={resolved_agent_name}"
             )
-        return (
-            "已记录新的批量管家任务请求，当前回复发送后将合并并发执行。"
-            f" 当前批量数={pending_count}"
+        else:
+            result_text = (
+                "已记录新的批量管家任务请求，当前回复发送后将合并并发执行。"
+                f" 当前批量数={pending_count}"
+            )
+        self._queue_call_maid_tool_history(
+            event,
+            action=normalized_action,
+            request_text=request_text,
+            agent_name=resolved_agent_name,
+            tool_result=result_text,
         )
+        return result_text
 
     async def _request_maid_follow_up(
         self,
@@ -625,6 +806,18 @@ class MaidAgent(Star):
                     chain=[Comp.Plain(sanitized_follow_up)]
                 )
                 await event.send(chain)
+                await self._persist_call_maid_tool_history(
+                    event,
+                    req,
+                    [
+                        {
+                            "action": "dispatch",
+                            "request_text": maid_request,
+                            "agent_name": resolved_agent_name,
+                            "tool_result": agent_result,
+                        }
+                    ],
+                )
                 await self._persist_assistant_reply(
                     event,
                     req,
@@ -854,6 +1047,18 @@ class MaidAgent(Star):
                     chain=[Comp.Plain(sanitized_follow_up)]
                 )
                 await event.send(chain)
+                await self._persist_call_maid_tool_history(
+                    event,
+                    req,
+                    [
+                        {
+                            "action": "dispatch",
+                            "request_text": "批量管家结果汇总",
+                            "agent_name": "batch",
+                            "tool_result": batch_result,
+                        }
+                    ],
+                )
                 await self._persist_assistant_reply(
                     event,
                     req,
@@ -1059,7 +1264,7 @@ class MaidAgent(Star):
     @filter.on_llm_response()
     async def sanitize_llm_response(
         self,
-        event: AstrMessageEvent,
+        _event: AstrMessageEvent,
         resp: LLMResponse,
     ) -> None:
         if self.maid_mode_config.log_raw_llm_io:
@@ -1084,6 +1289,10 @@ class MaidAgent(Star):
             req = event.get_extra("provider_request")
             if not self._is_provider_request_like(req):
                 return
+
+            tool_history_records = self._consume_call_maid_tool_history(event)
+            if tool_history_records:
+                await self._persist_call_maid_tool_history(event, req, tool_history_records)
 
             pending_items = self._consume_pending_dispatches(event)
             if not pending_items:

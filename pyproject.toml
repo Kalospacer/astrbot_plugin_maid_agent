@@ -1,6 +1,6 @@
 [project]
 name = "astrbot-plugin-maid-agent"
-version = "1.1.0"
+version = "1.0.1"
 description = "大小姐+管家模式：主模型仅保留自然语言对话上下文，所有工具调用通过管家subagent执行"
 readme = "README.md"
 requires-python = ">=3.10"

@@ -12,6 +12,7 @@ RAW_INPUT_EXTRA_KEY = "_maid_agent_raw_input"
 TRUE_USER_INPUT_EXTRA_KEY = "_maid_agent_true_user_input"
 PENDING_MAID_FOLLOW_UP_EXTRA_KEY = "_maid_agent_pending_follow_up"
 PENDING_MAID_DISPATCHES_EXTRA_KEY = "_maid_agent_pending_dispatches"
+PENDING_MAID_TOOL_HISTORY_EXTRA_KEY = "_maid_agent_pending_tool_history"
 
 # Session 持久化
 ACTIVE_SESSION_INDEX_KEY = "active_sessions_v1"

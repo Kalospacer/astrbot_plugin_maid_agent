@@ -15,7 +15,7 @@
 
 本插件的解决方案：
 
-1. **主模型（大小姐）**：过滤主对话模型的系统提示词，剔除过于结构化的函数调用 schema，使其上下文只有高度纯净的自然语言对话。负责和用户聊天、理解意图，并在需要时通过自然语言和 XML 标签向管家下达指令。
+1. **主模型（大小姐）**：过滤主对话模型的系统提示词，剔除过于结构化的函数调用 schema，使其上下文只有高度纯净的自然语言对话。负责和用户聊天、理解意图，并在需要时通过原生 `call_maid` Function Call 向管家下达指令。
 2. **子代理（管家）**：剥离并接管原本属于主模型的工具调用能力。管家主动启发式捕捉用户和大小姐的需求，在后台调用 SubAgent、工具、Shell 或浏览器等执行任务，最后将报告返回给大小姐。最终由大小姐与用户进行无感对话，保障完美的角色扮演体验。
 
 > [!WARNING] > **开发阶段警告**
@@ -32,32 +32,32 @@
 
 ## 🧩 核心机制
 
-在主模型需要后台执行动作时，不会直接暴露原生工具，而是通过 **XML 标签** 表达意图。插件负责解析请求、调度管家并在后台回灌结果。
+在主模型需要后台执行动作时，插件通过原生 **`call_maid` Function Call** 表达意图。`dispatch` 只负责登记后台任务并立即返回，真正的子 Agent 执行仍在后台完成，结束后再回灌给大小姐。
 
-当前协议支持单标签与批量标签两种形态：
+当前工具动作包括：
 
-- **调用单个管家**：\`<call_maid agent=\"...\">...</call_maid>\`
-- **批量调用多个管家任务**：在同一轮回复里输出多个 \`<call_maid ...>...</call_maid>\`，插件会将它们视为同一个 batch 并发执行
-- **停止任务**：\`<call_maid action=\"stop\" />\`
-- **补充要求**：\`<call_maid action=\"steer\">补充要求</call_maid>\`
-- **结束任务**：\`<call_maid action=\"done\" />\`
+- **发起任务**：`call_maid(action=\"dispatch\", agent_name=\"...\", request_text=\"...\")`
+- **批量发起任务**：同一轮多次调用 `dispatch`，插件会将它们视为同一个 batch 并发执行
+- **停止任务**：`call_maid(action=\"stop\")`
+- **补充要求**：`call_maid(action=\"steer\", request_text=\"补充要求\")`
+- **结束任务**：`call_maid(action=\"done\")`
 
 **标准交互执行流：**
 
 1. 用户发送消息。
 2. 大小姐先输出第一轮自然语言回复。
-3. 若需后台执行任务，大小姐在回复末尾附加 \`<call_maid>\` 标签。
-4. 插件解析输出，拦截对外可见结果，并在后台调度目标 SubAgent（管家）。
+3. 若需后台执行任务，大小姐调用 \`call_maid\` 工具。
+4. 插件在当前回复发送后，将登记好的请求投递到后台调度目标 SubAgent（管家）。
 5. 管家执行完毕，将结果回灌给大小姐。
 6. 大小姐根据管家的结果，生成第二轮面向用户的自然语言回复。
-7. 在对外显示时，所有内部运作的 XML 标签都会被自动清洗，完全隐形。
+7. 管家执行完成后，插件会再次唤醒大小姐整理结果，并将该回复写回主对话历史。
 
 ## ✨ 当前能力
 
 - [x] 主模型请求阶段清洗非自然语言上下文
 - [x] `hide_native_tools` 可配置控制大小姐是否暴露 AstrBot 原生工具
-- [x] XML 调度协议的双向注入与解析
-- [x] 支持单轮回复中多个 `<call_maid ...>` 组成 batch 并发调度
+- [x] 原生 `call_maid` 工具调度
+- [x] 支持单轮多次 `call_maid(dispatch)` 组成 batch 并发调度
 - [x] 子 Agent (SubAgent) 的主动调度与结果回灌闭环
 - [x] batch 结果统一汇总后仅回灌一次给大小姐
 - [x] 面向对外显示的输出结果自动清洗
@@ -73,7 +73,7 @@
 
 - 每个通信来源 (\`unified_msg_origin\`) 同时只维护一个处于 Active 状态的管家 Session。
 - 只要当前 Session 不被主动关闭，后续对管家的调度指令都会追加复用该 Session 的完整上下文。
-- 当大小姐觉得任务完结并输出 \`<call_maid action=\"done\" />\` 后，当前 Session 会被正式关闭。
+- 当大小姐调用 \`call_maid(action=\"done\")\` 后，当前 Session 会被正式关闭。
 - 当 Session 超过设定的 \`session_timeout_minutes\` 阈值未被操作时，会自动作废重建。
 
 > **数据存储**：
@@ -130,8 +130,8 @@ default_agent_name: \"muiceagent\"
 allowed_agent_names:
 
 - \"muiceagent\"
-  call_tag_name: \"call_maid\"
   hide_native_tools: true
+  hide_transfer_tools: true
   include_raw_user_input: true
   session_enabled: true
   session_timeout_minutes: 20
@@ -142,40 +142,19 @@ allowed_agent_names:
 | 配置项                          | 描述                                                                                            |
 | ------------------------------- | ----------------------------------------------------------------------------------------------- |
 | \`default_agent_name\`          | 默认被调度的 SubAgent 名称。                                                                    |
-| \`allowed_agent_names\`         | 允许的大小姐 XML 显式指定的 Agent 白名单列表。                                                  |
-| \`call_tag_name\`               | 调度管家时主模型输出的 XML 标签名。                                                             |
-| \`hide_native_tools\`           | 是否隐藏大小姐可见的 AstrBot 原生工具。关闭后，大小姐仍保留原生工具，同时也能继续使用管家协议。 |
+| \`allowed_agent_names\`         | 允许 \`call_maid(dispatch)\` 显式指定的 Agent 白名单列表。                                      |
+| \`hide_native_tools\`           | 是否隐藏主模型可见的 AstrBot 原生工具。开启后只保留 \`call_maid\`。                           |
+| \`hide_transfer_tools\`         | 当 \`hide_native_tools=false\` 时，是否额外隐藏全部 \`transfer_to_*\` 工具。                  |
 | \`include_raw_user_input\`      | 是否把真实的用户原话一并透传给管家。                                                            |
 | \`session_enabled\`             | 是否启用管家的 Session 上下文持久化/状态留存机制。                                              |
 | \`session_timeout_minutes\`     | 并发 Session 闲置自动失效的分钟数。                                                             |
-| \`main_system_prompt_template\` | 注入给主模型（大小姐）的协议说明提示词模板。                                                    |
 | \`dispatch_prompt_template\`    | 发送给管家执行机时的中继调度系统提示词模板。                                                    |
 
 ## 📝 提示词模板
 
-本系统内置了两层关键提示词模板，均支持通过配置进行重载。
+本系统内置了一层关键调度提示词模板，支持通过配置进行重载。
 
-### 1. 主模型协议提示模板 (大小姐侧)
-
-配置项：\`main_system_prompt_template\`
-
-支持的注入占位符：
-
-- \`{call_tag_name}\`
-- \`{default_agent_name}\`
-
-**默认模板效果：**
-
-\`\`\`text
-
-- 需要管家协助时，回复末尾附加：<{call_tag_name} agent=\"{default_agent_name}\">任务要求</{call_tag_name}>
-- 不需要管家则不附加此标签
-- 停止管家任务：<{call_tag_name} action=\"stop\" />
-- 补充或修正当前管家任务：<{call_tag_name} action=\"steer\">补充要求</{call_tag_name}>
-- 管家任务结束时附加：<{call_tag_name} action=\"done\" />，未结束不附加
-  \`\`\`
-
-### 2. 管家调度提示模板 (管家侧)
+### 1. 管家调度提示模板 (管家侧)
 
 配置项：\`dispatch_prompt_template\`
 
@@ -183,7 +162,7 @@ allowed_agent_names:
 
 - \`{user_input_block}\`：真实的用户原话块。
 - \`{maid_full_reply_block}\`：大小姐完整的自然语言回复上下文块。
-- \`{maid_request_block}\`：从 \`<call_maid>\` 标签里提取出的显式任务需求文本块。
+- \`{maid_request_block}\`：从 \`call_maid(dispatch)\` 中提取出的显式任务需求文本块。
 
 **默认模板效果：**
 
@@ -191,7 +170,7 @@ allowed_agent_names:
 {user_input_block}{maid_full_reply_block}{maid_request_block}你是 MuiceMaid，一个全能的管家 AIagent 助手，擅长从大小姐的话语中理解大小姐的意图，并提取出大小姐的需求主动完成大小姐的愿望。你需要综合考虑大小姐和对方的对话，提取他们是否需要执行某些实际操作，并综合以上信息完成任务，请判断对方的需求，和大小姐的意图，如果大小姐误解了对方的需求，你以对方的需求为准完成任务，如果大小姐拒绝了对方的请求，你应当停止工作并汇报结束，如果大小姐和对方的需求一致，结合两者的需求准确完成任务。你的汇报对象是大小姐，不是对方。
 \`\`\`
 
-### 3. 命令入口
+### 2. 命令入口
 
 - \`/maid status\`：查看当前后台管家任务状态；若当前为 batch，会展示子任务明细
 - \`/maid stop\`：请求停止当前后台管家任务；若当前为 batch，会停止整批任务

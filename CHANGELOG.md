@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.1.0 - 2026-03-18
+
+- 将主模型调度入口从 XML 协议迁移为原生 `call_maid` Function Call，`dispatch` 改为“登记后后台执行”而非阻塞当前主链路。
+- 新增 `hide_transfer_tools` 配置开关；当 `hide_native_tools=false` 时可独立隐藏 AstrBot 原生 `transfer_to_*` 工具。
+- 修复后台回灌消息未写入主对话历史的问题，避免任务完成后下一轮对话仍误判为“管家仍在执行中”。
+- 移除主模型额外提示词注入，改由 `call_maid` 工具自身的描述承担动作说明。
+
 ## 1.0.1 - 2026-03-17
 
 - 新增 `hide_native_tools` 配置开关，可按需保留或隐藏大小姐可见的 AstrBot 原生工具。

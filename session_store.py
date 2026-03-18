@@ -224,6 +224,26 @@ class MaidSessionStore:
             logger.error("[大小姐模式] 写入 session 文件失败: %s", exc, exc_info=True)
             raise
 
+    async def save_session_if_active(
+        self,
+        session: MaidAgentSession,
+        *,
+        require_active_session_id: bool,
+    ) -> bool:
+        """仅当 session 仍处于 active 时才持久化，避免后台协程覆盖已关闭状态。"""
+        async with self._hold_umo_lock(session.unified_msg_origin):
+            latest = await self.load_session(session.session_id)
+            if latest is None:
+                return False
+            if latest.status != "active":
+                return False
+            if require_active_session_id:
+                index = await self._load_active_index()
+                if index.get(session.unified_msg_origin) != session.session_id:
+                    return False
+            await self.save_session(session)
+            return True
+
     async def load_session(self, session_id: str) -> MaidAgentSession | None:
         try:
             path = self._session_path(session_id)
@@ -393,11 +413,15 @@ class MaidSessionStore:
         session = await self.load_session(session_id)
         if session is None:
             return None
-        session.status = status
-        await self.save_session(session)
-        logger.info(
-            "[大小姐模式] 已关闭独立管家 session: session_id=%s status=%s",
-            session.session_id,
-            status,
-        )
-        return session
+        async with self._hold_umo_lock(session.unified_msg_origin):
+            latest = await self.load_session(session_id)
+            if latest is None:
+                return None
+            latest.status = status
+            await self.save_session(latest)
+            logger.info(
+                "[大小姐模式] 已关闭独立管家 session: session_id=%s status=%s",
+                latest.session_id,
+                status,
+            )
+            return latest

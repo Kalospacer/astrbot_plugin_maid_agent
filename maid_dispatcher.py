@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import TYPE_CHECKING, Any
 
 from astrbot.api import logger
@@ -18,6 +19,8 @@ from astrbot.core.utils.active_event_registry import active_event_registry
 from astrbot.core.utils.llm_metadata import LLM_METADATAS
 
 from .session_store import MaidAgentSession, MaidSessionStore
+
+_provider_config_locks: dict[int, asyncio.Lock] = {}
 
 if TYPE_CHECKING:
     from astrbot.api.event import AstrMessageEvent
@@ -91,12 +94,13 @@ def _build_dispatch_prompt(
         if maid_request and maid_request.strip()
         else ""
     )
-    return (
-        dispatch_prompt_template.replace("{user_input_block}", user_input_block)
-        .replace("{maid_full_reply_block}", maid_full_reply_block)
-        .replace("{maid_request_block}", maid_request_block)
-        .strip()
-    )
+    return dispatch_prompt_template.format_map(
+        {
+            "user_input_block": user_input_block,
+            "maid_full_reply_block": maid_full_reply_block,
+            "maid_request_block": maid_request_block,
+        }
+    ).strip()
 
 
 def _normalize_begin_dialogs(dialogs: Any) -> list[Message] | None:
@@ -269,32 +273,34 @@ async def _build_runner(
         session_id=session_id,
     )
     original_max_context_tokens = provider.provider_config.get("max_context_tokens")
-    if max_context_tokens > 0:
-        provider.provider_config["max_context_tokens"] = max_context_tokens
-    try:
-        await runner.reset(
-            provider=provider,
-            request=request,
-            run_context=AgentContextWrapper(
-                context=agent_context,
-                tool_call_timeout=tool_call_timeout,
-            ),
-            tool_executor=FunctionToolExecutor(),
-            agent_hooks=BaseAgentRunHooks[AstrAgentContext](),
-            streaming=stream,
-            llm_compress_instruction=llm_compress_instruction,
-            llm_compress_keep_recent=llm_compress_keep_recent,
-            llm_compress_provider=llm_compress_provider,
-            truncate_turns=truncate_turns,
-            enforce_max_turns=enforce_max_turns,
-            tool_schema_mode=tool_schema_mode,
-        )
-    finally:
+    provider_lock = _provider_config_locks.setdefault(id(provider), asyncio.Lock())
+    async with provider_lock:
         if max_context_tokens > 0:
-            if original_max_context_tokens is None:
-                provider.provider_config.pop("max_context_tokens", None)
-            else:
-                provider.provider_config["max_context_tokens"] = original_max_context_tokens
+            provider.provider_config["max_context_tokens"] = max_context_tokens
+        try:
+            await runner.reset(
+                provider=provider,
+                request=request,
+                run_context=AgentContextWrapper(
+                    context=agent_context,
+                    tool_call_timeout=tool_call_timeout,
+                ),
+                tool_executor=FunctionToolExecutor(),
+                agent_hooks=BaseAgentRunHooks[AstrAgentContext](),
+                streaming=stream,
+                llm_compress_instruction=llm_compress_instruction,
+                llm_compress_keep_recent=llm_compress_keep_recent,
+                llm_compress_provider=llm_compress_provider,
+                truncate_turns=truncate_turns,
+                enforce_max_turns=enforce_max_turns,
+                tool_schema_mode=tool_schema_mode,
+            )
+        finally:
+            if max_context_tokens > 0:
+                if original_max_context_tokens is None:
+                    provider.provider_config.pop("max_context_tokens", None)
+                else:
+                    provider.provider_config["max_context_tokens"] = original_max_context_tokens
     return runner
 
 
@@ -487,10 +493,19 @@ async def dispatch_to_maid_agent(
         session.messages = [msg.model_dump() for msg in runner.run_context.messages]
         session.last_maid_request = maid_request
         session.last_agent_result = llm_resp.completion_text or ""
-        await session_store.save_session(session)
-        logger.debug(
-            "[大小姐模式] 已持久化管家 session: session_id=%s messages=%d",
-            session.session_id,
-            len(session.messages),
+        persisted = await session_store.save_session_if_active(
+            session,
+            require_active_session_id=not explicit_session_id,
         )
+        if persisted:
+            logger.debug(
+                "[大小姐模式] 已持久化管家 session: session_id=%s messages=%d",
+                session.session_id,
+                len(session.messages),
+            )
+        else:
+            logger.info(
+                "[大小姐模式] 跳过持久化已关闭/失效的管家 session: session_id=%s",
+                session.session_id,
+            )
     return llm_resp.completion_text or "", resolved_agent_name

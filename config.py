@@ -4,23 +4,13 @@
 
 from __future__ import annotations
 
-import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
-from .constants import DEFAULT_CALL_MAID_TAG_NAME, DEFAULT_MAID_AGENT_NAME
+from .constants import DEFAULT_MAID_AGENT_NAME
 
 DEFAULT_SESSION_TIMEOUT_MINUTES = 20
-DEFAULT_MAIN_SYSTEM_PROMPT_TEMPLATE = (
-    "- 需要单个管家协助时，回复末尾附加："
-    '<{call_tag_name} agent="{default_agent_name}">任务要求</{call_tag_name}>'
-    "\n- 需要多个管家并发处理时，可在同一轮回复末尾连续附加多个 <{call_tag_name} agent=\"agent名\">任务要求</{call_tag_name}>，系统会将它们视为同一个 batch 并发执行"
-    "\n- 不需要管家则不附加这些标签"
-    '\n- 停止管家任务：<{call_tag_name} action="stop" />'
-    '\n- 补充或修正当前单个管家任务：<{call_tag_name} action="steer">补充要求</{call_tag_name}>；批量任务暂不支持 steer'
-    '\n- 管家任务结束时附加：<{call_tag_name} action="done" />，未结束不附加'
-)
 DEFAULT_DISPATCH_PROMPT_TEMPLATE = (
     "{user_input_block}"
     "{maid_full_reply_block}"
@@ -36,13 +26,12 @@ DEFAULT_DISPATCH_PROMPT_TEMPLATE = (
 class MaidModeConfig:
     default_agent_name: str = DEFAULT_MAID_AGENT_NAME
     allowed_agent_names: list[str] | None = None
-    call_tag_name: str = DEFAULT_CALL_MAID_TAG_NAME
     hide_native_tools: bool = True
+    hide_transfer_tools: bool = True
     include_raw_user_input: bool = True
     session_enabled: bool = True
     log_raw_llm_io: bool = False
     session_timeout_minutes: int = DEFAULT_SESSION_TIMEOUT_MINUTES
-    main_system_prompt_template: str = DEFAULT_MAIN_SYSTEM_PROMPT_TEMPLATE
     dispatch_prompt_template: str = DEFAULT_DISPATCH_PROMPT_TEMPLATE
 
 
@@ -60,14 +49,6 @@ def _parse_bool(value: Any, default: bool) -> bool:
         if normalized in {"0", "false", "no", "off", ""}:
             return False
     return default
-
-
-def _normalize_xml_tag_name(value: Any, default: str) -> str:
-    candidate = str(value or "").strip()
-    if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_.-]*", candidate):
-        return candidate
-    return default
-
 
 def load_maid_mode_config(config: Mapping[str, Any] | None = None) -> MaidModeConfig:
     """从插件注入配置中读取 maid agent 配置。"""
@@ -94,19 +75,11 @@ def load_maid_mode_config(config: Mapping[str, Any] | None = None) -> MaidModeCo
     if default_agent_name.casefold() not in seen_agent_names:
         allowed_agent_names.append(default_agent_name)
 
-    call_tag_name = _normalize_xml_tag_name(
-        cfg.get("call_tag_name", DEFAULT_CALL_MAID_TAG_NAME),
-        DEFAULT_CALL_MAID_TAG_NAME,
-    )
     hide_native_tools = _parse_bool(cfg.get("hide_native_tools", True), True)
+    hide_transfer_tools = _parse_bool(cfg.get("hide_transfer_tools", True), True)
     include_raw_user_input = _parse_bool(cfg.get("include_raw_user_input", True), True)
     session_enabled = _parse_bool(cfg.get("session_enabled", True), True)
     log_raw_llm_io = _parse_bool(cfg.get("log_raw_llm_io", False), False)
-    main_system_prompt_template = str(
-        cfg.get("main_system_prompt_template", DEFAULT_MAIN_SYSTEM_PROMPT_TEMPLATE)
-    )
-    if not main_system_prompt_template.strip():
-        main_system_prompt_template = DEFAULT_MAIN_SYSTEM_PROMPT_TEMPLATE
     dispatch_prompt_template = str(
         cfg.get("dispatch_prompt_template", DEFAULT_DISPATCH_PROMPT_TEMPLATE)
     )
@@ -124,12 +97,11 @@ def load_maid_mode_config(config: Mapping[str, Any] | None = None) -> MaidModeCo
     return MaidModeConfig(
         default_agent_name=default_agent_name,
         allowed_agent_names=allowed_agent_names,
-        call_tag_name=call_tag_name,
         hide_native_tools=hide_native_tools,
+        hide_transfer_tools=hide_transfer_tools,
         include_raw_user_input=include_raw_user_input,
         session_enabled=session_enabled,
         log_raw_llm_io=log_raw_llm_io,
         session_timeout_minutes=session_timeout_minutes,
-        main_system_prompt_template=main_system_prompt_template,
         dispatch_prompt_template=dispatch_prompt_template,
     )

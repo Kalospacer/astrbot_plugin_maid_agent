@@ -33,10 +33,8 @@ from .background_registry import MaidBackgroundTaskRegistry
 from .batch_registry import MaidBatchRegistry
 from .config import load_maid_mode_config
 from .constants import (
-    INTERNAL_SEND_KIND_EXTRA_KEY,
     PENDING_MAID_FOLLOW_UP_EXTRA_KEY,
     RAW_INPUT_EXTRA_KEY,
-    SERVING_ENABLED_KEY_PREFIX,
     TRUE_USER_INPUT_EXTRA_KEY,
 )
 from .context_sanitizer import sanitize_contexts
@@ -68,7 +66,6 @@ class MaidAgent(Star):
         self._background_runner_events_by_runner_id: dict[int, AstrMessageEvent] = {}
         self._batch_runners_by_batch_id: dict[str, dict[int, object]] = {}
         self._stop_requested_batch_ids: set[str] = set()
-        self._active_self_serving_tasks_by_umo: dict[str, asyncio.Task] = {}
 
     async def initialize(self) -> None:
         """插件初始化"""
@@ -146,10 +143,6 @@ class MaidAgent(Star):
     def _clear_pending_follow_up(event: AstrMessageEvent) -> None:
         event.set_extra(PENDING_MAID_FOLLOW_UP_EXTRA_KEY, None)
 
-    @staticmethod
-    def _set_internal_send_kind(event: AstrMessageEvent, kind: str | None) -> None:
-        event.set_extra(INTERNAL_SEND_KIND_EXTRA_KEY, kind)
-
     def _track_background_task(self, task: asyncio.Task) -> None:
         self._active_asyncio_tasks.add(task)
 
@@ -161,16 +154,6 @@ class MaidAgent(Star):
                 logger.error("[大小姐模式] 后台任务异常退出: %s", exc, exc_info=True)
 
         task.add_done_callback(_on_done)
-
-    @staticmethod
-    def _extract_latest_assistant_text(event: AstrMessageEvent) -> str:
-        result = event.get_result()
-        if result is None:
-            return ""
-        try:
-            return (result.get_plain_text() or "").strip()
-        except Exception:
-            return ""
 
     @staticmethod
     def _is_batch_pending(pending: object) -> bool:
@@ -350,108 +333,6 @@ class MaidAgent(Star):
             extra_user_content_parts=req.extra_user_content_parts,
         )
 
-    async def _request_serving_follow_up(
-        self,
-        event: AstrMessageEvent,
-        req: ProviderRequest,
-        latest_assistant_text: str,
-    ) -> LLMResponse:
-        provider_id = await self.context.get_current_chat_provider_id(event.unified_msg_origin)
-        provider = self.context.get_provider_by_id(provider_id)
-        if provider is None:
-            raise RuntimeError(f"未找到用于服侍模式追答的 provider: {provider_id}")
-        serving_prompt = self.maid_mode_config.serving_prompt_template.replace(
-            "{maid_last_reply_block}",
-            latest_assistant_text.strip(),
-        )
-        request_payload = {
-            "request_kind": "serving_follow_up",
-            "prompt": serving_prompt,
-            "system_prompt": req.system_prompt,
-            "contexts": req.contexts,
-            "image_urls": None,
-            "func_tool": [],
-            "session_id": req.session_id,
-            "model": req.model,
-            "extra_user_content_parts": req.extra_user_content_parts,
-        }
-        if self.maid_mode_config.log_raw_llm_io:
-            logger.debug(
-                "[大小姐模式] LLM请求原文:\n%s",
-                self._dump_json(request_payload),
-            )
-        resp = await provider.text_chat(
-            prompt=serving_prompt,
-            image_urls=None,
-            func_tool=ToolSet(),
-            contexts=req.contexts,
-            system_prompt=req.system_prompt,
-            model=req.model,
-            session_id=req.session_id,
-            extra_user_content_parts=req.extra_user_content_parts,
-        )
-        if self.maid_mode_config.log_raw_llm_io:
-            logger.debug(
-                "[大小姐模式] LLM响应原文:\n%s",
-                self._dump_json(
-                    {
-                        "request_kind": "serving_follow_up",
-                        "completion_text": resp.completion_text,
-                        "tools_call_name": resp.tools_call_name,
-                        "tools_call_args": resp.tools_call_args,
-                        "tools_call_ids": resp.tools_call_ids,
-                        "tools_call_extra_content": resp.tools_call_extra_content,
-                        "reasoning_content": resp.reasoning_content,
-                    }
-                ),
-            )
-        return resp
-
-    async def _run_self_serving_background_task(
-        self,
-        event: AstrMessageEvent,
-        req: ProviderRequest,
-        latest_assistant_text: str,
-    ) -> None:
-        self._active_self_serving_tasks_by_umo[event.unified_msg_origin] = asyncio.current_task()
-        try:
-            budget = self.maid_mode_config.serving_max_turns
-            while budget > 0:
-                if event.is_stopped() or bool(event.get_extra("agent_stop_requested")):
-                    return
-                follow_up_resp = await self._request_serving_follow_up(
-                    event=event,
-                    req=req,
-                    latest_assistant_text=latest_assistant_text,
-                )
-                completion_text = follow_up_resp.completion_text or ""
-                sanitized = sanitize_user_visible_output(
-                    completion_text,
-                    self.maid_mode_config.call_tag_name,
-                )
-                if sanitized != completion_text:
-                    self._rewrite_response_text(follow_up_resp, sanitized)
-
-                sanitized_stripped = sanitized.strip()
-                if sanitized_stripped:
-                    chain = follow_up_resp.result_chain or MessageChain(
-                        chain=[Comp.Plain(sanitized)]
-                    )
-                    self._set_internal_send_kind(event, "self_serving")
-                    await event.send(chain)
-                    self._set_internal_send_kind(event, None)
-                    latest_assistant_text = sanitized or completion_text
-                budget -= 1
-                if not sanitized_stripped:
-                    break
-        except Exception as exc:
-            logger.error("[大小姐模式] 服侍模式自动连发失败: %s", exc, exc_info=True)
-        finally:
-            self._set_internal_send_kind(event, None)
-            current = self._active_self_serving_tasks_by_umo.get(event.unified_msg_origin)
-            if current is asyncio.current_task():
-                self._active_self_serving_tasks_by_umo.pop(event.unified_msg_origin, None)
-
     async def _run_maid_follow_up_background_task(
         self,
         event: AstrMessageEvent,
@@ -546,9 +427,7 @@ class MaidAgent(Star):
                 chain = follow_up_resp.result_chain or MessageChain(
                     chain=[Comp.Plain(sanitized_follow_up)]
                 )
-                self._set_internal_send_kind(event, "maid_follow_up")
                 await event.send(chain)
-                self._set_internal_send_kind(event, None)
 
             final_status = (
                 "error"
@@ -589,9 +468,6 @@ class MaidAgent(Star):
                     error=str(exc),
                 )
             logger.error("[大小姐模式] 后台追答任务失败: %s", exc, exc_info=True)
-        finally:
-            self._set_internal_send_kind(event, None)
-
     async def _run_maid_batch_item_background_task(
         self,
         *,
@@ -783,9 +659,7 @@ class MaidAgent(Star):
                 chain = follow_up_resp.result_chain or MessageChain(
                     chain=[Comp.Plain(sanitized_follow_up)]
                 )
-                self._set_internal_send_kind(event, "maid_follow_up")
                 await event.send(chain)
-                self._set_internal_send_kind(event, None)
 
             await self.background_tasks.finish(
                 batch_id,
@@ -803,7 +677,6 @@ class MaidAgent(Star):
             await self.batch_registry.discard_batch(batch_id)
             self._batch_runners_by_batch_id.pop(batch_id, None)
             self._stop_requested_batch_ids.discard(batch_id)
-            self._set_internal_send_kind(event, None)
 
     async def _build_background_status_text(self, event: AstrMessageEvent) -> str:
         current = await self.background_tasks.get_active_by_umo(event.unified_msg_origin)
@@ -889,10 +762,26 @@ class MaidAgent(Star):
             lines.append("批量任务中的所有仍在运行的子任务都会在当前步骤结束后尝试停止。")
             return "\n".join(lines)
 
-        stopped = active_event_registry.request_agent_stop_all(
-            event.unified_msg_origin,
-            exclude=event,
-        )
+        stopped = 0
+        runner = self._background_runners_by_umo.get(event.unified_msg_origin)
+        if runner is not None:
+            runner_event = self._background_runner_events_by_runner_id.get(id(runner))
+            if runner_event is not None:
+                runner_event.set_extra("agent_stop_requested", True)
+                stopped += 1
+            try:
+                runner.request_stop()
+            except Exception as exc:
+                logger.warning(
+                    "[大小姐模式] 单任务 runner 停止请求失败: task_id=%s error=%s",
+                    current.task_id,
+                    exc,
+                )
+        if stopped == 0:
+            stopped += active_event_registry.request_agent_stop_all(
+                event.unified_msg_origin,
+                exclude=event,
+            )
         await self.background_tasks.update_progress(
             current.task_id,
             "已收到停止请求，等待当前步骤结束后中断。",
@@ -901,25 +790,6 @@ class MaidAgent(Star):
         lines.append(f"命中的活跃事件数: {stopped}")
         lines.append("如果子 agent 正在等待工具或网络返回，通常会在当前步骤结束后停止。")
         return "\n".join(lines)
-
-    def _serving_enabled_key(self, event: AstrMessageEvent) -> str:
-        return f"{SERVING_ENABLED_KEY_PREFIX}{event.unified_msg_origin}"
-
-    async def _get_serving_enabled(self, event: AstrMessageEvent) -> bool:
-        if not self.maid_mode_config.serving_mode_enabled:
-            return False
-        stored = await self.get_kv_data(self._serving_enabled_key(event), None)
-        return bool(stored)
-
-    async def _set_serving_enabled(self, event: AstrMessageEvent, enabled: bool) -> None:
-        await self.put_kv_data(self._serving_enabled_key(event), enabled)
-
-    async def _toggle_serving_enabled(self, event: AstrMessageEvent) -> str:
-        if not self.maid_mode_config.serving_mode_enabled:
-            return "服侍模式全局开关当前已关闭，无法在会话中启用。"
-        enabled = not await self._get_serving_enabled(event)
-        await self._set_serving_enabled(event, enabled)
-        return f"当前会话服侍模式已{'开启' if enabled else '关闭'}。"
 
     async def _steer_background_task(
         self,
@@ -1234,11 +1104,7 @@ class MaidAgent(Star):
                     self._clear_pending_follow_up(event)
                     steer_text = await self._steer_background_task(event, maid_request)
                     if steer_text.strip():
-                        self._set_internal_send_kind(event, "maid_follow_up")
-                        try:
-                            await event.send(MessageChain(chain=[Comp.Plain(steer_text)]))
-                        finally:
-                            self._set_internal_send_kind(event, None)
+                        await event.send(MessageChain(chain=[Comp.Plain(steer_text)]))
                     return
 
                 if self._is_batch_pending(pending):
@@ -1294,34 +1160,6 @@ class MaidAgent(Star):
                         task_info.task_id,
                     )
 
-            internal_send_kind = event.get_extra(INTERNAL_SEND_KIND_EXTRA_KEY)
-            if internal_send_kind:
-                logger.debug(
-                    "[大小姐模式] 当前消息属于插件内部发送，跳过服侍模式自动连发: kind=%s",
-                    internal_send_kind,
-                )
-                return
-            if not await self._get_serving_enabled(event):
-                logger.debug("[大小姐模式] 当前会话服侍模式未启用，跳过自动连发")
-                return
-            if event.unified_msg_origin in self._active_self_serving_tasks_by_umo:
-                logger.debug("[大小姐模式] 当前会话已有服侍模式自动连发任务，跳过重复投递")
-                return
-            latest_assistant_text = self._extract_latest_assistant_text(event)
-            logger.debug(
-                "[大小姐模式] 服侍模式捕获到上一句大小姐回复: %s",
-                latest_assistant_text[:80] if latest_assistant_text else "",
-            )
-
-            task = asyncio.create_task(
-                self._run_self_serving_background_task(
-                    event=event,
-                    req=req,
-                    latest_assistant_text=latest_assistant_text,
-                )
-            )
-            self._track_background_task(task)
-            logger.debug("[大小姐模式] 已投递服侍模式自动连发任务")
         except Exception as exc:
             logger.error("[大小姐模式] after_message_sent 后续追答失败: %s", exc, exc_info=True)
         finally:
@@ -1338,10 +1176,6 @@ class MaidAgent(Star):
     @maid.command("stop")
     async def maid_stop(self, event: AstrMessageEvent):
         yield event.plain_result(await self._request_stop_background_tasks(event))
-
-    @filter.command("maid_serve")
-    async def maid_serve_toggle(self, event: AstrMessageEvent):
-        yield event.plain_result(await self._toggle_serving_enabled(event))
 
     @filter.on_decorating_result()
     async def decorate_result(self, event: AstrMessageEvent) -> None:

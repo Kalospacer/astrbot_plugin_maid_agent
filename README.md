@@ -52,16 +52,6 @@
 6. 大小姐根据管家的结果，生成第二轮面向用户的自然语言回复。
 7. 在对外显示时，所有内部运作的 XML 标签都会被自动清洗，完全隐形。
 
-### 服侍模式
-
-服侍模式用于打破传统的 `user -> assistant` 单轮回复节奏，让大小姐在**对方没有继续发言**时，也可以主动追加几轮自然语言回复。
-
-- 通过命令 \`/maid_serve\` 切换当前会话的服侍模式开关
-- 服侍模式会先检查插件配置里的全局开关 \`serving_mode_enabled\`；全局关闭时，任何会话都不会自动连发
-- 即使全局开关已开启，当前会话也仍需手动执行一次 \`/maid_serve\` 才会真正启用
-- 当前会话开启后，每次对方发言并收到大小姐首条回复后，插件都会自动再次请求 LLM，并按 \`serving_prompt_template\` 续发
-- 单次对话触发的自动续发最多执行 \`serving_max_turns\` 次，默认上限为 `3`
-
 ## ✨ 当前能力
 
 - [x] 主模型请求阶段清洗非自然语言上下文
@@ -75,7 +65,6 @@
 - [x] Session 超时无感失效流转
 - [x] Follow-up 第二轮回复深度清洗机制
 - [x] 管家 Runner 完美透传 AstrBot 的上下文压缩配置
-- [x] 服侍模式自动连发
 - [x] 后台任务状态查询 / 停止 / steering
 
 ## 📦 Session 机制
@@ -145,9 +134,6 @@ allowed_agent_names:
   hide_native_tools: true
   include_raw_user_input: true
   session_enabled: true
-  serving_mode_enabled: false
-  serving_max_turns: 3
-  serving_prompt_template: "<maid_think>{maid_last_reply_block}根据我之前的回复，我应该继续说话</maid_think>"
   session_timeout_minutes: 20
   \`\`\`
 
@@ -161,9 +147,6 @@ allowed_agent_names:
 | \`hide_native_tools\`           | 是否隐藏大小姐可见的 AstrBot 原生工具。关闭后，大小姐仍保留原生工具，同时也能继续使用管家协议。 |
 | \`include_raw_user_input\`      | 是否把真实的用户原话一并透传给管家。                                                            |
 | \`session_enabled\`             | 是否启用管家的 Session 上下文持久化/状态留存机制。                                              |
-| \`serving_mode_enabled\`        | 服侍模式的全局总开关。开启后，会话仍需通过 \`/maid_serve\` 手动启用。                           |
-| \`serving_max_turns\`           | 单次用户发言后，大小姐最多还能主动续说几次。                                                    |
-| \`serving_prompt_template\`     | 服侍模式中系统自动再次请求 LLM 时使用的提示词模板，可用占位符：\`{maid_last_reply_block}\`。    |
 | \`session_timeout_minutes\`     | 并发 Session 闲置自动失效的分钟数。                                                             |
 | \`main_system_prompt_template\` | 注入给主模型（大小姐）的协议说明提示词模板。                                                    |
 | \`dispatch_prompt_template\`    | 发送给管家执行机时的中继调度系统提示词模板。                                                    |
@@ -208,25 +191,8 @@ allowed_agent_names:
 {user_input_block}{maid_full_reply_block}{maid_request_block}你是 MuiceMaid，一个全能的管家 AIagent 助手，擅长从大小姐的话语中理解大小姐的意图，并提取出大小姐的需求主动完成大小姐的愿望。你需要综合考虑大小姐和对方的对话，提取他们是否需要执行某些实际操作，并综合以上信息完成任务，请判断对方的需求，和大小姐的意图，如果大小姐误解了对方的需求，你以对方的需求为准完成任务，如果大小姐拒绝了对方的请求，你应当停止工作并汇报结束，如果大小姐和对方的需求一致，结合两者的需求准确完成任务。你的汇报对象是大小姐，不是对方。
 \`\`\`
 
-### 3. 服侍模式续发提示词
+### 3. 命令入口
 
-配置项：\`serving_prompt_template\`
-
-支持的注入占位符：
-
-- \`{maid_last_reply_block}\`：大小姐上一句刚刚发送出去的纯文本回复。
-
-默认值：
-
-\`\`\`text
-<maid_think>{maid_last_reply_block}根据我之前的回复，我应该继续说话</maid_think>
-\`\`\`
-
-该提示词只在服侍模式自动续发时使用，不会影响正常的首轮回复或管家调度逻辑。
-
-### 4. 命令入口
-
-- \`/maid_serve\`：切换当前会话的服侍模式开关
 - \`/maid status\`：查看当前后台管家任务状态；若当前为 batch，会展示子任务明细
 - \`/maid stop\`：请求停止当前后台管家任务；若当前为 batch，会停止整批任务
 

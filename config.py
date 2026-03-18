@@ -12,10 +12,6 @@ from typing import Any
 from .constants import DEFAULT_CALL_MAID_TAG_NAME, DEFAULT_MAID_AGENT_NAME
 
 DEFAULT_SESSION_TIMEOUT_MINUTES = 20
-DEFAULT_SERVING_MAX_TURNS = 3
-DEFAULT_SERVING_PROMPT_TEMPLATE = (
-    "<maid_think>{maid_last_reply_block}根据我之前的回复，我应该继续说话</maid_think>"
-)
 DEFAULT_MAIN_SYSTEM_PROMPT_TEMPLATE = (
     "- 需要单个管家协助时，回复末尾附加："
     '<{call_tag_name} agent="{default_agent_name}">任务要求</{call_tag_name}>'
@@ -46,9 +42,6 @@ class MaidModeConfig:
     session_enabled: bool = True
     log_raw_llm_io: bool = False
     session_timeout_minutes: int = DEFAULT_SESSION_TIMEOUT_MINUTES
-    serving_mode_enabled: bool = False
-    serving_max_turns: int = DEFAULT_SERVING_MAX_TURNS
-    serving_prompt_template: str = DEFAULT_SERVING_PROMPT_TEMPLATE
     main_system_prompt_template: str = DEFAULT_MAIN_SYSTEM_PROMPT_TEMPLATE
     dispatch_prompt_template: str = DEFAULT_DISPATCH_PROMPT_TEMPLATE
 
@@ -109,7 +102,6 @@ def load_maid_mode_config(config: Mapping[str, Any] | None = None) -> MaidModeCo
     include_raw_user_input = _parse_bool(cfg.get("include_raw_user_input", True), True)
     session_enabled = _parse_bool(cfg.get("session_enabled", True), True)
     log_raw_llm_io = _parse_bool(cfg.get("log_raw_llm_io", False), False)
-    serving_mode_enabled = _parse_bool(cfg.get("serving_mode_enabled", False), False)
     main_system_prompt_template = str(
         cfg.get("main_system_prompt_template", DEFAULT_MAIN_SYSTEM_PROMPT_TEMPLATE)
     )
@@ -120,11 +112,6 @@ def load_maid_mode_config(config: Mapping[str, Any] | None = None) -> MaidModeCo
     )
     if not dispatch_prompt_template.strip():
         dispatch_prompt_template = DEFAULT_DISPATCH_PROMPT_TEMPLATE
-    serving_prompt_template = str(
-        cfg.get("serving_prompt_template", DEFAULT_SERVING_PROMPT_TEMPLATE)
-    )
-    if not serving_prompt_template.strip():
-        serving_prompt_template = DEFAULT_SERVING_PROMPT_TEMPLATE
 
     timeout_raw = cfg.get("session_timeout_minutes", DEFAULT_SESSION_TIMEOUT_MINUTES)
     try:
@@ -133,13 +120,6 @@ def load_maid_mode_config(config: Mapping[str, Any] | None = None) -> MaidModeCo
         session_timeout_minutes = DEFAULT_SESSION_TIMEOUT_MINUTES
     if session_timeout_minutes <= 0:
         session_timeout_minutes = DEFAULT_SESSION_TIMEOUT_MINUTES
-    serving_max_turns_raw = cfg.get("serving_max_turns", DEFAULT_SERVING_MAX_TURNS)
-    try:
-        serving_max_turns = int(serving_max_turns_raw)
-    except (TypeError, ValueError):
-        serving_max_turns = DEFAULT_SERVING_MAX_TURNS
-    if serving_max_turns <= 0:
-        serving_max_turns = DEFAULT_SERVING_MAX_TURNS
 
     return MaidModeConfig(
         default_agent_name=default_agent_name,
@@ -150,9 +130,6 @@ def load_maid_mode_config(config: Mapping[str, Any] | None = None) -> MaidModeCo
         session_enabled=session_enabled,
         log_raw_llm_io=log_raw_llm_io,
         session_timeout_minutes=session_timeout_minutes,
-        serving_mode_enabled=serving_mode_enabled,
-        serving_max_turns=serving_max_turns,
-        serving_prompt_template=serving_prompt_template,
         main_system_prompt_template=main_system_prompt_template,
         dispatch_prompt_template=dispatch_prompt_template,
     )

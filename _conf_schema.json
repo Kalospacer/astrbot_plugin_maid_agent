@@ -41,24 +41,6 @@
     "type": "bool",
     "default": false
   },
-  "serving_mode_enabled": {
-    "description": "启用服侍模式",
-    "hint": "作为服侍模式的全局总开关。关闭时所有会话都不会自动连发；开启后仍需在会话中通过 /maid_serve 手动启用。",
-    "type": "bool",
-    "default": false
-  },
-  "serving_max_turns": {
-    "description": "服侍模式最大自动回复次数",
-    "hint": "单次用户发言后，大小姐连续主动追加回复的最大次数上限。",
-    "type": "int",
-    "default": 3
-  },
-  "serving_prompt_template": {
-    "description": "服侍模式续发提示词",
-    "hint": "系统自动再次请求 LLM 时使用的提示词模板。可用占位符：{maid_last_reply_block}。",
-    "type": "string",
-    "default": "<maid_think>{maid_last_reply_block}根据我之前的回复，我应该继续说话</maid_think>"
-  },
   "session_timeout_minutes": {
     "description": "Session 超时时间（分钟）",
     "hint": "当前管家任务超过该时间未继续使用时，将自动失效并在下次重新创建。",

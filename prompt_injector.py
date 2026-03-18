@@ -8,8 +8,6 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from astrbot.api import logger
-
 if TYPE_CHECKING:
     from astrbot.api.provider import ProviderRequest
 
@@ -19,15 +17,7 @@ def build_maid_system_prompt_append(
     default_agent_name: str,
     prompt_template: str,
 ) -> str:
-    cleaned_template = prompt_template
-    if "{serving_max_turns}" in cleaned_template:
-        logger.warning(
-            "Detected deprecated placeholder '{serving_max_turns}' in maid system "
-            "prompt template; it will be stripped. Please remove it from "
-            "'main_system_prompt_template'."
-        )
-        cleaned_template = cleaned_template.replace("{serving_max_turns}", "")
-    return cleaned_template.replace("{call_tag_name}", call_tag_name).replace(
+    return prompt_template.replace("{call_tag_name}", call_tag_name).replace(
         "{default_agent_name}", default_agent_name
     )
 

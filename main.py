@@ -206,9 +206,7 @@ class MaidAgent(Star):
             return tool_set
 
         for tool in self._get_visible_tools_from_request(req).tools:
-            if self.maid_mode_config.hide_transfer_tools and tool.name.startswith(
-                "transfer_to_"
-            ):
+            if self.maid_mode_config.hide_transfer_tools and tool.name.startswith("transfer_to_"):
                 continue
             tool_set.add_tool(tool)
         return tool_set
@@ -639,8 +637,7 @@ class MaidAgent(Star):
         )
         if pending_count == 1:
             result_text = (
-                "已记录管家任务请求，当前回复发送后将开始执行。"
-                f" agent={resolved_agent_name}"
+                f"已记录管家任务请求，当前回复发送后将开始执行。 agent={resolved_agent_name}"
             )
         else:
             result_text = (
@@ -830,16 +827,11 @@ class MaidAgent(Star):
                 else ("stopped" if event.get_extra("agent_stop_requested") else "done")
             )
             if self.session_store and (
-                session_done_requested
-                or final_status in {"stopped", "error"}
+                session_done_requested or final_status in {"stopped", "error"}
             ):
                 await self.session_store.close_active_session(
                     event.unified_msg_origin,
-                    status=(
-                        "done"
-                        if session_done_requested
-                        else final_status
-                    ),
+                    status=("done" if session_done_requested else final_status),
                 )
             if task_id:
                 await self.background_tasks.finish(
@@ -862,6 +854,7 @@ class MaidAgent(Star):
                     error=str(exc),
                 )
             logger.error("[大小姐模式] 后台追答任务失败: %s", exc, exc_info=True)
+
     async def _run_maid_batch_item_background_task(
         self,
         *,
@@ -1302,9 +1295,7 @@ class MaidAgent(Star):
             true_user_input = event.get_extra(TRUE_USER_INPUT_EXTRA_KEY, "") or ""
             image_urls_raw = getattr(getattr(event, "message_obj", None), "image_urls", None)
 
-            current_task = await self.background_tasks.get_active_by_umo(
-                event.unified_msg_origin
-            )
+            current_task = await self.background_tasks.get_active_by_umo(event.unified_msg_origin)
             if current_task is not None:
                 logger.warning(
                     "[大小姐模式] 当前会话已有后台任务运行，将新的 call_maid(dispatch) 降级为补充要求: current_task_id=%s",

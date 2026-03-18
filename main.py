@@ -64,6 +64,7 @@ class MaidAgent(Star):
         self._background_runner_events_by_runner_id: dict[int, AstrMessageEvent] = {}
         self._batch_runners_by_batch_id: dict[str, dict[int, object]] = {}
         self._stop_requested_batch_ids: set[str] = set()
+        self._conversation_history_locks: dict[str, asyncio.Lock] = {}
 
     async def initialize(self) -> None:
         """插件初始化"""
@@ -79,6 +80,33 @@ class MaidAgent(Star):
             self.maid_mode_config.log_raw_llm_io,
             self.maid_mode_config.session_timeout_minutes,
         )
+
+    async def terminate(self) -> None:
+        """插件停用/重载时停止后台 runner 并取消未完成任务。"""
+        runners = list(self._background_runners_by_umo.values())
+        for runner_map in self._batch_runners_by_batch_id.values():
+            runners.extend(runner_map.values())
+
+        for runner in runners:
+            runner_event = self._background_runner_events_by_runner_id.get(id(runner))
+            if runner_event is not None:
+                runner_event.set_extra("agent_stop_requested", True)
+            try:
+                runner.request_stop()
+            except Exception as exc:
+                logger.warning("[大小姐模式] terminate 阶段停止 runner 失败: %s", exc)
+
+        tasks = [task for task in self._active_asyncio_tasks if not task.done()]
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+        self._active_asyncio_tasks.clear()
+        self._background_runners_by_umo.clear()
+        self._background_runner_events_by_runner_id.clear()
+        self._batch_runners_by_batch_id.clear()
+        self._stop_requested_batch_ids.clear()
 
     def _rewrite_response_text(self, resp: LLMResponse, text: str) -> None:
         """以兼容 AstrBot 的方式回写响应文本。"""
@@ -237,14 +265,29 @@ class MaidAgent(Star):
             logger.warning("[大小姐模式] 读取主对话历史失败，无法写入后台回灌消息: %s", exc)
             return
 
-        if not isinstance(history, list):
-            history = []
-        history.append({"role": "assistant", "content": reply_text})
-        await self.context.conversation_manager.update_conversation(
+        lock = self._conversation_history_locks.setdefault(
             event.unified_msg_origin,
-            req.conversation.cid,
-            history=history,
+            asyncio.Lock(),
         )
+        async with lock:
+            try:
+                curr_conv = await self.context.conversation_manager.get_conversation(
+                    event.unified_msg_origin,
+                    req.conversation.cid,
+                )
+                latest_history = json.loads(curr_conv.history or "[]") if curr_conv else history
+            except Exception as exc:
+                logger.warning("[大小姐模式] 读取最新主对话历史失败，使用当前快照回写: %s", exc)
+                latest_history = history
+
+            if not isinstance(latest_history, list):
+                latest_history = []
+            latest_history.append({"role": "assistant", "content": reply_text})
+            await self.context.conversation_manager.update_conversation(
+                event.unified_msg_origin,
+                req.conversation.cid,
+                history=latest_history,
+            )
 
     def _track_background_task(self, task: asyncio.Task) -> None:
         self._active_asyncio_tasks.add(task)
@@ -253,6 +296,8 @@ class MaidAgent(Star):
             self._active_asyncio_tasks.discard(done_task)
             try:
                 done_task.result()
+            except asyncio.CancelledError:
+                pass
             except Exception as exc:
                 logger.error("[大小姐模式] 后台任务异常退出: %s", exc, exc_info=True)
 

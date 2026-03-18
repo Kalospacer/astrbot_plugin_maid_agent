@@ -12,8 +12,8 @@ astrbot_version: ">=4.20.0"
 #
 # 1. 必须在 AstrBot 配置中启用至少一个可用的 subagent
 # 2. 插件实际调度目标由插件配置中的 `default_agent_name` /
-#    `allowed_agent_names` 以及模型输出的 XML 一起决定
-# 2. subagent 配置示例：
+#    `allowed_agent_names` 以及主模型对 `call_maid` 的调用参数一起决定
+# 3. subagent 配置示例：
 #    subagent_orchestrator:
 #      agents:
 #        - name: muiceagent
@@ -27,6 +27,7 @@ astrbot_version: ">=4.20.0"
 
 # 插件启用后的行为说明：
 # 1. 主模型（大小姐）只看到自然语言对话历史，不直接持有工具
-# 2. 主模型通过 XML 协议输出 `<call_maid ...>` 标签表达意图
-# 3. 插件解析 XML 后主动调度 subagent，并将执行结果回灌给大小姐
-# 4. 管家 session 可在单 active 模式下跨轮持久化，直到完成或超时
+# 2. 主模型通过原生 `call_maid` Function Call 表达调度意图
+# 3. `call_maid(action="dispatch")` 只登记后台任务，请求会在当前回复发送后投递执行
+# 4. 插件在后台调度 subagent，并将执行结果回灌给大小姐
+# 5. 管家 session 可在单 active 模式下跨轮持久化，直到完成或超时

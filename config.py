@@ -50,6 +50,7 @@ def _parse_bool(value: Any, default: bool) -> bool:
             return False
     return default
 
+
 def load_maid_mode_config(config: Mapping[str, Any] | None = None) -> MaidModeConfig:
     """从插件注入配置中读取 maid agent 配置。"""
     cfg = dict(config or {})

@@ -48,6 +48,8 @@ if TYPE_CHECKING:
     from astrbot.api.provider import LLMResponse, ProviderRequest
     from astrbot.api.star import Context
 
+_EMPTY_REASONING_PLACEHOLDER = " "
+
 
 class MaidAgent(Star):
     """大小姐管家模式插件"""
@@ -295,6 +297,70 @@ class MaidAgent(Star):
             ).strip()
         return ""
 
+    @staticmethod
+    def _build_call_maid_arguments(
+        *,
+        action: str,
+        request_text: str,
+        agent_name: str,
+    ) -> dict[str, str]:
+        arguments = {"action": action}
+        if request_text.strip():
+            arguments["request_text"] = request_text
+        if agent_name.strip():
+            arguments["agent_name"] = agent_name
+        return arguments
+
+    @classmethod
+    def _build_call_maid_tool_result(
+        cls,
+        *,
+        action: str,
+        request_text: str,
+        agent_name: str,
+        tool_result: str,
+        assistant_text: str = "",
+        reasoning_content: str = "",
+        reasoning_signature: str | None = None,
+        tool_call_id: str | None = None,
+    ) -> ToolCallsResult:
+        actual_tool_call_id = tool_call_id or f"maid_hist_{uuid.uuid4().hex}"
+        assistant_parts = [
+            ThinkPart(
+                think=reasoning_content or _EMPTY_REASONING_PLACEHOLDER,
+                encrypted=reasoning_signature,
+            )
+        ]
+        if assistant_text.strip():
+            assistant_parts.append(TextPart(text=assistant_text))
+        return ToolCallsResult(
+            tool_calls_info=AssistantMessageSegment(
+                content=assistant_parts,
+                tool_calls=[
+                    ToolCall(
+                        id=actual_tool_call_id,
+                        function=ToolCall.FunctionBody(
+                            name=CALL_MAID_TOOL_NAME,
+                            arguments=json.dumps(
+                                cls._build_call_maid_arguments(
+                                    action=action,
+                                    request_text=request_text,
+                                    agent_name=agent_name,
+                                ),
+                                ensure_ascii=False,
+                            ),
+                        ),
+                    )
+                ],
+            ),
+            tool_calls_result=[
+                ToolCallMessageSegment(
+                    tool_call_id=actual_tool_call_id,
+                    content=tool_result,
+                )
+            ],
+        )
+
     async def _persist_assistant_reply(
         self,
         event: AstrMessageEvent,
@@ -384,39 +450,13 @@ class MaidAgent(Star):
 
             tool_history_messages: list[dict] = []
             for record in records:
-                action = str(record.get("action") or "").strip()
-                request_text = str(record.get("request_text") or "")
-                agent_name = str(record.get("agent_name") or "")
-                tool_result = str(record.get("tool_result") or "")
-                tool_call_id = f"maid_hist_{uuid.uuid4().hex}"
-
-                arguments = {"action": action}
-                if request_text.strip():
-                    arguments["request_text"] = request_text
-                if agent_name.strip():
-                    arguments["agent_name"] = agent_name
-
-                tool_history_messages.append(
-                    {
-                        "role": "assistant",
-                        "tool_calls": [
-                            {
-                                "type": "function",
-                                "id": tool_call_id,
-                                "function": {
-                                    "name": CALL_MAID_TOOL_NAME,
-                                    "arguments": json.dumps(arguments, ensure_ascii=False),
-                                },
-                            }
-                        ],
-                    }
-                )
-                tool_history_messages.append(
-                    {
-                        "role": "tool",
-                        "tool_call_id": tool_call_id,
-                        "content": tool_result,
-                    }
+                tool_history_messages.extend(
+                    self._build_call_maid_tool_result(
+                        action=str(record.get("action") or "").strip(),
+                        request_text=str(record.get("request_text") or ""),
+                        agent_name=str(record.get("agent_name") or ""),
+                        tool_result=str(record.get("tool_result") or ""),
+                    ).to_openai_messages()
                 )
 
             latest_history[insertion_index:insertion_index] = tool_history_messages
@@ -669,45 +709,15 @@ class MaidAgent(Star):
         if provider is None:
             raise RuntimeError(f"未找到用于大小姐追答的 provider: {provider_id}")
 
-        tool_call_id = f"maid_{uuid.uuid4().hex}"
-        assistant_parts = []
-        if reasoning_content or reasoning_signature:
-            assistant_parts.append(
-                ThinkPart(
-                    think=reasoning_content or "",
-                    encrypted=reasoning_signature,
-                )
-            )
-        if maid_visible_text.strip():
-            assistant_parts.append(TextPart(text=maid_visible_text))
-        if not assistant_parts:
-            assistant_parts = None
-        tool_calls_result = ToolCallsResult(
-            tool_calls_info=AssistantMessageSegment(
-                content=assistant_parts,
-                tool_calls=[
-                    ToolCall(
-                        id=tool_call_id,
-                        function=ToolCall.FunctionBody(
-                            name=CALL_MAID_TOOL_NAME,
-                            arguments=json.dumps(
-                                {
-                                    "action": "dispatch",
-                                    "agent_name": agent_name,
-                                    "request_text": maid_request,
-                                },
-                                ensure_ascii=False,
-                            ),
-                        ),
-                    )
-                ],
-            ),
-            tool_calls_result=[
-                ToolCallMessageSegment(
-                    tool_call_id=tool_call_id,
-                    content=agent_result,
-                )
-            ],
+        tool_calls_result = self._build_call_maid_tool_result(
+            action="dispatch",
+            request_text=maid_request,
+            agent_name=agent_name,
+            tool_result=agent_result,
+            assistant_text=maid_visible_text,
+            reasoning_content=reasoning_content,
+            reasoning_signature=reasoning_signature,
+            tool_call_id=f"maid_{uuid.uuid4().hex}",
         )
         return await provider.text_chat(
             prompt=req.prompt,

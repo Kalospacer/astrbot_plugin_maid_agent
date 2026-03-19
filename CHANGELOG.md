@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.1.1 - 2026-03-19
+
+- 移除主模型请求阶段对 `tool` / `tool_calls` 历史的清洗，避免已发生工具调用被下一轮对话灾难性遗忘。
+- 为 `call_maid` 的 `dispatch / steer / stop / done` 全动作补齐主会话结构化历史记录，格式对齐 AstrBot 原版 `assistant(tool_calls)` + `tool(result)` 消息对。
+- 在后台结果真正回到大小姐时，额外补写 `call_maid` 的结果记录，确保后续轮次能感知“大小姐确实调用过管家且已收到结果”。
+- 统一 `call_maid` 工具记录的消息构造逻辑，集中处理参数、`tool_call_id` 与 thinking 兼容字段，避免多处手工拼装格式漂移。
+- 修复 OpenAI / Responses 在 thinking 开启时对 assistant tool-call 消息缺失 `reasoning_content` 的 400 报错。
+
 ## 1.1.0 - 2026-03-18
 
 - 将主模型调度入口从 XML 协议迁移为原生 `call_maid` Function Call，`dispatch` 改为“登记后后台执行”而非阻塞当前主链路。

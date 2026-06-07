@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.1.3 - 2026-06-07
+
+- 修复流式输出关闭后，后台追答请求（`_request_maid_follow_up`）中因携带结构化 tool 消息历史且未提供 `tools` 定义，导致部分严格的 API 平台（如 Minimax、DeepSeek）返回空输出或报错 `EmptyModelOutputError` 的兼容性问题。此修复通过将追答历史简化为标准文本对话实现 100% 服务端兼容性。
+- 修复在流式输出开启时，由于 AstrBot 核心 early-return 导致 `after_message_sent` 钩子失效，后台任务无法被正常唤起的问题。现在通过拦截并包裹 `result.async_stream`，在流式传输结束后自动触发后台调度，实现与流式模式的无缝融合。
+
 ## 1.1.2 - 2026-04-29
 
 - 仅在插件侧修复 `call_maid` 工具历史兼容问题，将 `ThinkPart` / `TextPart` 等 Pydantic 内容块递归转为 OpenAI 兼容的普通 dict，避免 AstrBot core 在 `_finally_convert_payload` 中对对象调用 `.get()` 崩溃。

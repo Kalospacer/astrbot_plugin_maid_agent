@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.1.2 - 2026-04-29
+
+- 仅在插件侧修复 `call_maid` 工具历史兼容问题，将 `ThinkPart` / `TextPart` 等 Pydantic 内容块递归转为 OpenAI 兼容的普通 dict，避免 AstrBot core 在 `_finally_convert_payload` 中对对象调用 `.get()` 崩溃。
+- 为 Kimi / Moonshot thinking 模式补齐 assistant tool-call 历史的 `reasoning_content`，支持从 `LLMResponse.reasoning_content`、`raw_completion.message.reasoning(_content)` 与 `reasoning_details` 兜底提取。
+- 安装窄作用 OpenAI provider 兼容补丁，将 Kimi / Moonshot 返回在 `message.reasoning` 的 thinking 内容映射到 `LLMResponse.reasoning_content`，使 core 同轮 tool-loop 二次请求能自动携带 `ThinkPart`。
+- 在主模型请求清洗阶段修复旧历史中缺失 `reasoning_content` 的 assistant tool-call 消息，避免后续请求触发 `thinking is enabled but reasoning_content is missing`。
+- 修复 core 同轮二次请求前的临时 `ToolCallsResult`，为 assistant tool-call 内容补入空 thinking 块，使 OpenAI payload 转换阶段能生成 `reasoning_content`，同时保留正常工具返回文本。
+- 后台追答和主会话工具历史写入时保留主模型 thinking 内容与签名，确保后续轮次能正确回放工具调用上下文。
+
 ## 1.1.1 - 2026-03-19
 
 - 移除主模型请求阶段对 `tool` / `tool_calls` 历史的清洗，避免已发生工具调用被下一轮对话灾难性遗忘。

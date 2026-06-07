@@ -283,6 +283,7 @@ async def _build_runner(
                 request=request,
                 run_context=AgentContextWrapper(
                     context=agent_context,
+                    messages=[],
                     tool_call_timeout=tool_call_timeout,
                 ),
                 tool_executor=FunctionToolExecutor(),

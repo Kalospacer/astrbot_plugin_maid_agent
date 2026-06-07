@@ -709,23 +709,27 @@ class MaidAgent(Star):
         if provider is None:
             raise RuntimeError(f"未找到用于大小姐追答的 provider: {provider_id}")
 
-        tool_calls_result = self._build_call_maid_tool_result(
-            action="dispatch",
-            request_text=maid_request,
-            agent_name=agent_name,
-            tool_result=agent_result,
-            assistant_text=maid_visible_text,
-            reasoning_content=reasoning_content,
-            reasoning_signature=reasoning_signature,
-            tool_call_id=f"maid_{uuid.uuid4().hex}",
-        )
+        new_contexts = list(req.contexts)
+        
+        # Format assistant's previous message as pure text
+        assistant_content = maid_visible_text or "雪雪去帮你查啦，等一下下哦～"
+        if reasoning_content:
+            assistant_content = f"<think>{reasoning_content}</think>\n{assistant_content}"
+            
+        new_contexts.append({
+            "role": "assistant",
+            "content": assistant_content
+        })
+        
+        follow_up_prompt = f"[管家后台执行完成]\n执行管家: {agent_name}\n执行请求: {maid_request}\n执行结果:\n{agent_result}\n\n请向用户总结或汇报以上执行结果（请保持你原有的人设和说话风格）。"
+
         return await provider.text_chat(
-            prompt=req.prompt,
+            prompt=follow_up_prompt,
             image_urls=req.image_urls,
             func_tool=None,
-            contexts=req.contexts,
+            contexts=new_contexts,
             system_prompt=req.system_prompt,
-            tool_calls_result=tool_calls_result,
+            tool_calls_result=None,
             model=req.model,
             extra_user_content_parts=req.extra_user_content_parts,
         )
@@ -1414,3 +1418,17 @@ class MaidAgent(Star):
         raw_input = event.get_extra(RAW_INPUT_EXTRA_KEY)
         if raw_input:
             logger.debug("[大小姐模式] 本轮对话原始输入: %s...", raw_input[:100])
+
+        result = event.get_result()
+        if result and result.async_stream:
+            original_stream = result.async_stream
+
+            async def wrapped_stream():
+                try:
+                    async for chunk in original_stream:
+                        yield chunk
+                finally:
+                    logger.debug("[大小姐模式] 流式输出已结束，开始触发后台后续处理")
+                    asyncio.create_task(self.continue_maid_follow_up_after_send(event))
+
+            result.async_stream = wrapped_stream()

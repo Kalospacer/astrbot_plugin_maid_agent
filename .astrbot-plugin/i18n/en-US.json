@@ -1,0 +1,8 @@
+{
+  "pages": {
+    "console": {
+      "title": "Dispatch Console",
+      "description": "Maid Agent task monitor, history, and settings"
+    }
+  }
+}

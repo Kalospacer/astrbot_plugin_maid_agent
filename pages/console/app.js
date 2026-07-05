@@ -1,38 +1,28 @@
-const bridge = window.AstrBotPluginPage;
+let bridge = window.AstrBotPluginPage || null;
+
+const ACTIVE_STATUSES = new Set(["queued", "running", "stopping"]);
+const RESPONSE_EVENT_TYPES = new Set(["agent_output", "agent_result", "tool_direct_message"]);
+const QUIET_EVENT_TYPES = new Set(["queued", "finished"]);
 
 const state = {
   tasks: [],
-  detail: null,
-  overview: null,
+  umos: [],
+  selectedUmo: "",
+  selectedSessionId: "",
+  sessionTasks: [],
+  sessionEvents: {},
   agents: [],
   settings: null,
-  selectedTaskId: "",
+  overview: null,
+  detail: null,
   subscriptionId: "",
-  activeTab: "detail",
+  pollTimer: 0,
+  refreshInFlight: false,
+  refreshQueued: false,
 };
 
 const $ = (selector) => document.querySelector(selector);
-
-const statusText = {
-  queued: "排队",
-  running: "运行",
-  stopping: "停止中",
-  done: "完成",
-  partial_done: "部分完成",
-  error: "异常",
-  stopped: "停止",
-};
-
-const stages = [
-  ["queued", "call_maid"],
-  ["dispatch", "running"],
-  ["agent_output", "tool_direct_message"],
-  ["agent_result", "follow_up_request"],
-  ["follow_up_sent"],
-  ["finished", "error", "stopped"],
-];
-
-const stageLabels = ["call_maid", "dispatch", "runner", "tool/progress", "follow-up", "sent"];
+const $$ = (selector) => document.querySelectorAll(selector);
 
 function escapeHtml(value) {
   return String(value ?? "")
@@ -61,27 +51,9 @@ function formatTime(value) {
   });
 }
 
-function normalizeTask(task) {
-  return {
-    task_id: "",
-    title: "",
-    status: "queued",
-    kind: "single",
-    source: "chat",
-    agent_name: "",
-    request_text: "",
-    unified_msg_origin: "",
-    sender_id: "",
-    updated_at: "",
-    created_at: "",
-    completed_at: "",
-    meta: {},
-    ...task,
-  };
-}
-
 function toast(message) {
   const node = $("#toast");
+  if (!node) return;
   node.textContent = message;
   node.classList.add("show");
   window.clearTimeout(toast.timer);
@@ -90,458 +62,798 @@ function toast(message) {
 
 function setStreamState(kind, text) {
   const node = $("#streamState");
+  if (!node) return;
   node.textContent = text;
   node.className = `signal ${kind}`;
 }
 
-function selectedTask() {
-  if (!state.detail?.task) return null;
-  return normalizeTask(state.detail.task);
+function ensureBridge() {
+  bridge = bridge || window.AstrBotPluginPage || null;
+  if (!bridge || typeof bridge.apiGet !== "function" || typeof bridge.apiPost !== "function") {
+    throw new Error("AstrBot 页面桥接未加载，请从插件页面重新打开控制台。");
+  }
+  return bridge;
+}
+
+async function apiGet(endpoint, params) {
+  return ensureBridge().apiGet(endpoint, params);
+}
+
+async function apiPost(endpoint, body) {
+  return ensureBridge().apiPost(endpoint, body);
+}
+
+function isAtBottom(el) {
+  if (!el) return false;
+  return el.scrollHeight - el.scrollTop <= el.clientHeight + 80;
+}
+
+function scrollToBottom(el) {
+  if (el) el.scrollTop = el.scrollHeight;
+}
+
+function taskTitle(task) {
+  return task?.title || task?.request_text || "新会话";
+}
+
+function taskMeta(task) {
+  return task?.meta && typeof task.meta === "object" ? task.meta : {};
+}
+
+function isPinned(task) {
+  return Boolean(taskMeta(task).pinned);
+}
+
+function getTaskRootId(task) {
+  return task?.parent_task_id || task?.task_id || "";
+}
+
+function getSelectedRootTask() {
+  return state.tasks.find((task) => task.task_id === state.selectedSessionId) || null;
+}
+
+function getLatestTaskInSession() {
+  return state.sessionTasks[state.sessionTasks.length - 1] || getSelectedRootTask();
+}
+
+function getActiveTaskInSession() {
+  return [...state.sessionTasks].reverse().find((task) => ACTIVE_STATUSES.has(task.status)) || null;
+}
+
+function mergeTask(nextTask) {
+  const existing = state.tasks.find((task) => task.task_id === nextTask.task_id);
+  if (existing) {
+    Object.assign(existing, nextTask);
+  } else {
+    state.tasks.push(nextTask);
+  }
+}
+
+function updateKnownUmos() {
+  const umoSet = new Set();
+  for (const task of state.tasks) {
+    if (task.unified_msg_origin) umoSet.add(task.unified_msg_origin);
+  }
+  if (state.selectedUmo) umoSet.add(state.selectedUmo);
+  state.umos = Array.from(umoSet).sort();
+  if (!state.selectedUmo && state.umos.length > 0) {
+    state.selectedUmo = state.umos[0];
+  }
 }
 
 async function loadOverview() {
-  state.overview = await bridge.apiGet("console/overview");
-  const statuses = state.overview.statuses || {};
-  $("#countRunning").textContent = Number(statuses.running || 0) + Number(statuses.stopping || 0);
-  $("#countDone").textContent = Number(statuses.done || 0) + Number(statuses.partial_done || 0);
-  $("#countError").textContent = Number(statuses.error || 0) + Number(statuses.stopped || 0);
-  if (state.overview.config) {
-    fillSettings(state.overview.config);
-  }
-}
-
-async function loadTasks(keepSelection = true) {
-  const query = $("#searchInput").value.trim();
-  const status = $("#statusFilter").value;
-  const data = await bridge.apiGet("console/tasks", { limit: 160, query, status });
-  state.tasks = (data.tasks || []).map(normalizeTask);
-  renderTasks();
-  if (!keepSelection || !state.selectedTaskId) return;
-  if (state.tasks.some((task) => task.task_id === state.selectedTaskId)) {
-    await loadDetail(state.selectedTaskId);
-  }
-}
-
-async function loadDetail(taskId) {
-  if (!taskId) return;
-  state.selectedTaskId = taskId;
-  state.detail = await bridge.apiGet(`console/tasks/${encodeURIComponent(taskId)}`);
-  renderAll();
+  state.overview = await apiGet("console/overview");
+  state.settings = state.overview.config || state.settings;
+  if (state.settings) fillSettings(state.settings);
 }
 
 async function loadAgents() {
-  const data = await bridge.apiGet("console/subagents");
+  const data = await apiGet("console/subagents");
   state.agents = data.agents || [];
   renderAgentOptions();
 }
 
-async function loadSettings() {
-  const data = await bridge.apiGet("console/settings");
-  state.settings = data.config || {};
-  fillSettings(state.settings);
+async function loadTasks() {
+  const data = await apiGet("console/tasks", { limit: 500 });
+  state.tasks = data.tasks || [];
+  updateKnownUmos();
+  renderUmoSwitcher();
+  updateSessionList();
+}
+
+async function loadSession(taskId) {
+  if (!taskId) {
+    state.selectedSessionId = "";
+    state.sessionTasks = [];
+    state.sessionEvents = {};
+    state.detail = null;
+    renderChatFeed();
+    renderInspector();
+    updateSessionList();
+    return;
+  }
+
+  const selected = state.tasks.find((task) => task.task_id === taskId);
+  const rootId = selected?.parent_task_id || taskId;
+  state.selectedSessionId = rootId;
+  state.sessionTasks = state.tasks
+    .filter((task) => task.task_id === rootId || task.parent_task_id === rootId)
+    .sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
+
+  state.sessionEvents = {};
+  for (const task of state.sessionTasks) {
+    const data = await apiGet(`console/tasks/${encodeURIComponent(task.task_id)}/events`);
+    state.sessionEvents[task.task_id] = data.events || [];
+  }
+
+  const latestTask = getLatestTaskInSession();
+  state.detail = latestTask
+    ? await apiGet(`console/tasks/${encodeURIComponent(latestTask.task_id)}`)
+    : null;
+
+  renderChatFeed();
+  renderInspector();
+  updateSessionList();
+  window.setTimeout(() => scrollToBottom($("#chatFeed")), 50);
+}
+
+async function refreshConsole({ silent = false, keepSession = true } = {}) {
+  if (state.refreshInFlight) {
+    state.refreshQueued = true;
+    return;
+  }
+
+  state.refreshInFlight = true;
+  const selectedBefore = state.selectedSessionId;
+  try {
+    await loadTasks();
+    await Promise.allSettled([loadOverview(), loadAgents()]);
+
+    if (keepSession && selectedBefore) {
+      const stillExists = state.tasks.some(
+        (task) => task.task_id === selectedBefore || task.parent_task_id === selectedBefore,
+      );
+      if (stillExists) {
+        await loadSession(selectedBefore);
+      } else {
+        await loadSession("");
+      }
+    } else if (!state.selectedSessionId) {
+      renderChatFeed();
+      renderInspector();
+    }
+
+    if (!silent) toast("已刷新");
+  } catch (err) {
+    setStreamState("signal-error", "同步异常");
+    if (!silent) toast(err.message || "刷新失败");
+  } finally {
+    state.refreshInFlight = false;
+    if (state.refreshQueued) {
+      state.refreshQueued = false;
+      window.setTimeout(() => refreshConsole({ silent: true, keepSession: true }), 200);
+    }
+  }
+}
+
+function startPolling() {
+  window.clearInterval(state.pollTimer);
+  state.pollTimer = window.setInterval(() => {
+    refreshConsole({ silent: true, keepSession: true });
+  }, 5000);
 }
 
 function renderAgentOptions() {
   const select = $("#dispatchAgent");
-  const configuredDefault = state.settings?.default_agent_name || state.overview?.config?.default_agent_name || "butler";
+  if (!select) return;
+  const configuredDefault =
+    state.settings?.default_agent_name || state.overview?.config?.default_agent_name || "butler";
   const names = [...new Set([configuredDefault, ...state.agents.map((agent) => agent.name)].filter(Boolean))];
   select.innerHTML = names
     .map((name) => `<option value="${escapeHtml(name)}">${escapeHtml(name)}</option>`)
     .join("");
 }
 
-function renderTasks() {
-  const list = $("#taskList");
-  if (!state.tasks.length) {
-    list.innerHTML = '<div class="empty-state"><p>暂无任务</p></div>';
+function renderUmoSwitcher() {
+  const nameNode = $("#currentUmoName");
+  if (nameNode) nameNode.textContent = state.selectedUmo || "选择 UMO";
+
+  const list = $("#umoListContainer");
+  if (!list) return;
+  if (state.umos.length === 0) {
+    list.innerHTML = `<div class="modal-empty">没有历史来源。手动输入一个 AstrBot UMO。</div>`;
     return;
   }
-  list.innerHTML = state.tasks
-    .map((rawTask) => {
-      const task = normalizeTask(rawTask);
-      const active = task.task_id === state.selectedTaskId ? " active" : "";
-      const status = statusText[task.status] || task.status;
-      return `
-        <button class="task-row${active}" type="button" data-task-id="${escapeHtml(task.task_id)}">
-          <span class="status-pill status-${escapeHtml(task.status)}">${escapeHtml(status)}</span>
-          <strong>${escapeHtml(task.title || task.request_text || task.task_id)}</strong>
-          <small>${escapeHtml(task.agent_name || "agent")} · ${escapeHtml(task.kind)} · ${escapeHtml(task.source)}</small>
-          <span class="task-meta">
-            <span>${escapeHtml(compactId(task.task_id))}</span>
-            <span>${escapeHtml(formatTime(task.updated_at || task.created_at))}</span>
-          </span>
-        </button>
-      `;
-    })
+  list.innerHTML = state.umos
+    .map(
+      (umo) => `
+        <div class="umo-list-item ${umo === state.selectedUmo ? "active" : ""}" data-umo="${escapeHtml(umo)}">
+          <div class="umo-avatar">${escapeHtml(umo.slice(0, 2).toUpperCase())}</div>
+          <div class="umo-name">${escapeHtml(umo)}</div>
+        </div>
+      `,
+    )
     .join("");
 }
 
-function eventStageIndex(eventType) {
-  const normalized = String(eventType || "");
-  const index = stages.findIndex((items) => items.includes(normalized));
-  return index >= 0 ? index : 2;
+function updateSessionList() {
+  const list = $("#sessionList");
+  if (!list) return;
+
+  const rootTasks = state.tasks
+    .filter((task) => task.unified_msg_origin === state.selectedUmo && !task.parent_task_id)
+    .sort((a, b) => {
+      const pinnedDelta = Number(isPinned(b)) - Number(isPinned(a));
+      if (pinnedDelta !== 0) return pinnedDelta;
+      return new Date(b.updated_at) - new Date(a.updated_at);
+    });
+
+  if (rootTasks.length === 0) {
+    list.innerHTML = `<div class="empty-state">暂无历史对话</div>`;
+    return;
+  }
+
+  list.innerHTML =
+    `<div class="session-group-title">最近对话</div>` +
+    rootTasks
+      .map((task) => {
+        const active = task.task_id === state.selectedSessionId ? "active" : "";
+        const pinned = isPinned(task) ? "pinned" : "";
+        return `
+          <div class="session-item ${active} ${pinned}" data-id="${escapeHtml(task.task_id)}">
+            <div class="session-title">${escapeHtml(taskTitle(task))}</div>
+            <div class="session-actions">
+              <button class="session-action-btn pin-btn" aria-label="置顶" title="置顶">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m15 4 5 5-4 4v5l-2 2-5-5-4 4-1-1 4-4-5-5 2-2h5l4-4Z"></path></svg>
+              </button>
+              <button class="session-action-btn rename-btn" aria-label="重命名" title="重命名">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9"></path><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"></path></svg>
+              </button>
+              <button class="session-action-btn delete-btn" aria-label="删除" title="删除">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>
+              </button>
+            </div>
+          </div>
+        `;
+      })
+      .join("");
 }
 
-function renderStageRail() {
-  const events = state.detail?.events || [];
-  const task = selectedTask();
-  const maxEventStage = events.reduce((max, event) => Math.max(max, eventStageIndex(event.event_type)), 0);
-  const terminalError = task && ["error", "stopped"].includes(task.status);
-  $("#stageRail").innerHTML = stageLabels
-    .map((label, index) => {
-      const active = index === maxEventStage && task && !["done", "partial_done", "error", "stopped"].includes(task.status);
-      const done = index < maxEventStage || (task && ["done", "partial_done"].includes(task.status));
-      const error = terminalError && index === stageLabels.length - 1;
-      const className = ["stage", active ? "active" : "", done ? "done" : "", error ? "error" : ""]
-        .filter(Boolean)
-        .join(" ");
+function renderChatFeed() {
+  const feed = $("#chatFeed");
+  if (!feed) return;
+
+  if (!state.selectedSessionId) {
+    feed.classList.add("is-empty");
+    feed.innerHTML = `
+      <div class="empty-hero" id="emptyHero">
+        <div class="brand-logo">
+          <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a10 10 0 1 0 10 10H12V2Z"></path><path d="M12 12 2.1 7.1"></path><path d="m12 12 9.9 4.9"></path></svg>
+        </div>
+      </div>
+    `;
+    $("#promptText")?.focus();
+    return;
+  }
+
+  feed.classList.remove("is-empty");
+  let html = "";
+
+  for (const task of state.sessionTasks) {
+    if (task.request_text) {
+      html += `
+        <div class="chat-message user">
+          <div class="chat-message-inner">
+            <div class="bubble">${escapeHtml(task.request_text)}</div>
+          </div>
+        </div>
+      `;
+    }
+
+    const events = state.sessionEvents[task.task_id] || [];
+    let thinkingHtml = "";
+    let responseHtml = "";
+
+    for (const event of events) {
+      if (RESPONSE_EVENT_TYPES.has(event.event_type)) {
+        if (event.message) responseHtml += `${escapeHtml(event.message)}\n\n`;
+        continue;
+      }
+      if (QUIET_EVENT_TYPES.has(event.event_type) || event.event_type?.startsWith("system")) {
+        continue;
+      }
+      thinkingHtml += `<div class="thinking-line"><strong>${escapeHtml(event.title || event.event_type)}</strong>${event.message ? ` - ${escapeHtml(event.message)}` : ""}</div>`;
+    }
+
+    const isRunning = ACTIVE_STATUSES.has(task.status);
+    if (thinkingHtml || responseHtml || isRunning || task.status === "error") {
+      html += `
+        <div class="chat-message maid">
+          <div class="chat-message-inner">
+            <div class="chat-avatar">M</div>
+            <div class="assistant-flow">
+      `;
+
+      if (thinkingHtml || isRunning) {
+        html += `
+          <details class="thinking-block" ${isRunning ? "open" : ""}>
+            <summary class="thinking-summary">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="transform: rotate(90deg);"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg>
+              ${isRunning ? "运行中" : "过程"}
+            </summary>
+            <div class="thinking-details">${thinkingHtml || "等待后台更新"}</div>
+          </details>
+        `;
+      }
+
+      if (responseHtml) {
+        html += `<div class="bubble">${responseHtml.trim()}</div>`;
+      } else if (task.status === "error") {
+        html += `<div class="bubble error-text">任务发生异常，已终止。</div>`;
+      }
+
+      html += `
+            </div>
+          </div>
+        </div>
+      `;
+    }
+  }
+
+  feed.innerHTML = html;
+}
+
+function renderInspector() {
+  const task = state.detail?.task;
+  if (!task) {
+    $("#inspectorTitle").textContent = "未选择";
+    $("#taskFacts").innerHTML = "";
+    $("#actionList").innerHTML = "";
+    $("#rawRequest").textContent = "";
+    $("#rawMeta").textContent = "";
+    return;
+  }
+
+  $("#inspectorTitle").textContent = compactId(task.task_id);
+  $("#taskFacts").innerHTML = `
+    <dt>状态</dt><dd>${escapeHtml(task.status)}</dd>
+    <dt>类型</dt><dd>${escapeHtml(task.kind)}</dd>
+    <dt>Agent</dt><dd>${escapeHtml(task.agent_name)}</dd>
+    <dt>来源 UMO</dt><dd>${escapeHtml(task.unified_msg_origin)}</dd>
+    <dt>更新时间</dt><dd>${escapeHtml(formatTime(task.updated_at))}</dd>
+  `;
+
+  $("#actionList").innerHTML = (state.detail.actions || [])
+    .map((action) => {
+      const cls = action.status === "error" ? 'style="color:var(--accent-error);"' : "";
       return `
-        <div class="${className}">
-          <span class="stage-dot"></span>
-          <span class="stage-label">${escapeHtml(label)}</span>
+        <div class="action-item" ${cls}>
+          <strong>${escapeHtml(action.action)}</strong>
+          <small>${escapeHtml(formatTime(action.created_at))}</small>
+          ${action.result_text ? `<div class="action-result">${escapeHtml(action.result_text)}</div>` : ""}
         </div>
       `;
     })
     .join("");
-}
 
-function renderEvents() {
-  const task = selectedTask();
-  $("#selectedTitle").textContent = task ? task.title || task.request_text || task.task_id : "选择一个任务";
-  const list = $("#eventList");
-  const events = state.detail?.events || [];
-  if (!events.length) {
-    list.className = "event-list empty-state";
-    list.innerHTML = "<p>暂无事件</p>";
-    return;
-  }
-  list.className = "event-list";
-  list.innerHTML = events
-    .map((event) => {
-      const type = event.event_type || "event";
-      const message = event.message || "";
-      return `
-        <article class="event-item">
-          <time class="event-time">${escapeHtml(formatTime(event.created_at))}</time>
-          <div class="event-body">
-            <header>
-              <strong>${escapeHtml(event.title || type)}</strong>
-              <span class="status-pill status-${escapeHtml(event.status || type)}">${escapeHtml(event.source || "system")}</span>
-            </header>
-            <div class="event-meta">${escapeHtml(type)}</div>
-            ${message ? `<div class="event-message">${escapeHtml(message)}</div>` : ""}
-          </div>
-        </article>
-      `;
-    })
-    .join("");
-}
-
-function renderInspector() {
-  const task = selectedTask();
-  $("#inspectorTitle").textContent = task ? compactId(task.task_id) : "未选择";
-  const disabled = !task;
-  $("#stopButton").disabled = disabled || !["queued", "running", "stopping"].includes(task?.status);
-  $("#rerunButton").disabled = disabled;
-  $("#doneButton").disabled = disabled;
-  $("#steerText").disabled = disabled || task?.kind === "batch";
-
-  if (!task) {
-    $("#taskFacts").innerHTML = "";
-    $("#rawRequest").textContent = "";
-    $("#rawMeta").textContent = "";
-    $("#actionList").innerHTML = '<div class="empty-state"><p>暂无操作</p></div>';
-    return;
-  }
-
-  const facts = [
-    ["状态", statusText[task.status] || task.status],
-    ["类型", task.kind],
-    ["来源", task.source],
-    ["Agent", task.agent_name || "-"],
-    ["UMO", task.unified_msg_origin || "-"],
-    ["Sender", task.sender_id || "-"],
-    ["创建", formatTime(task.created_at)],
-    ["更新", formatTime(task.updated_at)],
-  ];
-  $("#taskFacts").innerHTML = facts
-    .map(([key, value]) => `<dt>${escapeHtml(key)}</dt><dd>${escapeHtml(value)}</dd>`)
-    .join("");
   $("#rawRequest").textContent = task.request_text || "";
-  $("#rawMeta").textContent = JSON.stringify(task.meta || {}, null, 2);
-
-  const actions = state.detail?.actions || [];
-  $("#actionList").innerHTML = actions.length
-    ? actions
-        .map(
-          (action) => `
-            <div class="action-item">
-              <strong>${escapeHtml(action.action)}</strong>
-              <small>${escapeHtml(action.source)} · ${escapeHtml(formatTime(action.created_at))}</small>
-              ${action.result_text ? `<div class="event-message">${escapeHtml(action.result_text)}</div>` : ""}
-            </div>
-          `,
-        )
-        .join("")
-    : '<div class="empty-state"><p>暂无操作</p></div>';
+  $("#rawMeta").textContent = JSON.stringify(taskMeta(task), null, 2);
 }
 
-function renderAll() {
-  renderTasks();
-  renderStageRail();
-  renderEvents();
-  renderInspector();
+async function submitPrompt() {
+  const input = $("#promptText");
+  const text = input?.value.trim() || "";
+  if (!text) return;
+
+  const agent = $("#dispatchAgent")?.value || state.settings?.default_agent_name || "butler";
+  const selectedRoot = getSelectedRootTask();
+  const umo = selectedRoot?.unified_msg_origin || state.selectedUmo;
+  if (!umo) {
+    toast("先选择或填写 UMO");
+    $("#umoModal")?.classList.remove("hidden");
+    return;
+  }
+
+  input.value = "";
+  input.style.height = "auto";
+  const btn = $("#sendBtn");
+  if (btn) btn.disabled = true;
+
+  try {
+    const activeTask = getActiveTaskInSession();
+    let res;
+    if (activeTask) {
+      res = await apiPost("console/actions/steer", {
+        task_id: activeTask.task_id,
+        message_text: text,
+      });
+      toast("已续接当前任务");
+      await refreshConsole({ silent: true, keepSession: true });
+      return;
+    }
+
+    const parentId = state.selectedSessionId || "";
+    res = await apiPost("console/actions/dispatch", {
+      unified_msg_origin: umo,
+      agent_name: agent,
+      request_text: text,
+      parent_task_id: parentId,
+    });
+    if (!res.task) throw new Error(res.error || "派发失败");
+    mergeTask(res.task);
+    updateKnownUmos();
+    state.selectedUmo = res.task.unified_msg_origin || state.selectedUmo;
+    await loadSession(parentId || res.task.task_id);
+    toast(parentId ? "已发送到当前会话" : "已创建会话");
+  } catch (err) {
+    toast(err.message || "发送失败");
+  } finally {
+    if (btn) btn.disabled = false;
+  }
 }
 
-function setTab(tab) {
-  state.activeTab = tab;
-  document.querySelectorAll(".tab").forEach((button) => {
-    button.classList.toggle("active", button.dataset.tab === tab);
-  });
-  document.querySelectorAll(".tab-panel").forEach((panel) => {
-    panel.classList.toggle("active", panel.id === `${tab}Tab`);
-  });
+async function deleteSession(taskId) {
+  if (!window.confirm("删除此对话及其子任务？")) return;
+  try {
+    await apiPost(`console/tasks/${encodeURIComponent(taskId)}/delete`, {});
+    toast("已删除");
+    await loadSession("");
+    await refreshConsole({ silent: true, keepSession: false });
+  } catch (err) {
+    toast(err.message || "删除失败");
+  }
+}
+
+async function renameSession(taskId) {
+  const task = state.tasks.find((item) => item.task_id === taskId);
+  const nextTitle = window.prompt("重命名会话", taskTitle(task));
+  if (nextTitle === null) return;
+  const title = nextTitle.trim();
+  if (!title) return;
+  try {
+    const res = await apiPost(`console/tasks/${encodeURIComponent(taskId)}/update`, { title });
+    if (res.task) mergeTask(res.task);
+    updateSessionList();
+    renderInspector();
+    toast("已重命名");
+  } catch (err) {
+    toast(err.message || "重命名失败");
+  }
+}
+
+async function togglePinSession(taskId) {
+  const task = state.tasks.find((item) => item.task_id === taskId);
+  if (!task) return;
+  try {
+    const res = await apiPost(`console/tasks/${encodeURIComponent(taskId)}/update`, {
+      meta: { pinned: !isPinned(task) },
+    });
+    if (res.task) mergeTask(res.task);
+    updateSessionList();
+  } catch (err) {
+    toast(err.message || "置顶失败");
+  }
+}
+
+async function stopCurrentTask() {
+  const task = state.detail?.task;
+  if (!task) return;
+  try {
+    await apiPost("console/actions/stop", { task_id: task.task_id });
+    toast("已请求停止");
+    await refreshConsole({ silent: true, keepSession: true });
+  } catch (err) {
+    toast(err.message || "停止失败");
+  }
+}
+
+async function doneCurrentSession() {
+  const task = state.detail?.task || getSelectedRootTask();
+  const payload = task
+    ? { task_id: task.task_id }
+    : { unified_msg_origin: state.selectedUmo };
+  try {
+    await apiPost("console/actions/done", payload);
+    toast("已结束 Session");
+    await refreshConsole({ silent: true, keepSession: true });
+  } catch (err) {
+    toast(err.message || "结束失败");
+  }
+}
+
+async function rerunCurrentTask() {
+  const task = state.detail?.task;
+  if (!task) return;
+  try {
+    const res = await apiPost("console/actions/rerun", { task_id: task.task_id });
+    if (!res.task) throw new Error(res.error || "重跑失败");
+    mergeTask(res.task);
+    await loadSession(res.task.parent_task_id || res.task.task_id);
+    toast("已重新派发");
+  } catch (err) {
+    toast(err.message || "重跑失败");
+  }
+}
+
+async function exportHistory() {
+  try {
+    await ensureBridge().download("console/export", {}, `maid-history-${Date.now()}.json`);
+    toast("已导出");
+  } catch (err) {
+    toast(err.message || "导出失败");
+  }
+}
+
+function parseSsePayload(event) {
+  if (event?.parsed && typeof event.parsed === "object") return event.parsed;
+  const raw = typeof event === "string" ? event : event?.raw || event?.data || "";
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
+}
+
+window.handleSseMessage = async function handleSseMessage(event) {
+  const data = parseSsePayload(event);
+  if (!data) return;
+
+  if (data.type === "closed") {
+    setStreamState("signal-poll", "轮询同步");
+    return;
+  }
+
+  if (data.type === "reset") {
+    await refreshConsole({ silent: true, keepSession: true });
+    return;
+  }
+
+  if (data.type === "task" && data.task) {
+    mergeTask(data.task);
+    updateKnownUmos();
+    renderUmoSwitcher();
+    updateSessionList();
+    if (
+      state.selectedSessionId &&
+      (data.task.task_id === state.selectedSessionId ||
+        data.task.parent_task_id === state.selectedSessionId)
+    ) {
+      await loadSession(state.selectedSessionId);
+    }
+    return;
+  }
+
+  if (data.type === "event" && data.event) {
+    const eventTask = state.tasks.find((task) => task.task_id === data.event.task_id);
+    const rootId = getTaskRootId(eventTask);
+    if (rootId === state.selectedSessionId) {
+      if (!state.sessionEvents[data.event.task_id]) state.sessionEvents[data.event.task_id] = [];
+      state.sessionEvents[data.event.task_id].push(data.event);
+      const feed = $("#chatFeed");
+      const autoScroll = isAtBottom(feed);
+      renderChatFeed();
+      if (autoScroll) scrollToBottom(feed);
+      renderInspector();
+    }
+    return;
+  }
+
+  if (data.type === "action" && data.action && state.detail?.task?.task_id === data.action.task_id) {
+    state.detail.actions = state.detail.actions || [];
+    state.detail.actions.push(data.action);
+    renderInspector();
+  }
+};
+
+async function subscribeStream() {
+  if (!bridge || typeof bridge.subscribeSSE !== "function") {
+    setStreamState("signal-poll", "轮询同步");
+    return;
+  }
+
+  try {
+    state.subscriptionId = await bridge.subscribeSSE("console/stream", {
+      onOpen() {
+        setStreamState("signal-active", "实时同步");
+      },
+      onMessage(event) {
+        window.handleSseMessage(event);
+      },
+      onError() {
+        setStreamState("signal-poll", "轮询同步");
+      },
+    });
+  } catch (err) {
+    setStreamState("signal-poll", "轮询同步");
+  }
 }
 
 function fillSettings(config) {
-  if (!config) return;
-  state.settings = config;
-  $("#settingDefaultAgent").value = config.default_agent_name || "";
-  $("#settingAllowedAgents").value = (config.allowed_agent_names || []).join(", ");
-  $("#settingHideNative").checked = Boolean(config.hide_native_tools);
-  $("#settingHideTransfer").checked = Boolean(config.hide_transfer_tools);
-  $("#settingRawInput").checked = Boolean(config.include_raw_user_input);
-  $("#settingSession").checked = Boolean(config.session_enabled);
-  $("#settingLogRaw").checked = Boolean(config.log_raw_llm_io);
-  $("#settingTimeout").value = config.session_timeout_minutes || 20;
-  $("#settingPrompt").value = config.dispatch_prompt_template || "";
-  renderAgentOptions();
-}
-
-function readSettingsForm() {
-  return {
-    default_agent_name: $("#settingDefaultAgent").value.trim(),
-    allowed_agent_names: $("#settingAllowedAgents")
-      .value.split(",")
-      .map((item) => item.trim())
-      .filter(Boolean),
-    hide_native_tools: $("#settingHideNative").checked,
-    hide_transfer_tools: $("#settingHideTransfer").checked,
-    include_raw_user_input: $("#settingRawInput").checked,
-    session_enabled: $("#settingSession").checked,
-    log_raw_llm_io: $("#settingLogRaw").checked,
-    session_timeout_minutes: Number($("#settingTimeout").value || 20),
-    dispatch_prompt_template: $("#settingPrompt").value,
-  };
-}
-
-function upsertTask(task) {
-  const normalized = normalizeTask(task);
-  const index = state.tasks.findIndex((item) => item.task_id === normalized.task_id);
-  if (index >= 0) {
-    state.tasks[index] = normalized;
-  } else {
-    state.tasks.unshift(normalized);
-  }
-  state.tasks.sort((a, b) => String(b.updated_at || b.created_at).localeCompare(String(a.updated_at || a.created_at)));
-}
-
-async function handleSseMessage(message) {
-  const item = message?.parsed || message;
-  if (!item || typeof item !== "object") return;
-  if (item.type === "reset") {
-    state.selectedTaskId = "";
-    state.detail = null;
-    await loadOverview();
-    await loadTasks(false);
-    renderAll();
-    return;
-  }
-  if (item.type === "task" && item.task) {
-    upsertTask(item.task);
-    if (item.task.task_id === state.selectedTaskId) {
-      state.detail = { ...(state.detail || {}), task: normalizeTask(item.task) };
-    }
-    renderAll();
-    await loadOverview();
-    return;
-  }
-  if (item.type === "event" && item.event) {
-    if (item.event.task_id === state.selectedTaskId && state.detail) {
-      state.detail.events = [...(state.detail.events || []), item.event];
-      renderAll();
-    }
-    return;
-  }
-  if (item.type === "action" && item.action) {
-    if (item.action.task_id === state.selectedTaskId && state.detail) {
-      state.detail.actions = [...(state.detail.actions || []), item.action];
-      renderInspector();
-    }
-  }
-}
-
-async function subscribeStream() {
-  if (state.subscriptionId) {
-    await bridge.unsubscribeSSE(state.subscriptionId);
-  }
-  state.subscriptionId = await bridge.subscribeSSE("console/stream", {
-    onOpen() {
-      setStreamState("signal-live", "在线");
-    },
-    onMessage(event) {
-      void handleSseMessage(event);
-    },
-    onError() {
-      setStreamState("signal-error", "断开");
-    },
-  });
-}
-
-async function refreshAll() {
-  await loadOverview();
-  await loadAgents();
-  await loadSettings();
-  await loadTasks();
-  renderAll();
+  $("#settingDefaultAgent") && ($("#settingDefaultAgent").value = config.default_agent_name || "");
+  $("#settingAllowedAgents") &&
+    ($("#settingAllowedAgents").value = (config.allowed_agent_names || []).join(", "));
+  $("#settingHideNative") && ($("#settingHideNative").checked = Boolean(config.hide_native_tools));
+  $("#settingHideTransfer") &&
+    ($("#settingHideTransfer").checked = Boolean(config.hide_transfer_tools));
+  $("#settingRawInput") &&
+    ($("#settingRawInput").checked = Boolean(config.include_raw_user_input));
+  $("#settingSession") && ($("#settingSession").checked = Boolean(config.session_enabled));
+  $("#settingLogRaw") && ($("#settingLogRaw").checked = Boolean(config.log_raw_llm_io));
+  $("#settingTimeout") &&
+    ($("#settingTimeout").value = config.session_timeout_minutes ?? "");
+  $("#settingPrompt") &&
+    ($("#settingPrompt").value = config.dispatch_prompt_template || "");
 }
 
 function bindEvents() {
-  $("#taskList").addEventListener("click", (event) => {
-    const row = event.target.closest("[data-task-id]");
-    if (!row) return;
-    void loadDetail(row.dataset.taskId);
+  $("#refreshButton")?.addEventListener("click", () => {
+    refreshConsole({ silent: false, keepSession: true });
   });
 
-  $("#filterForm").addEventListener("submit", (event) => {
-    event.preventDefault();
-    void loadTasks(false);
+  $("#newChatButton")?.addEventListener("click", () => {
+    loadSession("");
   });
-  $("#searchInput").addEventListener("input", () => {
-    window.clearTimeout(bindEvents.searchTimer);
-    bindEvents.searchTimer = window.setTimeout(() => void loadTasks(false), 220);
-  });
-  $("#statusFilter").addEventListener("change", () => void loadTasks(false));
-  $("#refreshButton").addEventListener("click", () => void refreshAll());
 
-  $("#dispatchForm").addEventListener("submit", async (event) => {
+  $("#sessionList")?.addEventListener("click", async (event) => {
+    const item = event.target.closest(".session-item");
+    if (!item) return;
+    const taskId = item.dataset.id;
+
+    if (event.target.closest(".delete-btn")) {
+      event.stopPropagation();
+      await deleteSession(taskId);
+      return;
+    }
+    if (event.target.closest(".rename-btn")) {
+      event.stopPropagation();
+      await renameSession(taskId);
+      return;
+    }
+    if (event.target.closest(".pin-btn")) {
+      event.stopPropagation();
+      await togglePinSession(taskId);
+      return;
+    }
+
+    await loadSession(taskId);
+  });
+
+  $("#umoSwitcher")?.addEventListener("click", () => {
+    $("#umoModal")?.classList.remove("hidden");
+  });
+
+  $("#umoListContainer")?.addEventListener("click", (event) => {
+    const item = event.target.closest(".umo-list-item");
+    if (!item) return;
+    state.selectedUmo = item.dataset.umo;
+    $("#umoModal")?.classList.add("hidden");
+    renderUmoSwitcher();
+    updateSessionList();
+    loadSession("");
+  });
+
+  $("#newUmoForm")?.addEventListener("submit", (event) => {
     event.preventDefault();
+    const input = $("#newUmoInput");
+    const value = input?.value.trim() || "";
+    if (!value) return;
+    if (!state.umos.includes(value)) {
+      state.umos.push(value);
+      state.umos.sort();
+    }
+    state.selectedUmo = value;
+    input.value = "";
+    $("#umoModal")?.classList.add("hidden");
+    renderUmoSwitcher();
+    updateSessionList();
+    loadSession("");
+  });
+
+  const promptText = $("#promptText");
+  promptText?.addEventListener("keydown", (event) => {
+    if (event.key === "Enter" && !event.shiftKey) {
+      event.preventDefault();
+      submitPrompt();
+    }
+  });
+  promptText?.addEventListener("input", function resizeInput() {
+    this.style.height = "auto";
+    this.style.height = `${this.scrollHeight}px`;
+  });
+
+  $("#chatForm")?.addEventListener("submit", (event) => {
+    event.preventDefault();
+    submitPrompt();
+  });
+
+  $("#toggleRight")?.addEventListener("click", () => {
+    $("#paneRight")?.classList.toggle("collapsed");
+  });
+
+  $$(".tab").forEach((button) => {
+    button.addEventListener("click", (event) => {
+      const target = event.currentTarget;
+      $$(".tab").forEach((item) => item.classList.remove("active"));
+      $$(".tab-panel").forEach((panel) => panel.classList.remove("active"));
+      target.classList.add("active");
+      $(`#${target.dataset.tab}Tab`)?.classList.add("active");
+    });
+  });
+
+  $("#stopButton")?.addEventListener("click", stopCurrentTask);
+  $("#rerunButton")?.addEventListener("click", rerunCurrentTask);
+  $("#doneButton")?.addEventListener("click", doneCurrentSession);
+  $("#exportButton")?.addEventListener("click", exportHistory);
+
+  $$(".close-modal").forEach((button) => {
+    button.addEventListener("click", () => {
+      button.closest(".modal-overlay")?.classList.add("hidden");
+    });
+  });
+
+  $("#settingsBtn")?.addEventListener("click", () => {
+    $("#settingsModal")?.classList.remove("hidden");
+  });
+
+  $("#settingsForm")?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const timeoutValue = Number($("#settingTimeout")?.value || 0);
     const payload = {
-      unified_msg_origin: $("#dispatchUmo").value.trim(),
-      agent_name: $("#dispatchAgent").value,
-      request_text: $("#dispatchText").value.trim(),
-      maid_full_reply: $("#dispatchReply").value.trim(),
+      default_agent_name: $("#settingDefaultAgent")?.value.trim() || "",
+      allowed_agent_names: ($("#settingAllowedAgents")?.value || "")
+        .split(",")
+        .map((item) => item.trim())
+        .filter(Boolean),
+      hide_native_tools: Boolean($("#settingHideNative")?.checked),
+      hide_transfer_tools: Boolean($("#settingHideTransfer")?.checked),
+      include_raw_user_input: Boolean($("#settingRawInput")?.checked),
+      session_enabled: Boolean($("#settingSession")?.checked),
+      log_raw_llm_io: Boolean($("#settingLogRaw")?.checked),
+      session_timeout_minutes: timeoutValue > 0 ? timeoutValue : 60,
+      dispatch_prompt_template: $("#settingPrompt")?.value || "",
     };
     try {
-      const data = await bridge.apiPost("console/actions/dispatch", payload);
-      $("#dispatchText").value = "";
-      $("#dispatchReply").value = "";
-      if (data.task?.task_id) await loadDetail(data.task.task_id);
-      toast("已派发");
-    } catch (error) {
-      toast(error.message || "派发失败");
-    }
-  });
-
-  $("#steerForm").addEventListener("submit", async (event) => {
-    event.preventDefault();
-    const task = selectedTask();
-    if (!task) return;
-    const messageText = $("#steerText").value.trim();
-    if (!messageText) return;
-    try {
-      await bridge.apiPost("console/actions/steer", {
-        task_id: task.task_id,
-        message_text: messageText,
-      });
-      $("#steerText").value = "";
-      toast("已发送补充");
-    } catch (error) {
-      toast(error.message || "补充失败");
-    }
-  });
-
-  $("#stopButton").addEventListener("click", async () => {
-    const task = selectedTask();
-    if (!task) return;
-    try {
-      await bridge.apiPost("console/actions/stop", { task_id: task.task_id });
-      toast("已请求停止");
-    } catch (error) {
-      toast(error.message || "停止失败");
-    }
-  });
-
-  $("#rerunButton").addEventListener("click", async () => {
-    const task = selectedTask();
-    if (!task) return;
-    try {
-      const data = await bridge.apiPost("console/actions/rerun", { task_id: task.task_id });
-      if (data.task?.task_id) await loadDetail(data.task.task_id);
-      toast("已重跑");
-    } catch (error) {
-      toast(error.message || "重跑失败");
-    }
-  });
-
-  $("#doneButton").addEventListener("click", async () => {
-    const task = selectedTask();
-    if (!task) return;
-    try {
-      await bridge.apiPost("console/actions/done", { task_id: task.task_id });
-      toast("Session 已结束");
-    } catch (error) {
-      toast(error.message || "结束失败");
-    }
-  });
-
-  $("#exportButton").addEventListener("click", () => {
-    void bridge.download("console/export", {}, "maid-console-history.json");
-  });
-
-  $("#clearButton").addEventListener("click", async () => {
-    try {
-      await bridge.apiPost("console/clear", {});
-      state.selectedTaskId = "";
-      state.detail = null;
-      await refreshAll();
-      toast("历史已清空");
-    } catch (error) {
-      toast(error.message || "清空失败");
-    }
-  });
-
-  $("#settingsForm").addEventListener("submit", async (event) => {
-    event.preventDefault();
-    try {
-      const data = await bridge.apiPost("console/settings", readSettingsForm());
-      fillSettings(data.config);
-      await loadAgents();
+      const res = await apiPost("console/settings", payload);
+      state.settings = res.config || payload;
+      renderAgentOptions();
+      $("#settingsModal")?.classList.add("hidden");
       toast("配置已保存");
-    } catch (error) {
-      toast(error.message || "保存失败");
+    } catch (err) {
+      toast(err.message || "保存失败");
     }
   });
 
-  document.querySelectorAll(".tab").forEach((button) => {
-    button.addEventListener("click", () => setTab(button.dataset.tab));
+  $("#toggleLeft")?.addEventListener("click", () => {
+    const pane = $("#paneLeft");
+    if (pane) pane.style.display = pane.style.display === "none" ? "flex" : "none";
+  });
+
+  window.addEventListener("beforeunload", () => {
+    if (state.subscriptionId && bridge?.unsubscribeSSE) {
+      bridge.unsubscribeSSE(state.subscriptionId);
+    }
+    window.clearInterval(state.pollTimer);
   });
 }
 
 async function boot() {
   bindEvents();
-  renderStageRail();
+  bridge = window.AstrBotPluginPage || null;
+  if (!bridge) {
+    setStreamState("signal-error", "桥接缺失");
+    toast("页面桥接未加载");
+    return;
+  }
+
   await bridge.ready();
-  await refreshAll();
+  setStreamState("signal-poll", "轮询同步");
+  startPolling();
+  await refreshConsole({ silent: true, keepSession: false });
   await subscribeStream();
-  window.addEventListener("beforeunload", () => {
-    if (state.subscriptionId) {
-      void bridge.unsubscribeSSE(state.subscriptionId);
-    }
-  });
 }
 
-boot().catch((error) => {
-  setStreamState("signal-error", "错误");
-  toast(error.message || "控制台启动失败");
+boot().catch((err) => {
+  setStreamState("signal-error", "启动失败");
+  toast(err.message || "启动失败");
 });

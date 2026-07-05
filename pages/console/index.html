@@ -2,94 +2,97 @@
 <html lang="zh-CN">
   <head>
     <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>代理女仆控制台</title>
-    <link rel="stylesheet" href="./style.css" />
-    <script src="/api/plugin/page/bridge-sdk.js"></script>
-    <script src="./app.js" defer></script>
+    <title>MAID AGENT 控制台</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="stylesheet" href="style.css" />
   </head>
   <body>
-    <main class="shell">
-      <aside class="pane pane-left" aria-label="任务与历史">
-        <header class="pane-header">
-          <div>
-            <p class="eyebrow">Maid Agent</p>
-            <h1>调度舱</h1>
+    <main class="shell chat-layout">
+      <!-- 侧边栏: Session 列表 -->
+      <aside id="paneLeft" class="pane pane-left" aria-label="侧边栏">
+        <div class="sidebar-header">
+          <span id="streamState" class="signal signal-idle">连接中</span>
+          <button id="refreshButton" class="icon-btn small" aria-label="刷新" title="刷新">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 0 1-15.5 6.3L3 16"></path><path d="M3 21v-5h5"></path><path d="M3 12a9 9 0 0 1 15.5-6.3L21 8"></path><path d="M21 3v5h-5"></path></svg>
+          </button>
+        </div>
+        <div class="pane-content sidebar-layout">
+          <div class="sidebar-actions">
+            <button id="newChatButton" class="primary w-full" type="button">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
+              开启新对话
+            </button>
           </div>
-          <span id="streamState" class="signal signal-idle">离线</span>
-        </header>
+          
+          <div id="sessionList" class="session-list" aria-live="polite"></div>
 
-        <section class="overview-grid" aria-label="任务概览">
-          <div>
-            <span id="countRunning">0</span>
-            <small>运行</small>
+          <div class="sidebar-footer">
+            <div class="umo-switcher" id="umoSwitcher" role="button" tabindex="0" aria-label="切换用户">
+              <div class="umo-avatar">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path><circle cx="12" cy="7" r="4"></circle></svg>
+              </div>
+              <div class="umo-info">
+                <div class="umo-name" id="currentUmoName">加载中...</div>
+              </div>
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"></polyline></svg>
+            </div>
+            <button id="settingsBtn" class="icon-btn ghost" aria-label="全局配置" title="全局配置">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
+            </button>
           </div>
-          <div>
-            <span id="countDone">0</span>
-            <small>完成</small>
-          </div>
-          <div>
-            <span id="countError">0</span>
-            <small>异常</small>
-          </div>
-        </section>
-
-        <form id="filterForm" class="filter-row">
-          <input id="searchInput" type="search" placeholder="搜索任务、agent、原文" />
-          <select id="statusFilter" aria-label="状态筛选">
-            <option value="">全部</option>
-            <option value="queued">排队</option>
-            <option value="running">运行</option>
-            <option value="stopping">停止中</option>
-            <option value="done">完成</option>
-            <option value="partial_done">部分完成</option>
-            <option value="error">异常</option>
-            <option value="stopped">停止</option>
-          </select>
-        </form>
-
-        <div id="taskList" class="task-list" aria-live="polite"></div>
-
-        <section class="dispatch-panel" aria-label="手动派发">
-          <h2>手动派发</h2>
-          <form id="dispatchForm">
-            <label>
-              <span>目标 UMO</span>
-              <input id="dispatchUmo" autocomplete="off" placeholder="platform:FriendMessage:id" />
-            </label>
-            <label>
-              <span>Agent</span>
-              <select id="dispatchAgent"></select>
-            </label>
-            <label>
-              <span>任务要求</span>
-              <textarea id="dispatchText" rows="4" placeholder="交给管家的具体任务"></textarea>
-            </label>
-            <label>
-              <span>大小姐回复</span>
-              <textarea id="dispatchReply" rows="2" placeholder="可选"></textarea>
-            </label>
-            <button class="primary" type="submit">派发</button>
-          </form>
-        </section>
+        </div>
       </aside>
 
-      <section class="pane pane-center" aria-label="事件轨道">
-        <header class="center-header">
-          <div>
-            <p class="eyebrow">Event rail</p>
-            <h2 id="selectedTitle">选择一个任务</h2>
+      <!-- 中心视口: 瀑布流对话 -->
+      <section class="pane pane-center" aria-label="主视口">
+        <header class="chat-header">
+          <div class="chat-header-left">
+            <button id="toggleLeft" class="icon-btn mobile-only" aria-label="折叠侧边栏">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="3" y1="12" x2="21" y2="12"></line><line x1="3" y1="6" x2="21" y2="6"></line><line x1="3" y1="18" x2="21" y2="18"></line></svg>
+            </button>
           </div>
-          <button id="refreshButton" class="ghost" type="button">刷新</button>
+          <div class="chat-header-right">
+            <button id="toggleRight" class="icon-btn" aria-label="折叠属性面板" title="折叠/展开 属性面板">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect><line x1="15" y1="3" x2="15" y2="21"></line></svg>
+            </button>
+          </div>
         </header>
 
-        <div id="stageRail" class="stage-rail"></div>
-        <div id="eventList" class="event-list empty-state">
-          <p>暂无事件</p>
+        <div id="chatFeed" class="chat-feed is-empty">
+          <!-- Empty State -->
+          <div class="empty-hero" id="emptyHero">
+            <div class="brand-logo">
+              <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a10 10 0 1 0 10 10H12V2Z"></path><path d="M12 12 2.1 7.1"></path><path d="m12 12 9.9 4.9"></path></svg>
+            </div>
+          </div>
+        </div>
+
+        <div class="chat-footer">
+          <section class="prompt-area">
+            <form id="chatForm" class="prompt-form">
+              <div class="prompt-main">
+                <textarea id="promptText" rows="1" placeholder="给管家发送消息..." autocomplete="off"></textarea>
+              </div>
+              <div class="prompt-toolbar">
+                <div class="prompt-toolbar-left">
+                  <div class="model-selector-inline">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 2 7 12 12 22 7 12 2"></polygon><polyline points="2 17 12 22 22 17"></polyline><polyline points="2 12 12 17 22 12"></polyline></svg>
+                    <select id="dispatchAgent" aria-label="选择 Agent"></select>
+                  </div>
+                </div>
+                <div class="prompt-toolbar-right">
+                  <button class="primary send-btn icon-only" type="submit" aria-label="发送" id="sendBtn">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"></line><polygon points="22 2 15 22 11 13 2 9 22 2"></polygon></svg>
+                  </button>
+                </div>
+              </div>
+            </form>
+          </section>
         </div>
       </section>
 
-      <aside class="pane pane-right" aria-label="Inspector">
+      <!-- 右侧属性面板 -->
+      <aside id="paneRight" class="pane pane-right collapsed" aria-label="属性">
         <header class="pane-header compact">
           <div>
             <p class="eyebrow">Inspector</p>
@@ -97,42 +100,68 @@
           </div>
         </header>
 
-        <div class="tab-row" role="tablist">
-          <button class="tab active" type="button" data-tab="detail">任务</button>
-          <button class="tab" type="button" data-tab="raw">原文</button>
-          <button class="tab" type="button" data-tab="settings">配置</button>
+        <div class="pane-content">
+          <div class="tab-row" role="tablist">
+            <button class="tab active" type="button" data-tab="detail">属性</button>
+            <button class="tab" type="button" data-tab="raw">原文</button>
+          </div>
+
+          <section id="detailTab" class="tab-panel active">
+            <dl id="taskFacts" class="facts"></dl>
+            <div class="action-grid">
+              <button id="stopButton" class="danger" type="button">停止</button>
+              <button id="rerunButton" type="button">重跑</button>
+              <button id="doneButton" type="button">结束 Session</button>
+            </div>
+            <div class="audit-header">
+              <h3>操作审计</h3>
+            </div>
+            <div id="actionList" class="action-list"></div>
+          </section>
+
+          <section id="rawTab" class="tab-panel">
+            <h3>任务原文</h3>
+            <pre id="rawRequest" class="raw-box"></pre>
+            <h3>元数据</h3>
+            <pre id="rawMeta" class="raw-box"></pre>
+            <div class="action-grid">
+              <button id="exportButton" type="button">导出历史</button>
+            </div>
+          </section>
         </div>
+      </aside>
+    </main>
 
-        <section id="detailTab" class="tab-panel active">
-          <dl id="taskFacts" class="facts"></dl>
-          <div class="action-grid">
-            <button id="stopButton" class="danger" type="button">停止</button>
-            <button id="rerunButton" type="button">重跑</button>
-            <button id="doneButton" type="button">结束 Session</button>
+    <!-- UMO Selector Modal -->
+    <div id="umoModal" class="modal-overlay hidden">
+      <div class="modal-content umo-modal">
+        <header class="modal-header">
+          <h2>选择用户 (UMO)</h2>
+          <button class="icon-btn close-modal" aria-label="关闭">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+          </button>
+        </header>
+        <div class="modal-body">
+          <div class="new-umo-section">
+            <form id="newUmoForm" class="new-umo-form">
+              <input type="text" id="newUmoInput" placeholder="输入新的 UMO 并回车..." required autocomplete="off" />
+            </form>
           </div>
-          <form id="steerForm" class="steer-form">
-            <label>
-              <span>补充要求</span>
-              <textarea id="steerText" rows="4" placeholder="给当前 runner 的追加指令"></textarea>
-            </label>
-            <button type="submit">发送补充</button>
-          </form>
-          <h3>操作审计</h3>
-          <div id="actionList" class="action-list"></div>
-        </section>
+          <div class="umo-list" id="umoListContainer"></div>
+        </div>
+      </div>
+    </div>
 
-        <section id="rawTab" class="tab-panel">
-          <h3>任务原文</h3>
-          <pre id="rawRequest" class="raw-box"></pre>
-          <h3>元数据</h3>
-          <pre id="rawMeta" class="raw-box"></pre>
-          <div class="action-grid">
-            <button id="exportButton" type="button">导出历史</button>
-            <button id="clearButton" class="danger" type="button">清空历史</button>
-          </div>
-        </section>
-
-        <section id="settingsTab" class="tab-panel">
+    <!-- Global Settings Modal -->
+    <div id="settingsModal" class="modal-overlay hidden">
+      <div class="modal-content">
+        <header class="modal-header">
+          <h2>全局配置</h2>
+          <button class="icon-btn close-modal" aria-label="关闭">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+          </button>
+        </header>
+        <div class="modal-body">
           <form id="settingsForm" class="settings-form">
             <label>
               <span>默认 Agent</span>
@@ -157,12 +186,17 @@
               <span>调度提示模板</span>
               <textarea id="settingPrompt" rows="8"></textarea>
             </label>
-            <button class="primary" type="submit">保存配置</button>
+            <div class="modal-footer">
+              <button class="ghost close-modal" type="button">取消</button>
+              <button class="primary" type="submit">保存全局配置</button>
+            </div>
           </form>
-        </section>
-      </aside>
-    </main>
+        </div>
+      </div>
+    </div>
 
     <div id="toast" class="toast" role="status" aria-live="polite"></div>
+    <script src="/api/plugin/page/bridge-sdk.js"></script>
+    <script src="app.js"></script>
   </body>
 </html>

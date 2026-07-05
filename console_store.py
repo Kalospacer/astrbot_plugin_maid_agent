@@ -214,6 +214,30 @@ class MaidConsoleEventStore:
             await asyncio.to_thread(self._clear_history)
         await self._publish({"type": "reset", "created_at": _utcnow()})
 
+    async def delete_task(self, task_id: str) -> None:
+        async with self._write_lock:
+            await asyncio.to_thread(self._delete_task, task_id)
+        await self._publish({"type": "reset", "created_at": _utcnow()})
+
+    async def update_task_meta(
+        self,
+        task_id: str,
+        title: str | None = None,
+        meta_update: dict[str, Any] | None = None,
+    ) -> dict[str, Any] | None:
+        now = _utcnow()
+        async with self._write_lock:
+            task = await asyncio.to_thread(
+                self._update_task_meta,
+                task_id,
+                title,
+                meta_update,
+                now,
+            )
+        if task:
+            await self._publish({"type": "task", "task": task})
+        return task
+
     async def _publish(self, item: dict[str, Any]) -> None:
         item.setdefault("event_id", uuid.uuid4().hex)
         item.setdefault("created_at", _utcnow())
@@ -514,3 +538,51 @@ class MaidConsoleEventStore:
             conn.execute("DELETE FROM tasks")
         with self._connect() as conn:
             conn.execute("VACUUM")
+
+    def _delete_task(self, task_id: str) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                """
+                DELETE FROM task_actions
+                WHERE task_id = ?
+                   OR task_id IN (SELECT task_id FROM tasks WHERE parent_task_id = ?)
+                """,
+                (task_id, task_id),
+            )
+            conn.execute(
+                """
+                DELETE FROM task_events
+                WHERE task_id = ?
+                   OR task_id IN (SELECT task_id FROM tasks WHERE parent_task_id = ?)
+                """,
+                (task_id, task_id),
+            )
+            conn.execute("DELETE FROM tasks WHERE task_id = ? OR parent_task_id = ?", (task_id, task_id))
+
+    def _update_task_meta(
+        self, task_id: str, title: str | None, meta_update: dict[str, Any] | None, now: str
+    ) -> dict[str, Any] | None:
+        with self._connect() as conn:
+            row = conn.execute("SELECT * FROM tasks WHERE task_id = ?", (task_id,)).fetchone()
+            if not row:
+                return None
+            data = dict(row)
+            meta = _load_json(data.get("meta_json", "{}"))
+            new_title = title if title is not None else data["title"]
+
+            if meta_update:
+                meta.update(meta_update)
+
+            meta_json_str = (
+                _dump_json(meta) if meta_update is not None else data.get("meta_json", "{}")
+            )
+
+            conn.execute(
+                "UPDATE tasks SET title = ?, meta_json = ?, updated_at = ? WHERE task_id = ?",
+                (new_title, meta_json_str, now, task_id),
+            )
+            updated_row = conn.execute(
+                "SELECT * FROM tasks WHERE task_id = ?",
+                (task_id,),
+            ).fetchone()
+            return self._row_to_task(updated_row)

@@ -195,6 +195,18 @@ class MaidAgent(Star):
                 "Maid console task detail",
             ),
             (
+                f"{prefix}/tasks/<task_id>/update",
+                self.console_update_task,
+                ["POST"],
+                "Update maid console task",
+            ),
+            (
+                f"{prefix}/tasks/<task_id>/delete",
+                self.console_delete_task,
+                ["POST"],
+                "Delete maid console task",
+            ),
+            (
                 f"{prefix}/tasks/<task_id>/events",
                 self.console_task_events,
                 ["GET"],
@@ -455,12 +467,9 @@ class MaidAgent(Star):
         return self._console_ok(overview)
 
     async def console_tasks(self):
-        try:
-            limit = int(request.args.get("limit", 80))
-        except (TypeError, ValueError):
-            limit = 80
-        status = str(request.args.get("status", "") or "").strip()
-        query = str(request.args.get("query", "") or "").strip()
+        limit = request.args.get("limit", 80, type=int)
+        status = request.args.get("status", "", type=str)
+        query = request.args.get("query", "", type=str) or request.args.get("q", "", type=str)
         tasks = await self.console_store.list_tasks(limit=limit, status=status, query=query)
         return self._console_ok({"tasks": tasks})
 
@@ -490,6 +499,19 @@ class MaidAgent(Star):
         events = await self.console_store.get_task_events(task_id)
         actions = await self.console_store.get_task_actions(task_id)
         return self._console_ok({"events": events, "actions": actions})
+
+    async def console_update_task(self, task_id: str):
+        body = await self._console_json_body()
+        title = body.get("title")
+        meta = body.get("meta")
+        task = await self.console_store.update_task_meta(task_id, title=title, meta_update=meta)
+        if task is None:
+            return self._console_error("任务不存在。", status_code=404)
+        return self._console_ok({"task": task})
+
+    async def console_delete_task(self, task_id: str):
+        await self.console_store.delete_task(task_id)
+        return self._console_ok({}, "任务已删除")
 
     async def console_stream(self):
         queue = await self.console_store.subscribe()
@@ -528,6 +550,7 @@ class MaidAgent(Star):
         maid_full_reply: str = "",
         true_user_input: str = "",
         rerun_of: str = "",
+        parent_task_id: str = "",
     ) -> dict[str, Any]:
         unified_msg_origin = self._validate_dashboard_umo(unified_msg_origin)
         if not request_text.strip():
@@ -560,6 +583,7 @@ class MaidAgent(Star):
                 request_text=task_info.maid_request,
                 title=f"手动派发: {task_info.maid_request[:60]}",
                 meta={"rerun_of": rerun_of} if rerun_of else {},
+                parent_task_id=parent_task_id,
             )
         )
         await self.console_store.record_action(
@@ -607,6 +631,7 @@ class MaidAgent(Star):
                 request_text=str(body.get("request_text") or ""),
                 maid_full_reply=str(body.get("maid_full_reply") or ""),
                 true_user_input=str(body.get("true_user_input") or ""),
+                parent_task_id=str(body.get("parent_task_id") or ""),
             )
             return self._console_ok({"task": task}, "已派发。")
         except Exception as exc:

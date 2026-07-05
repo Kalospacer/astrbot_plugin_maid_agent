@@ -381,6 +381,132 @@ class MaidAgent(Star):
         except Exception as exc:
             logger.warning("[大小姐模式] 控制台动作记录失败: %s", exc)
 
+    @staticmethod
+    def _message_content_to_text(content: Any) -> str:
+        if content is None:
+            return ""
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            parts: list[str] = []
+            for item in content:
+                if isinstance(item, dict):
+                    text = item.get("text") or item.get("content")
+                    if text:
+                        parts.append(str(text))
+                else:
+                    text = getattr(item, "text", None) or getattr(item, "content", None)
+                    if text:
+                        parts.append(str(text))
+            return "\n".join(parts)
+        if isinstance(content, dict):
+            return json.dumps(content, ensure_ascii=False, indent=2, default=str)
+        return str(content)
+
+    @staticmethod
+    def _parse_tool_arguments(arguments: Any) -> Any:
+        if not isinstance(arguments, str):
+            return arguments
+        value = arguments.strip()
+        if not value:
+            return ""
+        try:
+            return json.loads(value)
+        except Exception:
+            return arguments
+
+    @staticmethod
+    def _stringify_tool_value(value: Any) -> str:
+        if value is None:
+            return ""
+        if isinstance(value, str):
+            return value
+        return json.dumps(value, ensure_ascii=False, indent=2, default=str)
+
+    @classmethod
+    def _build_tool_chain_payload(cls, messages: list[dict[str, Any]]) -> dict[str, Any]:
+        entries: list[dict[str, Any]] = []
+        raw_messages: list[dict[str, Any]] = []
+        tool_names_by_id: dict[str, str] = {}
+
+        for index, raw_message in enumerate(messages):
+            message = raw_message if isinstance(raw_message, dict) else {"repr": repr(raw_message)}
+            raw_messages.append(message)
+            role = str(message.get("role") or "")
+            content_text = cls._message_content_to_text(message.get("content"))
+
+            if role == "assistant" and content_text.strip():
+                entries.append(
+                    {
+                        "index": index,
+                        "kind": "assistant",
+                        "title": "子 agent 输出",
+                        "message": content_text,
+                    }
+                )
+
+            if role == "assistant":
+                for raw_call in message.get("tool_calls") or []:
+                    call = raw_call if isinstance(raw_call, dict) else {"repr": repr(raw_call)}
+                    function = call.get("function") if isinstance(call.get("function"), dict) else {}
+                    tool_call_id = str(call.get("id") or "")
+                    tool_name = str(function.get("name") or "")
+                    parsed_arguments = cls._parse_tool_arguments(function.get("arguments"))
+                    if tool_call_id:
+                        tool_names_by_id[tool_call_id] = tool_name
+                    entries.append(
+                        {
+                            "index": index,
+                            "kind": "tool_call",
+                            "title": f"调用 {tool_name or '工具'}",
+                            "message": cls._stringify_tool_value(parsed_arguments),
+                            "tool_name": tool_name,
+                            "tool_call_id": tool_call_id,
+                            "arguments": parsed_arguments,
+                        }
+                    )
+                continue
+
+            if role == "tool":
+                tool_call_id = str(message.get("tool_call_id") or "")
+                tool_name = tool_names_by_id.get(tool_call_id, "")
+                entries.append(
+                    {
+                        "index": index,
+                        "kind": "tool_result",
+                        "title": f"{tool_name or tool_call_id or '工具'} 返回",
+                        "message": content_text,
+                        "tool_name": tool_name,
+                        "tool_call_id": tool_call_id,
+                    }
+                )
+
+        return {
+            "entries": entries,
+            "messages": raw_messages,
+            "message_count": len(raw_messages),
+        }
+
+    async def _console_tool_chain_snapshot_safe(
+        self,
+        task_id: str,
+        messages: list[dict[str, Any]],
+        *,
+        meta: dict[str, Any] | None = None,
+    ) -> None:
+        if not task_id:
+            return
+        try:
+            payload = self._build_tool_chain_payload(messages)
+            if meta:
+                payload.update(meta)
+            await self.console_store.update_task_meta(
+                task_id,
+                meta_update={"tool_chain": payload},
+            )
+        except Exception as exc:
+            logger.warning("[大小姐模式] 控制台工具调用链记录失败: %s", exc)
+
     async def _update_single_assistant_output(
         self,
         task_id: str,
@@ -944,6 +1070,9 @@ class MaidAgent(Star):
                 on_runner_unregistered=self._unregister_background_runner,
                 on_assistant_output_updated=(
                     lambda output: self._update_single_assistant_output(task_id, output)
+                ),
+                on_tool_chain_updated=(
+                    lambda messages: self._console_tool_chain_snapshot_safe(task_id, messages)
                 ),
             )
             if event.get_extra("agent_stop_requested"):
@@ -1684,6 +1813,16 @@ class MaidAgent(Star):
                         if task_id
                         else None
                     ),
+                    on_tool_chain_updated=(
+                        (
+                            lambda messages: self._console_tool_chain_snapshot_safe(
+                                task_id,
+                                messages,
+                            )
+                        )
+                        if task_id
+                        else None
+                    ),
                 )
                 if task_id:
                     await self.background_tasks.update_progress(
@@ -1919,6 +2058,13 @@ class MaidAgent(Star):
                 on_assistant_output_updated=(
                     lambda output: self._update_batch_item_assistant_output(
                         batch_id, item_id, output
+                    )
+                ),
+                on_tool_chain_updated=(
+                    lambda messages: self._console_tool_chain_snapshot_safe(
+                        item_id,
+                        messages,
+                        meta={"batch_id": batch_id},
                     )
                 ),
             )
@@ -2362,7 +2508,7 @@ class MaidAgent(Star):
         runner_event = self._background_runner_events_by_runner_id.get(id(runner))
         active_sender_id = runner_event.get_sender_id() if runner_event is not None else None
         sender_id = event.get_sender_id()
-        if sender_id != active_sender_id:
+        if sender_id != active_sender_id and current.sender_id != "dashboard":
             return "当前后台管家任务不属于本次发言的对方，无法补充要求。"
 
         ticket = runner.follow_up(message_text=message_text)

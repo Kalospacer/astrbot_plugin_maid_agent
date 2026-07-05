@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from typing import TYPE_CHECKING, Any
 
 from astrbot.api import logger
@@ -234,6 +235,39 @@ async def _publish_latest_assistant_output(
     return last_published_output
 
 
+def _dump_runner_messages(runner: ToolLoopAgentRunner) -> list[dict[str, Any]]:
+    dumped: list[dict[str, Any]] = []
+    for message in runner.run_context.messages:
+        try:
+            if hasattr(message, "model_dump"):
+                dumped.append(message.model_dump())
+            elif isinstance(message, dict):
+                dumped.append(message)
+            else:
+                dumped.append({"repr": repr(message)})
+        except Exception as exc:
+            dumped.append({"repr": repr(message), "dump_error": str(exc)})
+    return dumped
+
+
+async def _publish_tool_chain_snapshot(
+    runner: ToolLoopAgentRunner,
+    on_tool_chain_updated,
+    last_signature: str,
+) -> str:
+    if on_tool_chain_updated is None:
+        return last_signature
+    messages = _dump_runner_messages(runner)
+    try:
+        signature = json.dumps(messages, ensure_ascii=False, sort_keys=True, default=str)
+    except Exception:
+        signature = repr(messages)
+    if signature == last_signature:
+        return last_signature
+    await on_tool_chain_updated(messages)
+    return signature
+
+
 def _get_latest_assistant_output(messages: list[Message]) -> str:
     for message in reversed(messages):
         if message.role != "assistant":
@@ -324,6 +358,7 @@ async def dispatch_to_maid_agent(
     on_runner_registered=None,
     on_runner_unregistered=None,
     on_assistant_output_updated=None,
+    on_tool_chain_updated=None,
 ) -> tuple[str, str]:
     """根据 agent 名调用对应子 agent，并返回其自然语言结果与实际命中的 agent 名。"""
     handoff, resolved_agent_name = _resolve_handoff(
@@ -429,6 +464,7 @@ async def dispatch_to_maid_agent(
     event_registered = False
     step_count = 0
     last_published_output = ""
+    last_published_tool_chain = ""
 
     try:
         if on_runner_registered is not None:
@@ -448,6 +484,11 @@ async def dispatch_to_maid_agent(
                 )
                 if _should_stop_background_subagent(runner_event):
                     runner.request_stop()
+            last_published_tool_chain = await _publish_tool_chain_snapshot(
+                runner,
+                on_tool_chain_updated,
+                last_published_tool_chain,
+            )
 
         if not runner.done():
             logger.warning(
@@ -470,6 +511,11 @@ async def dispatch_to_maid_agent(
                 )
                 if _should_stop_background_subagent(runner_event):
                     runner.request_stop()
+            last_published_tool_chain = await _publish_tool_chain_snapshot(
+                runner,
+                on_tool_chain_updated,
+                last_published_tool_chain,
+            )
     finally:
         if on_runner_unregistered is not None:
             on_runner_unregistered(event.unified_msg_origin, runner)

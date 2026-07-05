@@ -19,6 +19,7 @@ const state = {
   pollTimer: 0,
   refreshInFlight: false,
   refreshQueued: false,
+  thinkingOpenState: {},
 };
 
 const $ = (selector) => document.querySelector(selector);
@@ -92,6 +93,38 @@ function scrollToBottom(el) {
   if (el) el.scrollTop = el.scrollHeight;
 }
 
+function captureFeedScroll() {
+  const feed = $("#chatFeed");
+  if (!feed) return null;
+  return {
+    wasAtBottom: isAtBottom(feed),
+    bottomOffset: feed.scrollHeight - feed.scrollTop,
+  };
+}
+
+function applyFeedScroll(snapshot, mode) {
+  const feed = $("#chatFeed");
+  if (!feed) return;
+  window.setTimeout(() => {
+    if (mode === "bottom") {
+      scrollToBottom(feed);
+      return;
+    }
+    if (!snapshot) return;
+    if (mode === "auto" && snapshot.wasAtBottom) {
+      scrollToBottom(feed);
+      return;
+    }
+    if (mode === "preserve") {
+      if (snapshot.wasAtBottom) {
+        scrollToBottom(feed);
+      } else {
+        feed.scrollTop = Math.max(0, feed.scrollHeight - snapshot.bottomOffset);
+      }
+    }
+  }, 50);
+}
+
 function taskTitle(task) {
   return task?.title || task?.request_text || "新会话";
 }
@@ -161,7 +194,7 @@ async function loadTasks() {
   updateSessionList();
 }
 
-async function loadSession(taskId) {
+async function loadSession(taskId, { scrollMode = "bottom" } = {}) {
   if (!taskId) {
     state.selectedSessionId = "";
     state.sessionTasks = [];
@@ -173,6 +206,7 @@ async function loadSession(taskId) {
     return;
   }
 
+  const scrollSnapshot = captureFeedScroll();
   const selected = state.tasks.find((task) => task.task_id === taskId);
   const rootId = selected?.parent_task_id || taskId;
   state.selectedSessionId = rootId;
@@ -194,7 +228,7 @@ async function loadSession(taskId) {
   renderChatFeed();
   renderInspector();
   updateSessionList();
-  window.setTimeout(() => scrollToBottom($("#chatFeed")), 50);
+  applyFeedScroll(scrollSnapshot, scrollMode);
 }
 
 async function refreshConsole({ silent = false, keepSession = true } = {}) {
@@ -214,7 +248,7 @@ async function refreshConsole({ silent = false, keepSession = true } = {}) {
         (task) => task.task_id === selectedBefore || task.parent_task_id === selectedBefore,
       );
       if (stillExists) {
-        await loadSession(selectedBefore);
+        await loadSession(selectedBefore, { scrollMode: "preserve" });
       } else {
         await loadSession("");
       }
@@ -319,6 +353,23 @@ function updateSessionList() {
       .join("");
 }
 
+function captureThinkingOpenState() {
+  $$("details[data-thinking-key]").forEach((details) => {
+    state.thinkingOpenState[details.dataset.thinkingKey] = details.open;
+  });
+}
+
+function getThinkingKey(task) {
+  return `thinking:${task.task_id}`;
+}
+
+function getThinkingOpenAttribute(task, defaultOpen) {
+  const key = getThinkingKey(task);
+  const hasStoredState = Object.prototype.hasOwnProperty.call(state.thinkingOpenState, key);
+  const shouldOpen = hasStoredState ? state.thinkingOpenState[key] : defaultOpen;
+  return shouldOpen ? "open" : "";
+}
+
 function renderChatFeed() {
   const feed = $("#chatFeed");
   if (!feed) return;
@@ -336,6 +387,7 @@ function renderChatFeed() {
     return;
   }
 
+  captureThinkingOpenState();
   feed.classList.remove("is-empty");
   let html = "";
 
@@ -376,7 +428,7 @@ function renderChatFeed() {
 
       if (thinkingHtml || isRunning) {
         html += `
-          <details class="thinking-block" ${isRunning ? "open" : ""}>
+          <details class="thinking-block" data-thinking-key="${escapeHtml(getThinkingKey(task))}" ${getThinkingOpenAttribute(task, isRunning)}>
             <summary class="thinking-summary">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="transform: rotate(90deg);"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg>
               ${isRunning ? "运行中" : "过程"}
@@ -403,6 +455,62 @@ function renderChatFeed() {
   feed.innerHTML = html;
 }
 
+function stringifyStructuredValue(value) {
+  if (value === undefined || value === null) return "";
+  if (typeof value === "string") return value;
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch {
+    return String(value);
+  }
+}
+
+function renderToolChain(task) {
+  const node = $("#toolChain");
+  if (!node) return;
+  const chain = taskMeta(task).tool_chain || {};
+  const entries = Array.isArray(chain.entries) ? chain.entries : [];
+  const rawMessages = Array.isArray(chain.messages) ? chain.messages : [];
+
+  if (entries.length === 0 && rawMessages.length === 0) {
+    node.innerHTML = `<div class="empty-state">暂无工具调用链</div>`;
+    return;
+  }
+
+  const entriesHtml = entries
+    .map((entry) => {
+      const kind = entry.kind || "message";
+      const body = stringifyStructuredValue(entry.message);
+      const toolCallId = entry.tool_call_id
+        ? `<span class="tool-call-id">${escapeHtml(compactId(entry.tool_call_id))}</span>`
+        : "";
+      return `
+        <article class="tool-chain-item ${escapeHtml(kind)}">
+          <div class="tool-chain-head">
+            <span class="tool-chain-kind">${escapeHtml(kind)}</span>
+            <span class="tool-chain-index">#${escapeHtml(entry.index ?? "")}</span>
+            ${toolCallId}
+          </div>
+          <div class="tool-chain-title">${escapeHtml(entry.title || kind)}</div>
+          ${body ? `<pre class="tool-chain-body">${escapeHtml(body)}</pre>` : ""}
+        </article>
+      `;
+    })
+    .join("");
+
+  const rawHtml =
+    rawMessages.length > 0
+      ? `
+        <details class="tool-chain-raw">
+          <summary>原始 messages (${escapeHtml(rawMessages.length)})</summary>
+          <pre class="raw-box">${escapeHtml(JSON.stringify(rawMessages, null, 2))}</pre>
+        </details>
+      `
+      : "";
+
+  node.innerHTML = `${entriesHtml}${rawHtml}`;
+}
+
 function renderInspector() {
   const task = state.detail?.task;
   if (!task) {
@@ -411,6 +519,7 @@ function renderInspector() {
     $("#actionList").innerHTML = "";
     $("#rawRequest").textContent = "";
     $("#rawMeta").textContent = "";
+    renderToolChain(null);
     return;
   }
 
@@ -438,6 +547,7 @@ function renderInspector() {
 
   $("#rawRequest").textContent = task.request_text || "";
   $("#rawMeta").textContent = JSON.stringify(taskMeta(task), null, 2);
+  renderToolChain(task);
 }
 
 async function submitPrompt() {
@@ -483,7 +593,7 @@ async function submitPrompt() {
     mergeTask(res.task);
     updateKnownUmos();
     state.selectedUmo = res.task.unified_msg_origin || state.selectedUmo;
-    await loadSession(parentId || res.task.task_id);
+    await loadSession(parentId || res.task.task_id, { scrollMode: "bottom" });
     toast(parentId ? "已发送到当前会话" : "已创建会话");
   } catch (err) {
     toast(err.message || "发送失败");
@@ -568,7 +678,7 @@ async function rerunCurrentTask() {
     const res = await apiPost("console/actions/rerun", { task_id: task.task_id });
     if (!res.task) throw new Error(res.error || "重跑失败");
     mergeTask(res.task);
-    await loadSession(res.task.parent_task_id || res.task.task_id);
+    await loadSession(res.task.parent_task_id || res.task.task_id, { scrollMode: "bottom" });
     toast("已重新派发");
   } catch (err) {
     toast(err.message || "重跑失败");
@@ -619,7 +729,7 @@ window.handleSseMessage = async function handleSseMessage(event) {
       (data.task.task_id === state.selectedSessionId ||
         data.task.parent_task_id === state.selectedSessionId)
     ) {
-      await loadSession(state.selectedSessionId);
+      await loadSession(state.selectedSessionId, { scrollMode: "preserve" });
     }
     return;
   }
@@ -766,6 +876,17 @@ function bindEvents() {
     event.preventDefault();
     submitPrompt();
   });
+
+  $("#chatFeed")?.addEventListener(
+    "toggle",
+    (event) => {
+      const details = event.target;
+      if (!(details instanceof HTMLDetailsElement)) return;
+      const key = details.dataset.thinkingKey;
+      if (key) state.thinkingOpenState[key] = details.open;
+    },
+    true,
+  );
 
   $("#toggleRight")?.addEventListener("click", () => {
     $("#paneRight")?.classList.toggle("collapsed");

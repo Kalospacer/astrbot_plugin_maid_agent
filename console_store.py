@@ -329,6 +329,17 @@ class MaidConsoleEventStore:
 
     def _upsert_task(self, payload: dict[str, Any]) -> dict[str, Any]:
         with self._connect() as conn:
+            existing_row = conn.execute(
+                "SELECT meta_json FROM tasks WHERE task_id = ?",
+                (payload["task_id"],),
+            ).fetchone()
+            if existing_row is not None:
+                existing_meta = _load_json(existing_row["meta_json"])
+                next_meta = existing_meta if isinstance(existing_meta, dict) else {}
+                patch_meta = _load_json(payload.get("meta_json"))
+                if isinstance(patch_meta, dict):
+                    next_meta.update(patch_meta)
+                payload = {**payload, "meta_json": _dump_json(next_meta)}
             conn.execute(
                 """
                 INSERT INTO tasks (
@@ -402,6 +413,15 @@ class MaidConsoleEventStore:
                     (status, now, completed_at, completed_at, task_id),
                 )
             else:
+                existing_row = conn.execute(
+                    "SELECT meta_json FROM tasks WHERE task_id = ?",
+                    (task_id,),
+                ).fetchone()
+                existing_meta = _load_json(existing_row["meta_json"]) if existing_row else {}
+                next_meta = existing_meta if isinstance(existing_meta, dict) else {}
+                patch_meta = _load_json(meta_json)
+                if isinstance(patch_meta, dict):
+                    next_meta.update(patch_meta)
                 conn.execute(
                     """
                     UPDATE tasks
@@ -409,7 +429,7 @@ class MaidConsoleEventStore:
                         completed_at = CASE WHEN ? != '' THEN ? ELSE completed_at END
                     WHERE task_id = ?
                     """,
-                    (status, now, meta_json, completed_at, completed_at, task_id),
+                    (status, now, _dump_json(next_meta), completed_at, completed_at, task_id),
                 )
             row = conn.execute("SELECT * FROM tasks WHERE task_id = ?", (task_id,)).fetchone()
         return self._row_to_task(row)

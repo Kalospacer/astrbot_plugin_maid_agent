@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.1.4 - 2026-07-06
+
+- 新增插件内置 WebUI 控制台：提供 UMO 隔离的会话列表、GPT 风格任务续接输入、右侧 Inspector、历史导出、会话删除/重命名/置顶与全局配置编辑入口。
+- 修复 WebUI bridge 初始化与 SSE 订阅路径，前端现在正确等待 `AstrBotPluginPage.ready()`，订阅 `console/stream`，并在 SSE 不可用时使用轮询兜底同步，避免页面卡在“离线/加载中”或发送时报 `apiPost` 未定义。
+- 修复自动刷新抢占阅读位置的问题：轮询刷新会保留聊天滚动位置，只有用户已在底部时才自动跟随新输出；同时保留用户手动展开/收起的思考过程状态，避免刷新后自动关闭。
+- 恢复并增强完整工具调用链监控：子 agent 执行时持续保存 runner messages 快照，Inspector 新增“调用链”页签，按顺序展示 assistant 输出、工具调用、工具返回和原始 messages。
+- 修复 Console 续接运行中任务时被 sender 校验误拦截的问题，Dashboard/Console 创建的后台任务现在允许同一 UMO 继续补充要求。
+- 移除 WebUI 中危险的“清空历史”按钮，导出历史保留；停止、结束 Session、重跑等操作改为真实后端动作接口。
+- 将 WebUI 任务更新/删除接口改为 POST 路由，适配 AstrBot 插件页 bridge 仅支持 GET/POST 的限制。
+
 ## 1.1.3 - 2026-06-07
 
 - 修复流式输出关闭后，后台追答请求（`_request_maid_follow_up`）中因携带结构化 tool 消息历史且未提供 `tools` 定义，导致部分严格的 API 平台（如 Minimax、DeepSeek）返回空输出或报错 `EmptyModelOutputError` 的兼容性问题。此修复通过将追答历史简化为标准文本对话实现 100% 服务端兼容性。

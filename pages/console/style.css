@@ -21,7 +21,17 @@
 
   --shadow-float: 0 4px 12px rgba(0,0,0,0.05);
   --shadow-modal: 0 20px 25px -5px rgba(0,0,0,0.1), 0 10px 10px -5px rgba(0,0,0,0.04);
-  
+
+  /* Execution trace panel (terminal palette) */
+  --trace-bg: #1f1e1d;
+  --trace-bg-raised: #2a2826;
+  --trace-text: #e8e6e3;
+  --trace-muted: #9c9a94;
+  --trace-line: #3a3836;
+  --trace-accent: #d97757;
+  --trace-ok: #4ade80;
+  --trace-err: #f87171;
+
   --left-width: 260px;
   --right-width: 320px;
 }
@@ -241,59 +251,6 @@ textarea {
   display: flex;
   flex-direction: column;
   gap: 10px;
-}
-.tool-chain-item {
-  background: var(--bg-app);
-  border: 1px solid var(--line-subtle);
-  border-left: 3px solid var(--line-darker);
-  border-radius: 6px;
-  padding: 10px;
-}
-.tool-chain-item.tool_call {
-  border-left-color: #2563eb;
-}
-.tool-chain-item.tool_result {
-  border-left-color: var(--accent-neon);
-}
-.tool-chain-item.assistant {
-  border-left-color: #8b5cf6;
-}
-.tool-chain-head {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  color: var(--text-muted);
-  font-family: var(--font-mono);
-  font-size: 10px;
-  margin-bottom: 6px;
-}
-.tool-chain-kind {
-  text-transform: uppercase;
-}
-.tool-call-id {
-  margin-left: auto;
-}
-.tool-chain-title {
-  color: var(--text-main);
-  font-size: 12px;
-  font-weight: 600;
-  margin-bottom: 8px;
-  word-break: break-word;
-}
-.tool-chain-body {
-  background: var(--bg-sidebar);
-  border: 1px solid var(--line-subtle);
-  border-radius: 6px;
-  color: var(--text-main);
-  font-family: var(--font-mono);
-  font-size: 11px;
-  line-height: 1.45;
-  margin: 0;
-  max-height: 220px;
-  overflow: auto;
-  padding: 8px;
-  white-space: pre-wrap;
-  word-break: break-word;
 }
 .tool-chain-raw {
   border-top: 1px solid var(--line-subtle);
@@ -659,37 +616,180 @@ textarea {
   color: var(--text-muted);
 }
 
-/* Thinking block (events) */
-.thinking-block {
-  margin-top: 12px;
-  font-size: 13px;
-  border: 1px solid var(--line-darker);
-  border-radius: 8px;
+/* Execution trace panel (Claude Code style) */
+.trace-panel {
+  margin: 12px 0;
+  background: var(--trace-bg);
+  border: 1px solid var(--trace-line);
+  border-radius: 10px;
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: var(--trace-text);
   overflow: hidden;
-  margin-bottom: 12px;
 }
-.thinking-summary {
-  padding: 8px 12px;
-  background: var(--bg-sidebar);
-  color: var(--text-muted);
-  cursor: pointer;
+.trace-panel-inspector {
+  margin: 0;
+  border-radius: 8px;
+}
+.trace-summary {
   display: flex;
   align-items: center;
   gap: 8px;
+  padding: 8px 14px;
+  color: var(--trace-muted);
+  cursor: pointer;
   user-select: none;
+  list-style: none;
 }
-.thinking-details {
-  padding: 12px;
-  background: var(--bg-app);
-  color: var(--text-muted);
-  font-family: var(--font-mono);
-  border-top: 1px solid var(--line-darker);
-  font-size: 12px;
-  white-space: pre-wrap;
+.trace-summary:hover {
+  background: var(--trace-bg-raised);
+}
+.trace-caret {
+  color: var(--trace-accent);
+  font-size: 10px;
+  transition: transform 0.15s ease;
+}
+.trace-panel[open] > .trace-summary .trace-caret {
+  transform: rotate(90deg);
+}
+.trace-panel[open] > .trace-summary {
+  border-bottom: 1px solid var(--trace-line);
+}
+.trace-body {
+  padding: 10px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.trace-step {
+  margin: 0;
+}
+.trace-step-head {
+  display: block;
+  padding: 2px 4px;
+  margin: 0 -4px;
+  border-radius: 4px;
+  cursor: pointer;
+  user-select: none;
+  list-style: none;
+}
+.trace-step-head:hover {
+  background: var(--trace-bg-raised);
+}
+.trace-head-line {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+.trace-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  margin-top: 6px;
+  background: var(--trace-muted);
+}
+.trace-dot-ok { background: var(--trace-ok); }
+.trace-dot-error { background: var(--trace-err); }
+.trace-dot-dead { background: var(--trace-muted); opacity: 0.5; }
+.trace-dot-text { background: var(--trace-text); opacity: 0.85; }
+.trace-dot-running {
+  background: var(--trace-accent);
+  animation: trace-pulse 1.2s ease-in-out infinite;
+}
+@keyframes trace-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
+}
+.trace-step-main {
+  display: block;
+  flex: 1;
+  min-width: 0;
+}
+.trace-tool-name {
+  font-weight: 600;
+}
+.trace-tool-args {
+  color: var(--trace-muted);
   word-break: break-all;
 }
-.thinking-line {
-  margin-bottom: 4px;
+.trace-text-body {
+  flex: 1;
+  min-width: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.trace-result-preview {
+  display: block;
+  margin-top: 2px;
+  padding-left: 12px;
+  border-left: 2px solid var(--trace-line);
+  color: var(--trace-muted);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.trace-step[open] > .trace-step-head .trace-result-preview {
+  display: none;
+}
+.trace-expand-hint {
+  color: var(--trace-accent);
+  opacity: 0.85;
+}
+.trace-step-detail {
+  margin: 4px 0 8px 16px;
+  padding-left: 12px;
+  border-left: 2px solid var(--trace-line);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.trace-detail-label {
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--trace-muted);
+}
+.trace-detail-pre {
+  margin: 0;
+  padding: 10px;
+  background: var(--trace-bg-raised);
+  border: 1px solid var(--trace-line);
+  border-radius: 6px;
+  max-height: 320px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--trace-text);
+}
+.trace-running-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 0;
+  color: var(--trace-accent);
+}
+.trace-running-line .trace-dot {
+  margin-top: 0;
+}
+.trace-events {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px dashed var(--trace-line);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.trace-event-line {
+  color: var(--trace-muted);
+  font-size: 12px;
+  word-break: break-word;
+}
+.trace-event-line strong {
+  color: var(--trace-text);
+  font-weight: 600;
 }
 .action-result {
   font-size: 10px;

@@ -55,6 +55,17 @@ function formatTime(value) {
   });
 }
 
+function formatDuration(startIso, endIso) {
+  if (!startIso || !endIso) return "";
+  const ms = new Date(endIso) - new Date(startIso);
+  if (!Number.isFinite(ms) || ms < 0) return "";
+  const seconds = Math.round(ms / 1000);
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m${seconds % 60}s`;
+  return `${Math.floor(minutes / 60)}h${minutes % 60}m`;
+}
+
 function toast(message) {
   const node = $("#toast");
   if (!node) return;
@@ -415,7 +426,7 @@ function renderChatFeed() {
     }
 
     const events = state.sessionEvents[task.task_id] || [];
-    let thinkingHtml = "";
+    let eventLinesHtml = "";
     let responseHtml = "";
 
     for (const event of events) {
@@ -426,11 +437,11 @@ function renderChatFeed() {
       if (QUIET_EVENT_TYPES.has(event.event_type) || event.event_type?.startsWith("system")) {
         continue;
       }
-      thinkingHtml += `<div class="thinking-line"><strong>${escapeHtml(event.title || event.event_type)}</strong>${event.message ? ` - ${escapeHtml(event.message)}` : ""}</div>`;
+      eventLinesHtml += `<div class="trace-event-line"><strong>${escapeHtml(event.title || event.event_type)}</strong>${event.message ? ` - ${escapeHtml(event.message)}` : ""}</div>`;
     }
 
-    const isRunning = ACTIVE_STATUSES.has(task.status);
-    if (thinkingHtml || responseHtml || isRunning || task.status === "error") {
+    const traceHtml = renderTracePanel(task, "feed", eventLinesHtml);
+    if (traceHtml || responseHtml || task.status === "error") {
       html += `
         <div class="chat-message maid">
           <div class="chat-message-inner">
@@ -438,17 +449,7 @@ function renderChatFeed() {
             <div class="assistant-flow">
       `;
 
-      if (thinkingHtml || isRunning) {
-        html += `
-          <details class="thinking-block" data-thinking-key="${escapeHtml(getThinkingKey(task))}" ${getThinkingOpenAttribute(task, isRunning)}>
-            <summary class="thinking-summary">
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="transform: rotate(90deg);"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg>
-              ${isRunning ? "运行中" : "过程"}
-            </summary>
-            <div class="thinking-details">${thinkingHtml || "等待后台更新"}</div>
-          </details>
-        `;
-      }
+      html += traceHtml;
 
       if (responseHtml) {
         html += `<div class="bubble">${responseHtml.trim()}</div>`;
@@ -477,38 +478,251 @@ function stringifyStructuredValue(value) {
   }
 }
 
+const TRACE_ERROR_PATTERN = /^\s*(error|exception|traceback|失败|错误|超时)/i;
+
+function clipTraceValue(text, max) {
+  const value = String(text ?? "").replace(/\s+/g, " ").trim();
+  if (value.length <= max) return value;
+  if (/[\\/]/.test(value)) return `…${value.slice(-(max - 1))}`;
+  return `${value.slice(0, max - 1)}…`;
+}
+
+function summarizeToolArgs(args) {
+  if (args === undefined || args === null) return "";
+  if (typeof args !== "object" || Array.isArray(args)) {
+    return clipTraceValue(stringifyStructuredValue(args), 60);
+  }
+  const keys = Object.keys(args);
+  const parts = [];
+  for (const key of keys) {
+    const value = args[key];
+    const isText = typeof value === "string";
+    const shown = clipTraceValue(isText ? value : stringifyStructuredValue(value), 40);
+    parts.push(isText ? `${key}: "${shown}"` : `${key}: ${shown}`);
+    if (parts.length >= 2) break;
+  }
+  const extra = keys.length - parts.length;
+  return extra > 0 ? `${parts.join(", ")}, +${extra}` : parts.join(", ");
+}
+
+function pairToolChainSteps(entries) {
+  const steps = [];
+  const byCallId = new Map();
+
+  for (const raw of entries) {
+    const entry = raw && typeof raw === "object" ? raw : {};
+    const kind = entry.kind || "";
+
+    if (kind === "tool_call") {
+      const step = {
+        type: "tool",
+        name: String(entry.tool_name || ""),
+        callId: String(entry.tool_call_id || ""),
+        argsText: stringifyStructuredValue(entry.arguments ?? entry.message),
+        argsSummary: summarizeToolArgs(entry.arguments),
+        result: null,
+        index: entry.index,
+      };
+      steps.push(step);
+      if (step.callId) {
+        if (!byCallId.has(step.callId)) byCallId.set(step.callId, []);
+        byCallId.get(step.callId).push(step);
+      }
+      continue;
+    }
+
+    if (kind === "tool_result") {
+      const callId = String(entry.tool_call_id || "");
+      const text = String(entry.message ?? "");
+      const siblings = callId ? byCallId.get(callId) || [] : [];
+      const pending = siblings.find((step) => step.result === null);
+      if (pending) {
+        pending.result = text;
+        continue;
+      }
+      const latest = siblings[siblings.length - 1];
+      if (latest) {
+        latest.result = `${latest.result ?? ""}\n${text}`.trim();
+        continue;
+      }
+      steps.push({
+        type: "tool",
+        name: String(entry.tool_name || ""),
+        callId,
+        argsText: "",
+        argsSummary: "",
+        result: text,
+        index: entry.index,
+        orphan: true,
+      });
+      continue;
+    }
+
+    if (kind === "assistant") {
+      const text = String(entry.message ?? "").trim();
+      if (text) steps.push({ type: "text", text, index: entry.index });
+    }
+  }
+
+  return steps;
+}
+
+function traceStepStatus(step, taskActive) {
+  if (step.result !== null && step.result !== undefined) {
+    return TRACE_ERROR_PATTERN.test(step.result) ? "error" : "ok";
+  }
+  return taskActive ? "running" : "dead";
+}
+
+function truncateTraceText(text, { lines = 3, chars = 200 } = {}) {
+  const value = String(text ?? "").trim();
+  if (!value) return { preview: "", truncated: false, remainLines: 0 };
+  const allLines = value.split("\n");
+  let preview = allLines.slice(0, lines).join("\n");
+  let truncated = allLines.length > lines;
+  if (preview.length > chars) {
+    preview = preview.slice(0, chars);
+    truncated = true;
+  }
+  return { preview, truncated, remainLines: Math.max(0, allLines.length - lines) };
+}
+
+function getStepOpenAttribute(stepKey) {
+  return state.thinkingOpenState[stepKey] ? "open" : "";
+}
+
+function renderTraceExpandHint(remainLines) {
+  const label = remainLines > 0 ? `+${remainLines} 行` : "展开";
+  return `<span class="trace-expand-hint">(${escapeHtml(label)})</span>`;
+}
+
+function renderTraceStep(step, taskActive, stepKey) {
+  if (step.type === "text") {
+    const { preview, truncated, remainLines } = truncateTraceText(step.text, { lines: 3, chars: 300 });
+    const headLine = (bodyHtml) => `
+      <span class="trace-head-line">
+        <span class="trace-dot trace-dot-text"></span>
+        <span class="trace-text-body">${bodyHtml}</span>
+      </span>
+    `;
+    if (!truncated) {
+      return `<div class="trace-step trace-step-text">${headLine(escapeHtml(preview))}</div>`;
+    }
+    return `
+      <details class="trace-step trace-step-text" data-thinking-key="${escapeHtml(stepKey)}" ${getStepOpenAttribute(stepKey)}>
+        <summary class="trace-step-head">
+          ${headLine(`${escapeHtml(preview)}… ${renderTraceExpandHint(remainLines)}`)}
+        </summary>
+        <div class="trace-step-detail">
+          <pre class="trace-detail-pre">${escapeHtml(step.text)}</pre>
+        </div>
+      </details>
+    `;
+  }
+
+  const status = traceStepStatus(step, taskActive);
+  const name = step.name || (step.orphan ? compactId(step.callId) : "") || "工具";
+  const argsSummary = step.argsSummary ? `(${escapeHtml(step.argsSummary)})` : "()";
+
+  let previewHtml = "";
+  if (step.result !== null && step.result !== undefined && String(step.result).trim()) {
+    const { preview, truncated, remainLines } = truncateTraceText(step.result);
+    previewHtml = `
+      <span class="trace-result-preview">${escapeHtml(preview)}${truncated ? `… ${renderTraceExpandHint(remainLines)}` : ""}</span>
+    `;
+  }
+
+  const detailSections = [];
+  if (step.argsText) {
+    detailSections.push(`
+      <span class="trace-detail-label">参数</span>
+      <pre class="trace-detail-pre">${escapeHtml(step.argsText)}</pre>
+    `);
+  }
+  if (step.result !== null && step.result !== undefined && String(step.result).trim()) {
+    detailSections.push(`
+      <span class="trace-detail-label">结果</span>
+      <pre class="trace-detail-pre">${escapeHtml(String(step.result))}</pre>
+    `);
+  }
+  const detailHtml = detailSections.length
+    ? `<div class="trace-step-detail">${detailSections.join("")}</div>`
+    : "";
+
+  return `
+    <details class="trace-step trace-step-tool" data-thinking-key="${escapeHtml(stepKey)}" ${getStepOpenAttribute(stepKey)}>
+      <summary class="trace-step-head">
+        <span class="trace-head-line">
+          <span class="trace-dot trace-dot-${status}"></span>
+          <span class="trace-step-main">
+            <span class="trace-tool-name">${escapeHtml(name)}</span><span class="trace-tool-args">${argsSummary}</span>
+            ${previewHtml}
+          </span>
+        </span>
+      </summary>
+      ${detailHtml}
+    </details>
+  `;
+}
+
+function renderTracePanel(task, variant, extraHtml = "") {
+  if (!task) return "";
+  const chain = taskMeta(task).tool_chain || {};
+  const entries = Array.isArray(chain.entries) ? chain.entries : [];
+  const steps = pairToolChainSteps(entries);
+  const isActive = ACTIVE_STATUSES.has(task.status);
+
+  if (steps.length === 0 && !isActive && !extraHtml) return "";
+
+  const stepsHtml = steps
+    .map((step, position) => {
+      const stepKey = `step:${task.task_id}:${step.callId || `i${step.index ?? position}`}`;
+      return renderTraceStep(step, isActive, stepKey);
+    })
+    .join("");
+
+  const runningHtml = isActive
+    ? `<div class="trace-running-line"><span class="trace-dot trace-dot-running"></span>运行中…</div>`
+    : "";
+  const eventsHtml = extraHtml ? `<div class="trace-events">${extraHtml}</div>` : "";
+  const body = `<div class="trace-body">${stepsHtml}${runningHtml}${eventsHtml}</div>`;
+
+  if (variant === "inspector") {
+    return `<div class="trace-panel trace-panel-inspector">${body}</div>`;
+  }
+
+  const toolCount = steps.filter((step) => step.type === "tool").length;
+  const duration = formatDuration(task.created_at, task.completed_at || task.updated_at);
+  const summaryText = [
+    `${toolCount} 次工具调用`,
+    duration,
+    isActive ? "运行中" : task.status,
+  ]
+    .filter(Boolean)
+    .join(" · ");
+
+  return `
+    <details class="trace-panel" data-thinking-key="${escapeHtml(getThinkingKey(task))}" ${getThinkingOpenAttribute(task, isActive)}>
+      <summary class="trace-summary">
+        <span class="trace-caret">▸</span>
+        <span>${escapeHtml(summaryText)}</span>
+      </summary>
+      ${body}
+    </details>
+  `;
+}
+
 function renderToolChain(task) {
   const node = $("#toolChain");
   if (!node) return;
-  const chain = taskMeta(task).tool_chain || {};
-  const entries = Array.isArray(chain.entries) ? chain.entries : [];
+  const chain = task ? taskMeta(task).tool_chain || {} : {};
   const rawMessages = Array.isArray(chain.messages) ? chain.messages : [];
+  const panelHtml = task ? renderTracePanel(task, "inspector") : "";
 
-  if (entries.length === 0 && rawMessages.length === 0) {
+  if (!panelHtml && rawMessages.length === 0) {
     node.innerHTML = `<div class="empty-state">暂无工具调用链</div>`;
     return;
   }
-
-  const entriesHtml = entries
-    .map((entry) => {
-      const kind = entry.kind || "message";
-      const body = stringifyStructuredValue(entry.message);
-      const toolCallId = entry.tool_call_id
-        ? `<span class="tool-call-id">${escapeHtml(compactId(entry.tool_call_id))}</span>`
-        : "";
-      return `
-        <article class="tool-chain-item ${escapeHtml(kind)}">
-          <div class="tool-chain-head">
-            <span class="tool-chain-kind">${escapeHtml(kind)}</span>
-            <span class="tool-chain-index">#${escapeHtml(entry.index ?? "")}</span>
-            ${toolCallId}
-          </div>
-          <div class="tool-chain-title">${escapeHtml(entry.title || kind)}</div>
-          ${body ? `<pre class="tool-chain-body">${escapeHtml(body)}</pre>` : ""}
-        </article>
-      `;
-    })
-    .join("");
 
   const rawHtml =
     rawMessages.length > 0
@@ -520,7 +734,7 @@ function renderToolChain(task) {
       `
       : "";
 
-  node.innerHTML = `${entriesHtml}${rawHtml}`;
+  node.innerHTML = `${panelHtml}${rawHtml}`;
 }
 
 function renderInspector() {
@@ -765,17 +979,34 @@ window.handleSseMessage = async function handleSseMessage(event) {
   }
 
   if (data.type === "task" && data.task) {
+    const alreadyInSession = state.sessionTasks.some(
+      (task) => task.task_id === data.task.task_id,
+    );
     mergeTask(data.task);
     updateKnownUmos();
     renderUmoSwitcher();
     updateSessionList();
-    if (
+    const belongsToSession =
       state.selectedSessionId &&
       (data.task.task_id === state.selectedSessionId ||
-        data.task.parent_task_id === state.selectedSessionId)
-    ) {
-      await loadSession(state.selectedSessionId, { scrollMode: "preserve" });
+        data.task.parent_task_id === state.selectedSessionId);
+    if (!belongsToSession) return;
+
+    if (alreadyInSession) {
+      // mergeTask 更新的是同一对象引用，sessionTasks 已是最新，
+      // meta.tool_chain / status 的变化只需本地重绘，避免每个 step 全量重拉 events。
+      if (state.detail?.task?.task_id === data.task.task_id) {
+        Object.assign(state.detail.task, data.task);
+      }
+      const feed = $("#chatFeed");
+      const autoScroll = isAtBottom(feed);
+      renderChatFeed();
+      if (autoScroll) scrollToBottom(feed);
+      renderInspector();
+      return;
     }
+
+    await loadSession(state.selectedSessionId, { scrollMode: "preserve" });
     return;
   }
 

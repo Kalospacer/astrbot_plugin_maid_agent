@@ -1,7 +1,6 @@
 let bridge = window.AstrBotPluginPage || null;
 
 const ACTIVE_STATUSES = new Set(["queued", "running", "stopping"]);
-const RESPONSE_EVENT_TYPES = new Set(["agent_output", "agent_result", "tool_direct_message"]);
 const QUIET_EVENT_TYPES = new Set(["queued", "finished"]);
 
 const state = {
@@ -430,7 +429,13 @@ function renderChatFeed() {
     let responseHtml = "";
 
     for (const event of events) {
-      if (RESPONSE_EVENT_TYPES.has(event.event_type)) {
+      // agent_output 是流式过程快照（每步一条、含 tool_call 文本化），
+      // 过程由 trace 面板表达，不进回复气泡——否则会复述工具调用且与 agent_result 撞车重复。
+      if (event.event_type === "agent_output") {
+        continue;
+      }
+      // 回复气泡只认最终结果与工具主动发送的消息。
+      if (event.event_type === "agent_result" || event.event_type === "tool_direct_message") {
         if (event.message) responseHtml += `${escapeHtml(event.message)}\n\n`;
         continue;
       }

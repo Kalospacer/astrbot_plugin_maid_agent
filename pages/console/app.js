@@ -20,6 +20,9 @@ const state = {
   refreshInFlight: false,
   refreshQueued: false,
   thinkingOpenState: {},
+  renamingSessionId: "",
+  pendingDeleteSessionId: "",
+  pendingDeleteTimer: 0,
 };
 
 const $ = (selector) => document.querySelector(selector);
@@ -333,17 +336,26 @@ function updateSessionList() {
       .map((task) => {
         const active = task.task_id === state.selectedSessionId ? "active" : "";
         const pinned = isPinned(task) ? "pinned" : "";
+        const deleting = task.task_id === state.pendingDeleteSessionId ? "delete-armed" : "";
+        const isRenaming = task.task_id === state.renamingSessionId;
+        const titleHtml = isRenaming
+          ? `
+            <form class="session-rename-form" data-id="${escapeHtml(task.task_id)}">
+              <input class="session-rename-input" value="${escapeHtml(taskTitle(task))}" maxlength="120" autocomplete="off" />
+            </form>
+          `
+          : `<div class="session-title">${escapeHtml(taskTitle(task))}</div>`;
         return `
-          <div class="session-item ${active} ${pinned}" data-id="${escapeHtml(task.task_id)}">
-            <div class="session-title">${escapeHtml(taskTitle(task))}</div>
+          <div class="session-item ${active} ${pinned} ${deleting}" data-id="${escapeHtml(task.task_id)}">
+            ${titleHtml}
             <div class="session-actions">
-              <button class="session-action-btn pin-btn" aria-label="置顶" title="置顶">
+              <button class="session-action-btn pin-btn" type="button" data-session-action="pin" aria-label="置顶" title="${isPinned(task) ? "取消置顶" : "置顶"}">
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m15 4 5 5-4 4v5l-2 2-5-5-4 4-1-1 4-4-5-5 2-2h5l4-4Z"></path></svg>
               </button>
-              <button class="session-action-btn rename-btn" aria-label="重命名" title="重命名">
+              <button class="session-action-btn rename-btn" type="button" data-session-action="rename" aria-label="重命名" title="重命名">
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9"></path><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"></path></svg>
               </button>
-              <button class="session-action-btn delete-btn" aria-label="删除" title="删除">
+              <button class="session-action-btn delete-btn" type="button" data-session-action="delete" aria-label="删除" title="${deleting ? "再次点击确认删除" : "删除"}">
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>
               </button>
             </div>
@@ -603,7 +615,6 @@ async function submitPrompt() {
 }
 
 async function deleteSession(taskId) {
-  if (!window.confirm("删除此对话及其子任务？")) return;
   try {
     await apiPost(`console/tasks/${encodeURIComponent(taskId)}/delete`, {});
     toast("已删除");
@@ -614,12 +625,45 @@ async function deleteSession(taskId) {
   }
 }
 
-async function renameSession(taskId) {
+function requestDeleteSession(taskId) {
+  if (state.pendingDeleteSessionId !== taskId) {
+    state.pendingDeleteSessionId = taskId;
+    window.clearTimeout(state.pendingDeleteTimer);
+    state.pendingDeleteTimer = window.setTimeout(() => {
+      if (state.pendingDeleteSessionId === taskId) {
+        state.pendingDeleteSessionId = "";
+        updateSessionList();
+      }
+    }, 3200);
+    updateSessionList();
+    toast("再次点击删除此对话");
+    return;
+  }
+  window.clearTimeout(state.pendingDeleteTimer);
+  state.pendingDeleteSessionId = "";
+  deleteSession(taskId);
+}
+
+function startRenameSession(taskId) {
+  state.renamingSessionId = taskId;
+  updateSessionList();
+  window.setTimeout(() => {
+    const input = $(".session-rename-input");
+    if (input) {
+      input.focus();
+      input.select();
+    }
+  }, 0);
+}
+
+async function renameSession(taskId, nextTitle) {
   const task = state.tasks.find((item) => item.task_id === taskId);
-  const nextTitle = window.prompt("重命名会话", taskTitle(task));
-  if (nextTitle === null) return;
-  const title = nextTitle.trim();
-  if (!title) return;
+  const title = String(nextTitle || "").trim();
+  state.renamingSessionId = "";
+  if (!title || title === taskTitle(task)) {
+    updateSessionList();
+    return;
+  }
   try {
     const res = await apiPost(`console/tasks/${encodeURIComponent(taskId)}/update`, { title });
     if (res.task) mergeTask(res.task);
@@ -640,6 +684,7 @@ async function togglePinSession(taskId) {
     });
     if (res.task) mergeTask(res.task);
     updateSessionList();
+    toast(isPinned(res.task || task) ? "已置顶" : "已取消置顶");
   } catch (err) {
     toast(err.message || "置顶失败");
   }
@@ -805,28 +850,52 @@ function bindEvents() {
     loadSession("");
   });
 
-  $("#sessionList")?.addEventListener("click", async (event) => {
-    const item = event.target.closest(".session-item");
+  const sessionList = $("#sessionList");
+  sessionList?.addEventListener("click", async (event) => {
+    const target = event.target instanceof Element ? event.target : null;
+    if (!target) return;
+    const item = target.closest(".session-item");
     if (!item) return;
     const taskId = item.dataset.id;
+    const actionButton = target.closest("[data-session-action]");
+    if (!actionButton && target.closest(".session-rename-form")) return;
 
-    if (event.target.closest(".delete-btn")) {
+    if (actionButton) {
       event.stopPropagation();
-      await deleteSession(taskId);
-      return;
-    }
-    if (event.target.closest(".rename-btn")) {
-      event.stopPropagation();
-      await renameSession(taskId);
-      return;
-    }
-    if (event.target.closest(".pin-btn")) {
-      event.stopPropagation();
-      await togglePinSession(taskId);
+      const action = actionButton.dataset.sessionAction;
+      if (action === "delete") requestDeleteSession(taskId);
+      if (action === "rename") startRenameSession(taskId);
+      if (action === "pin") await togglePinSession(taskId);
       return;
     }
 
     await loadSession(taskId);
+  });
+
+  sessionList?.addEventListener("submit", async (event) => {
+    const form = event.target instanceof Element ? event.target.closest(".session-rename-form") : null;
+    if (!form) return;
+    event.preventDefault();
+    const input = form.querySelector(".session-rename-input");
+    await renameSession(form.dataset.id, input?.value || "");
+  });
+
+  sessionList?.addEventListener("focusout", async (event) => {
+    const input = event.target instanceof Element ? event.target.closest(".session-rename-input") : null;
+    if (!input) return;
+    const form = input.closest(".session-rename-form");
+    if (!form || state.renamingSessionId !== form.dataset.id) return;
+    await renameSession(form.dataset.id, input.value);
+  });
+
+  sessionList?.addEventListener("keydown", (event) => {
+    const input = event.target instanceof Element ? event.target.closest(".session-rename-input") : null;
+    if (!input) return;
+    if (event.key === "Escape") {
+      event.preventDefault();
+      state.renamingSessionId = "";
+      updateSessionList();
+    }
   });
 
   $("#umoSwitcher")?.addEventListener("click", () => {

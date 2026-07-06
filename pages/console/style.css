@@ -409,6 +409,13 @@ textarea {
   background: var(--line-darker);
   font-weight: 500;
 }
+.session-item.delete-armed {
+  background: #fee2e2;
+}
+.session-item.delete-armed .delete-btn {
+  background: #fecaca;
+  color: var(--accent-error);
+}
 .session-item.pinned .session-title::before {
   content: "";
   display: inline-block;
@@ -424,6 +431,20 @@ textarea {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.session-rename-form {
+  flex: 1;
+  min-width: 0;
+}
+.session-rename-input {
+  width: 100%;
+  background: var(--bg-app);
+  border: 1px solid var(--accent-neon);
+  border-radius: 5px;
+  color: var(--text-main);
+  font-size: 13px;
+  line-height: 1.3;
+  padding: 4px 6px;
 }
 .session-actions {
   display: none;

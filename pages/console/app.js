@@ -1,6 +1,6 @@
 let bridge = window.AstrBotPluginPage || null;
 
-const ACTIVE_STATUSES = new Set(["queued", "running", "stopping"]);
+const ACTIVE_STATUSES = new Set(["queued", "starting", "running", "stopping"]);
 const QUIET_EVENT_TYPES = new Set(["queued", "finished"]);
 
 const state = {
@@ -11,6 +11,9 @@ const state = {
   sessionTasks: [],
   sessionEvents: {},
   agents: [],
+  runtimeAgents: [],
+  runtimeRuns: {},
+  selectedAgentId: "",
   settings: null,
   overview: null,
   detail: null,
@@ -180,6 +183,9 @@ function updateKnownUmos() {
   for (const task of state.tasks) {
     if (task.unified_msg_origin) umoSet.add(task.unified_msg_origin);
   }
+  for (const agent of state.runtimeAgents) {
+    if (agent.unified_msg_origin) umoSet.add(agent.unified_msg_origin);
+  }
   if (state.selectedUmo) umoSet.add(state.selectedUmo);
   state.umos = Array.from(umoSet).sort();
   if (!state.selectedUmo && state.umos.length > 0) {
@@ -199,6 +205,21 @@ async function loadAgents() {
   renderAgentOptions();
 }
 
+async function loadRuntimeAgents() {
+  const data = await apiGet("console/agents");
+  state.runtimeAgents = data.agents || [];
+  const entries = await Promise.all(
+    state.runtimeAgents.map(async (agent) => {
+      const detail = await apiGet(`console/agents/${encodeURIComponent(agent.agent_id)}/runs`);
+      return [agent.agent_id, detail.runs || []];
+    }),
+  );
+  state.runtimeRuns = Object.fromEntries(entries);
+  updateKnownUmos();
+  renderUmoSwitcher();
+  updateSessionList();
+}
+
 async function loadTasks() {
   const data = await apiGet("console/tasks", { limit: 500 });
   state.tasks = data.tasks || [];
@@ -209,6 +230,7 @@ async function loadTasks() {
 
 async function loadSession(taskId, { scrollMode = "bottom" } = {}) {
   if (!taskId) {
+    state.selectedAgentId = "";
     state.selectedSessionId = "";
     state.sessionTasks = [];
     state.sessionEvents = {};
@@ -223,6 +245,7 @@ async function loadSession(taskId, { scrollMode = "bottom" } = {}) {
   const selected = state.tasks.find((task) => task.task_id === taskId);
   const rootId = selected?.parent_task_id || taskId;
   state.selectedSessionId = rootId;
+  state.selectedAgentId = "";
   state.sessionTasks = state.tasks
     .filter((task) => task.task_id === rootId || task.parent_task_id === rootId)
     .sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
@@ -244,6 +267,42 @@ async function loadSession(taskId, { scrollMode = "bottom" } = {}) {
   applyFeedScroll(scrollSnapshot, scrollMode);
 }
 
+async function loadRuntimeRun(agentId, taskId, { scrollMode = "bottom" } = {}) {
+  const scrollSnapshot = captureFeedScroll();
+  const run = (state.runtimeRuns[agentId] || []).find((item) => item.task_id === taskId);
+  if (!run) return;
+  state.selectedAgentId = agentId;
+  state.selectedSessionId = taskId;
+  const task = {
+    ...run,
+    kind: "run",
+    meta: {
+      agent_id: run.agent_id,
+      run_mode: run.mode,
+      background_reason: run.background_reason,
+      notification: run.notification,
+      output_file: run.output_file,
+    },
+  };
+  state.sessionTasks = [task];
+  state.sessionEvents = {
+    [taskId]: run.result || run.error
+      ? [
+          {
+            event_type: "agent_result",
+            title: run.status,
+            message: run.result || run.error,
+          },
+        ]
+      : [],
+  };
+  state.detail = { task, actions: [] };
+  renderChatFeed();
+  renderInspector();
+  updateSessionList();
+  applyFeedScroll(scrollSnapshot, scrollMode);
+}
+
 async function refreshConsole({ silent = false, keepSession = true } = {}) {
   if (state.refreshInFlight) {
     state.refreshQueued = true;
@@ -254,9 +313,18 @@ async function refreshConsole({ silent = false, keepSession = true } = {}) {
   const selectedBefore = state.selectedSessionId;
   try {
     await loadTasks();
-    await Promise.allSettled([loadOverview(), loadAgents()]);
+    await Promise.allSettled([loadOverview(), loadAgents(), loadRuntimeAgents()]);
 
-    if (keepSession && selectedBefore) {
+    if (keepSession && selectedBefore && state.selectedAgentId) {
+      const exists = (state.runtimeRuns[state.selectedAgentId] || []).some(
+        (run) => run.task_id === selectedBefore,
+      );
+      if (exists) {
+        await loadRuntimeRun(state.selectedAgentId, selectedBefore, { scrollMode: "preserve" });
+      } else {
+        await loadSession("");
+      }
+    } else if (keepSession && selectedBefore) {
       const stillExists = state.tasks.some(
         (task) => task.task_id === selectedBefore || task.parent_task_id === selectedBefore,
       );
@@ -327,6 +395,9 @@ function updateSessionList() {
   const list = $("#sessionList");
   if (!list) return;
 
+  const runtimeAgents = state.runtimeAgents
+    .filter((agent) => agent.unified_msg_origin === state.selectedUmo)
+    .sort((a, b) => new Date(b.updated_at) - new Date(a.updated_at));
   const rootTasks = state.tasks
     .filter((task) => task.unified_msg_origin === state.selectedUmo && !task.parent_task_id)
     .sort((a, b) => {
@@ -335,13 +406,37 @@ function updateSessionList() {
       return new Date(b.updated_at) - new Date(a.updated_at);
     });
 
-  if (rootTasks.length === 0) {
-    list.innerHTML = `<div class="empty-state">暂无历史对话</div>`;
+  if (runtimeAgents.length === 0 && rootTasks.length === 0) {
+    list.innerHTML = `<div class="empty-state">暂无 Agent / Run</div>`;
     return;
   }
 
+  const runtimeHtml = runtimeAgents
+    .map((agent) => {
+      const runs = [...(state.runtimeRuns[agent.agent_id] || [])].sort(
+        (a, b) => new Date(b.created_at) - new Date(a.created_at),
+      );
+      const runsHtml = runs
+        .map(
+          (run) => `
+            <div class="session-item ${run.task_id === state.selectedSessionId ? "active" : ""}"
+                 data-id="${escapeHtml(run.task_id)}" data-runtime-agent="${escapeHtml(agent.agent_id)}">
+              <div class="session-title">↳ ${escapeHtml(run.request_text || compactId(run.task_id))}</div>
+              <small>${escapeHtml(run.mode)} · ${escapeHtml(run.status)}${run.notification && !run.notification.delivered ? " · 待通知" : ""}</small>
+            </div>
+          `,
+        )
+        .join("");
+      return `
+        <div class="session-group-title">Agent ${escapeHtml(compactId(agent.agent_id))} · ${escapeHtml(agent.agent_name)}</div>
+        ${runsHtml || '<div class="empty-state">暂无 Run</div>'}
+      `;
+    })
+    .join("");
+
   list.innerHTML =
-    `<div class="session-group-title">最近对话</div>` +
+    runtimeHtml +
+    (rootTasks.length ? `<div class="session-group-title">SQLite 审计记录</div>` : "") +
     rootTasks
       .map((task) => {
         const active = task.task_id === state.selectedSessionId ? "active" : "";
@@ -446,7 +541,7 @@ function renderChatFeed() {
     }
 
     const traceHtml = renderTracePanel(task, "feed", eventLinesHtml);
-    if (traceHtml || responseHtml || task.status === "error") {
+    if (traceHtml || responseHtml || ["error", "failed", "stopped"].includes(task.status)) {
       html += `
         <div class="chat-message maid">
           <div class="chat-message-inner">
@@ -458,7 +553,7 @@ function renderChatFeed() {
 
       if (responseHtml) {
         html += `<div class="bubble">${responseHtml.trim()}</div>`;
-      } else if (task.status === "error") {
+      } else if (["error", "failed", "stopped"].includes(task.status)) {
         html += `<div class="bubble error-text">任务发生异常，已终止。</div>`;
       }
 
@@ -759,9 +854,15 @@ function renderInspector() {
     <dt>状态</dt><dd>${escapeHtml(task.status)}</dd>
     <dt>类型</dt><dd>${escapeHtml(task.kind)}</dd>
     <dt>Agent</dt><dd>${escapeHtml(task.agent_name)}</dd>
+    <dt>Agent ID</dt><dd>${escapeHtml(compactId(task.agent_id || taskMeta(task).agent_id))}</dd>
+    <dt>模式</dt><dd>${escapeHtml(task.mode || taskMeta(task).run_mode || "")}</dd>
+    <dt>通知</dt><dd>${escapeHtml(task.notification?.notification_id || taskMeta(task).notification?.notification_id || "-")}</dd>
     <dt>来源 UMO</dt><dd>${escapeHtml(task.unified_msg_origin)}</dd>
     <dt>更新时间</dt><dd>${escapeHtml(formatTime(task.updated_at))}</dd>
   `;
+  if ($("#stopButton")) {
+    $("#stopButton").disabled = !["starting", "running"].includes(task.status);
+  }
 
   $("#actionList").innerHTML = (state.detail.actions || [])
     .map((action) => {
@@ -801,6 +902,34 @@ async function submitPrompt() {
   if (btn) btn.disabled = true;
 
   try {
+    const runtimeRun = state.selectedAgentId
+      ? (state.runtimeRuns[state.selectedAgentId] || []).find(
+          (run) => run.task_id === state.selectedSessionId,
+        )
+      : null;
+    if (runtimeRun && ["starting", "running"].includes(runtimeRun.status)) {
+      await apiPost("console/actions/steer", {
+        agent_id: state.selectedAgentId,
+        task_id: runtimeRun.task_id,
+        message_text: text,
+      });
+      toast("已 steer 当前 Agent");
+      await refreshConsole({ silent: true, keepSession: true });
+      return;
+    }
+    if (runtimeRun && state.selectedAgentId) {
+      const res = await apiPost("console/actions/resume", {
+        agent_id: state.selectedAgentId,
+        request_text: text,
+        unified_msg_origin: umo,
+      });
+      if (!res.outcome) throw new Error(res.error || "resume 失败");
+      await refreshConsole({ silent: true, keepSession: false });
+      await loadRuntimeRun(res.outcome.agent_id, res.outcome.task_id, { scrollMode: "bottom" });
+      toast("已 Resume Agent");
+      return;
+    }
+
     const activeTask = getActiveTaskInSession();
     let res;
     if (activeTask) {
@@ -813,19 +942,16 @@ async function submitPrompt() {
       return;
     }
 
-    const parentId = state.selectedSessionId || "";
     res = await apiPost("console/actions/dispatch", {
       unified_msg_origin: umo,
       agent_name: agent,
       request_text: text,
-      parent_task_id: parentId,
+      run_in_background: true,
     });
-    if (!res.task) throw new Error(res.error || "派发失败");
-    mergeTask(res.task);
-    updateKnownUmos();
-    state.selectedUmo = res.task.unified_msg_origin || state.selectedUmo;
-    await loadSession(parentId || res.task.task_id, { scrollMode: "bottom" });
-    toast(parentId ? "已发送到当前会话" : "已创建会话");
+    if (!res.outcome) throw new Error(res.error || "派发失败");
+    await refreshConsole({ silent: true, keepSession: false });
+    await loadRuntimeRun(res.outcome.agent_id, res.outcome.task_id, { scrollMode: "bottom" });
+    toast("已创建 Agent Run");
   } catch (err) {
     toast(err.message || "发送失败");
   } finally {
@@ -921,17 +1047,20 @@ async function stopCurrentTask() {
   }
 }
 
-async function doneCurrentSession() {
-  const task = state.detail?.task || getSelectedRootTask();
-  const payload = task
-    ? { task_id: task.task_id }
-    : { unified_msg_origin: state.selectedUmo };
+async function readCurrentResult() {
+  const task = state.detail?.task;
+  if (!task) return;
   try {
-    await apiPost("console/actions/done", payload);
-    toast("已结束 Session");
+    const res = await apiPost("console/actions/result", {
+      task_id: task.task_id,
+      agent_id: task.agent_id || taskMeta(task).agent_id || "",
+      block: false,
+      timeout_ms: 0,
+    });
+    toast(res.outcome?.query_status || res.outcome?.status || "已查询");
     await refreshConsole({ silent: true, keepSession: true });
   } catch (err) {
-    toast(err.message || "结束失败");
+    toast(err.message || "读取结果失败");
   }
 }
 
@@ -940,9 +1069,9 @@ async function rerunCurrentTask() {
   if (!task) return;
   try {
     const res = await apiPost("console/actions/rerun", { task_id: task.task_id });
-    if (!res.task) throw new Error(res.error || "重跑失败");
-    mergeTask(res.task);
-    await loadSession(res.task.parent_task_id || res.task.task_id, { scrollMode: "bottom" });
+    if (!res.outcome) throw new Error(res.error || "重跑失败");
+    await refreshConsole({ silent: true, keepSession: false });
+    await loadRuntimeRun(res.outcome.agent_id, res.outcome.task_id, { scrollMode: "bottom" });
     toast("已重新派发");
   } catch (err) {
     toast(err.message || "重跑失败");
@@ -1069,10 +1198,17 @@ function fillSettings(config) {
     ($("#settingHideTransfer").checked = Boolean(config.hide_transfer_tools));
   $("#settingRawInput") &&
     ($("#settingRawInput").checked = Boolean(config.include_raw_user_input));
-  $("#settingSession") && ($("#settingSession").checked = Boolean(config.session_enabled));
   $("#settingLogRaw") && ($("#settingLogRaw").checked = Boolean(config.log_raw_llm_io));
-  $("#settingTimeout") &&
-    ($("#settingTimeout").value = config.session_timeout_minutes ?? "");
+  $("#settingForegroundTimeout") &&
+    ($("#settingForegroundTimeout").value = config.foreground_timeout_seconds ?? 50);
+  $("#settingMemoryAgents") &&
+    ($("#settingMemoryAgents").value = (config.memory_agent_names || []).join(", "));
+  $("#settingMaxPerUmo") &&
+    ($("#settingMaxPerUmo").value = config.max_active_per_umo ?? 5);
+  $("#settingMaxGlobal") &&
+    ($("#settingMaxGlobal").value = config.max_active_global ?? 20);
+  $("#settingRetention") &&
+    ($("#settingRetention").value = config.retention_days ?? 30);
   $("#settingPrompt") &&
     ($("#settingPrompt").value = config.dispatch_prompt_template || "");
 }
@@ -1093,6 +1229,7 @@ function bindEvents() {
     const item = target.closest(".session-item");
     if (!item) return;
     const taskId = item.dataset.id;
+    const runtimeAgentId = item.dataset.runtimeAgent;
     const actionButton = target.closest("[data-session-action]");
     if (!actionButton && target.closest(".session-rename-form")) return;
 
@@ -1105,7 +1242,11 @@ function bindEvents() {
       return;
     }
 
-    await loadSession(taskId);
+    if (runtimeAgentId) {
+      await loadRuntimeRun(runtimeAgentId, taskId);
+    } else {
+      await loadSession(taskId);
+    }
   });
 
   sessionList?.addEventListener("submit", async (event) => {
@@ -1209,7 +1350,7 @@ function bindEvents() {
 
   $("#stopButton")?.addEventListener("click", stopCurrentTask);
   $("#rerunButton")?.addEventListener("click", rerunCurrentTask);
-  $("#doneButton")?.addEventListener("click", doneCurrentSession);
+  $("#resultButton")?.addEventListener("click", readCurrentResult);
   $("#exportButton")?.addEventListener("click", exportHistory);
 
   $$(".close-modal").forEach((button) => {
@@ -1224,7 +1365,10 @@ function bindEvents() {
 
   $("#settingsForm")?.addEventListener("submit", async (event) => {
     event.preventDefault();
-    const timeoutValue = Number($("#settingTimeout")?.value || 0);
+    const foregroundTimeout = Number($("#settingForegroundTimeout")?.value || 50);
+    const maxPerUmo = Number($("#settingMaxPerUmo")?.value || 5);
+    const maxGlobal = Number($("#settingMaxGlobal")?.value || 20);
+    const retentionDays = Number($("#settingRetention")?.value || 30);
     const payload = {
       default_agent_name: $("#settingDefaultAgent")?.value.trim() || "",
       allowed_agent_names: ($("#settingAllowedAgents")?.value || "")
@@ -1234,9 +1378,15 @@ function bindEvents() {
       hide_native_tools: Boolean($("#settingHideNative")?.checked),
       hide_transfer_tools: Boolean($("#settingHideTransfer")?.checked),
       include_raw_user_input: Boolean($("#settingRawInput")?.checked),
-      session_enabled: Boolean($("#settingSession")?.checked),
       log_raw_llm_io: Boolean($("#settingLogRaw")?.checked),
-      session_timeout_minutes: timeoutValue > 0 ? timeoutValue : 60,
+      foreground_timeout_seconds: Math.min(55, Math.max(1, foregroundTimeout)),
+      memory_agent_names: ($("#settingMemoryAgents")?.value || "")
+        .split(",")
+        .map((item) => item.trim())
+        .filter(Boolean),
+      max_active_per_umo: Math.max(1, maxPerUmo),
+      max_active_global: Math.max(1, maxGlobal),
+      retention_days: Math.max(1, retentionDays),
       dispatch_prompt_template: $("#settingPrompt")?.value || "",
     };
     try {

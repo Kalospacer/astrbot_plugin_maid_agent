@@ -57,6 +57,14 @@ class MaidBackgroundTaskInfo:
         self.updated_at = _utcnow().isoformat()
 
 
+class MaidTaskConflictError(RuntimeError):
+    """Raised when a UMO already owns an active maid task."""
+
+    def __init__(self, active_task: MaidBackgroundTaskInfo) -> None:
+        self.active_task = active_task
+        super().__init__(f"该会话已有活跃后台任务: {active_task.task_id}")
+
+
 class MaidBackgroundTaskRegistry:
     """仅保留活跃任务与正在收尾的任务，避免历史任务无限堆积。"""
 
@@ -76,6 +84,16 @@ class MaidBackgroundTaskRegistry:
         task_id: str | None = None,
     ) -> MaidBackgroundTaskInfo:
         async with self._lock:
+            active_task_id = self._active_by_umo.get(unified_msg_origin)
+            if active_task_id:
+                active_task = self._tasks.get(active_task_id)
+                if active_task is not None and active_task.status not in TERMINAL_TASK_STATUSES:
+                    raise MaidTaskConflictError(active_task)
+                self._active_by_umo.pop(unified_msg_origin, None)
+
+            if task_id and task_id in self._tasks:
+                raise ValueError(f"后台任务 ID 已存在: {task_id}")
+
             info = MaidBackgroundTaskInfo.create(
                 unified_msg_origin=unified_msg_origin,
                 sender_id=sender_id,

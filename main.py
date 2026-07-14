@@ -71,6 +71,7 @@ from .runtime_orchestrator import (
     BatchCapacityError,
     CapacityExceededError,
     DispatchRequest,
+    PendingNotificationError,
     RunNotFoundError,
     RuntimeOrchestrator,
 )
@@ -870,6 +871,12 @@ class MaidAgent(Star):
                 ["GET"],
                 "List runs for a 1.3.0 runtime agent",
             ),
+            (
+                f"{prefix}/agents/<agent_id>/delete",
+                self.console_delete_agent,
+                ["POST"],
+                "Delete a terminal 1.3.0 runtime agent",
+            ),
         ]
         for route, handler, methods, desc in routes:
             self.context.register_web_api(route, handler, methods, desc)
@@ -1623,6 +1630,39 @@ class MaidAgent(Star):
             return self._console_error("agent 不存在。", status_code=404)
         runs = [run.to_dict() for run in await self.runtime_store.list_runs(agent_id)]
         return self._console_ok({"agent": meta.to_dict(), "runs": runs})
+
+    async def console_delete_agent(self, agent_id: str):
+        try:
+            body = await self._console_json_body()
+            normalized = str(agent_id or "").strip().casefold()
+            confirmation = str(body.get("confirm_agent_id") or "").strip().casefold()
+            if not normalized or confirmation != normalized:
+                return self._console_error("删除确认无效，请重新确认 Agent ID。")
+            removed_runs = await self.orchestrator.delete_agent(normalized)
+            removed_audits = 0
+            try:
+                removed_audits = await self.console_store.delete_agent_tasks(normalized)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "[大小姐模式] runtime agent 已删除，但清理 Console 审计记录失败: "
+                    "agent_id=%s err=%s",
+                    normalized,
+                    exc,
+                )
+            return self._console_ok(
+                {
+                    "agent_id": normalized,
+                    "removed_runs": removed_runs,
+                    "removed_audits": removed_audits,
+                },
+                "Agent 及其所有 Run 已删除。",
+            )
+        except RunNotFoundError as exc:
+            return self._console_error(str(exc), status_code=404)
+        except (AgentBusyError, PendingNotificationError) as exc:
+            return self._console_error(str(exc), status_code=409)
+        except Exception as exc:
+            return self._console_error(str(exc))
 
     async def console_resume(self):
         try:

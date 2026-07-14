@@ -712,6 +712,15 @@ class RuntimeStore:
                 return AgentMeta.from_dict(agent_data), RunMeta.from_dict(run_data)
         return None
 
+    async def delete_agent(self, agent_id: str) -> bool:
+        """Delete one runtime agent and all transcript/run/output files."""
+        async with self._lock:
+            agent_dir = self._agent_dir(agent_id)
+            if not agent_dir.exists():
+                return False
+            await self._rm_tree(agent_dir)
+            return not agent_dir.exists()
+
     async def list_pending_notifications(
         self,
         unified_msg_origin: str,

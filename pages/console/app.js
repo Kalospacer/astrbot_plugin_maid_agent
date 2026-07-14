@@ -24,7 +24,9 @@ const state = {
   thinkingOpenState: {},
   renamingSessionId: "",
   pendingDeleteSessionId: "",
+  pendingDeleteAgentId: "",
   pendingDeleteTimer: 0,
+  pendingDeleteAgentTimer: 0,
 };
 
 const $ = (selector) => document.querySelector(selector);
@@ -416,13 +418,33 @@ function updateSessionList() {
       const runs = [...(state.runtimeRuns[agent.agent_id] || [])].sort(
         (a, b) => new Date(b.created_at) - new Date(a.created_at),
       );
+      const hasActiveRun = runs.some((run) => ACTIVE_STATUSES.has(run.status));
+      const hasPendingNotification = runs.some(
+        (run) => run.notification && !run.notification.delivered,
+      );
+      const deletingAgent = agent.agent_id === state.pendingDeleteAgentId;
       const runsHtml = runs
         .map(
           (run) => `
-            <div class="session-item ${run.task_id === state.selectedSessionId ? "active" : ""}"
+            <div class="session-item runtime-session-item ${run.task_id === state.selectedSessionId ? "active" : ""} ${deletingAgent ? "delete-armed" : ""}"
                  data-id="${escapeHtml(run.task_id)}" data-runtime-agent="${escapeHtml(agent.agent_id)}">
-              <div class="session-title">↳ ${escapeHtml(run.request_text || compactId(run.task_id))}</div>
-              <small>${escapeHtml(run.mode)} · ${escapeHtml(run.status)}${run.notification && !run.notification.delivered ? " · 待通知" : ""}</small>
+              <div class="session-copy">
+                <div class="session-title">↳ ${escapeHtml(run.request_text || compactId(run.task_id))}</div>
+                <small>${escapeHtml(run.mode)} · ${escapeHtml(run.status)}${run.notification && !run.notification.delivered ? " · 待通知" : ""}</small>
+              </div>
+              <div class="session-actions">
+                ${ACTIVE_STATUSES.has(run.status) ? `
+                  <button class="session-action-btn" type="button" data-runtime-action="stop" aria-label="停止" title="停止此 Run">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="6" y="6" width="12" height="12" rx="1"></rect></svg>
+                  </button>
+                ` : ""}
+                <button class="session-action-btn" type="button" data-runtime-action="result" aria-label="读取结果" title="读取此 Run 的结果">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 4h16v16H4z"></path><path d="M8 9h8M8 13h6M8 17h4"></path></svg>
+                </button>
+                <button class="session-action-btn delete-btn" type="button" data-runtime-action="delete-agent" aria-label="删除 Agent" title="${hasActiveRun ? "Agent 仍在运行，无法删除" : hasPendingNotification ? "请先读取待通知结果" : deletingAgent ? "再次点击确认删除整个 Agent" : "删除整个 Agent（含所有 Run）"}" ${hasActiveRun || hasPendingNotification ? "disabled" : ""}>
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>
+                </button>
+              </div>
             </div>
           `,
         )
@@ -970,6 +992,73 @@ async function deleteSession(taskId) {
   }
 }
 
+async function stopRuntimeRun(taskId) {
+  try {
+    await apiPost("console/actions/stop", { task_id: taskId });
+    toast("已请求停止");
+    await refreshConsole({ silent: true, keepSession: true });
+  } catch (err) {
+    toast(err.message || "停止失败");
+  }
+}
+
+async function readRuntimeResult(agentId, taskId) {
+  try {
+    const res = await apiPost("console/actions/result", {
+      agent_id: agentId,
+      task_id: taskId,
+      block: false,
+      timeout_ms: 0,
+    });
+    toast(res.outcome?.query_status || res.outcome?.status || "已查询");
+    await refreshConsole({ silent: true, keepSession: true });
+  } catch (err) {
+    toast(err.message || "读取结果失败");
+  }
+}
+
+async function deleteRuntimeAgent(agentId) {
+  try {
+    await apiPost(`console/agents/${encodeURIComponent(agentId)}/delete`, {
+      confirm_agent_id: agentId,
+    });
+    state.pendingDeleteAgentId = "";
+    if (state.selectedAgentId === agentId) await loadSession("");
+    toast("Agent 及其所有 Run 已删除");
+    await refreshConsole({ silent: true, keepSession: false });
+  } catch (err) {
+    toast(err.message || "删除 Agent 失败");
+  }
+}
+
+function requestDeleteRuntimeAgent(agentId) {
+  const runs = state.runtimeRuns[agentId] || [];
+  if (runs.some((run) => ACTIVE_STATUSES.has(run.status))) {
+    toast("Agent 仍有活跃 Run，请先停止");
+    return;
+  }
+  if (runs.some((run) => run.notification && !run.notification.delivered)) {
+    toast("Agent 仍有待通知结果，请先读取结果");
+    return;
+  }
+  if (state.pendingDeleteAgentId !== agentId) {
+    state.pendingDeleteAgentId = agentId;
+    window.clearTimeout(state.pendingDeleteAgentTimer);
+    state.pendingDeleteAgentTimer = window.setTimeout(() => {
+      if (state.pendingDeleteAgentId === agentId) {
+        state.pendingDeleteAgentId = "";
+        updateSessionList();
+      }
+    }, 3200);
+    updateSessionList();
+    toast("再次点击删除整个 Agent 及其所有 Run");
+    return;
+  }
+  window.clearTimeout(state.pendingDeleteAgentTimer);
+  state.pendingDeleteAgentId = "";
+  deleteRuntimeAgent(agentId);
+}
+
 function requestDeleteSession(taskId) {
   if (state.pendingDeleteSessionId !== taskId) {
     state.pendingDeleteSessionId = taskId;
@@ -1230,15 +1319,19 @@ function bindEvents() {
     if (!item) return;
     const taskId = item.dataset.id;
     const runtimeAgentId = item.dataset.runtimeAgent;
-    const actionButton = target.closest("[data-session-action]");
+    const actionButton = target.closest("[data-session-action], [data-runtime-action]");
     if (!actionButton && target.closest(".session-rename-form")) return;
 
     if (actionButton) {
       event.stopPropagation();
-      const action = actionButton.dataset.sessionAction;
-      if (action === "delete") requestDeleteSession(taskId);
-      if (action === "rename") startRenameSession(taskId);
-      if (action === "pin") await togglePinSession(taskId);
+      const sessionAction = actionButton.dataset.sessionAction;
+      const runtimeAction = actionButton.dataset.runtimeAction;
+      if (sessionAction === "delete") requestDeleteSession(taskId);
+      if (sessionAction === "rename") startRenameSession(taskId);
+      if (sessionAction === "pin") await togglePinSession(taskId);
+      if (runtimeAction === "stop") await stopRuntimeRun(taskId);
+      if (runtimeAction === "result") await readRuntimeResult(runtimeAgentId, taskId);
+      if (runtimeAction === "delete-agent") requestDeleteRuntimeAgent(runtimeAgentId);
       return;
     }
 

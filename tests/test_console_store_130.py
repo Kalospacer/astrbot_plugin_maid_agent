@@ -134,3 +134,29 @@ async def _interrupted_status_sets_completed_at(tmp_path, monkeypatch):
 
 def test_interrupted_status_sets_completed_at(tmp_path, monkeypatch):
     asyncio.run(_interrupted_status_sets_completed_at(tmp_path, monkeypatch))
+
+
+async def _delete_agent_tasks_removes_matching_audits(tmp_path, monkeypatch):
+    store = _make_store(tmp_path, monkeypatch)
+    await store.initialize()
+    for suffix, agent_id in [("1", "a" * 32), ("2", "a" * 32), ("3", "b" * 32)]:
+        await store.ensure_task(
+            ConsoleTaskPatch(
+                task_id=suffix * 32,
+                unified_msg_origin="umo:a:1",
+                agent_name="butler",
+                status="completed",
+                request_text=f"task {suffix}",
+                agent_id=agent_id,
+            )
+        )
+
+    assert await store.delete_agent_tasks("a" * 32) == 2
+    assert await store.get_task("1" * 32) is None
+    assert await store.get_task("2" * 32) is None
+    assert await store.get_task("3" * 32) is not None
+    await store.close()
+
+
+def test_delete_agent_tasks_removes_matching_audits(tmp_path, monkeypatch):
+    asyncio.run(_delete_agent_tasks_removes_matching_audits(tmp_path, monkeypatch))

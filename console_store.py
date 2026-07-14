@@ -256,6 +256,14 @@ class MaidConsoleEventStore:
             await asyncio.to_thread(self._delete_task, task_id)
         await self._publish({"type": "reset", "created_at": _utcnow()})
 
+    async def delete_agent_tasks(self, agent_id: str) -> int:
+        """Delete SQLite audit rows associated with one runtime agent."""
+        async with self._write_lock:
+            removed = await asyncio.to_thread(self._delete_agent_tasks, agent_id)
+        if removed:
+            await self._publish({"type": "reset", "created_at": _utcnow()})
+        return removed
+
     async def update_task_meta(
         self,
         task_id: str,
@@ -729,6 +737,43 @@ class MaidConsoleEventStore:
             conn.execute(
                 "DELETE FROM tasks WHERE task_id = ? OR parent_task_id = ?", (task_id, task_id)
             )
+
+    def _delete_agent_tasks(self, agent_id: str) -> int:
+        normalized = str(agent_id or "").strip().casefold()
+        if not normalized:
+            return 0
+        with self._connect() as conn:
+            rows = conn.execute("SELECT task_id, parent_task_id, meta_json FROM tasks").fetchall()
+            target_ids: set[str] = set()
+            for row in rows:
+                meta = _load_json(row["meta_json"])
+                if not isinstance(meta, dict):
+                    continue
+                row_agent_id = str(meta.get("agent_id") or "").strip().casefold()
+                if row_agent_id == normalized:
+                    target_ids.add(str(row["task_id"]))
+            if not target_ids:
+                return 0
+            target_ids.update(
+                str(row["task_id"])
+                for row in rows
+                if str(row["parent_task_id"] or "") in target_ids
+            )
+            placeholders = ",".join("?" for _ in target_ids)
+            params = tuple(target_ids)
+            conn.execute(
+                f"DELETE FROM task_actions WHERE task_id IN ({placeholders})",  # noqa: S608
+                params,
+            )
+            conn.execute(
+                f"DELETE FROM task_events WHERE task_id IN ({placeholders})",  # noqa: S608
+                params,
+            )
+            conn.execute(
+                f"DELETE FROM tasks WHERE task_id IN ({placeholders})",  # noqa: S608
+                params,
+            )
+            return len(target_ids)
 
     def _update_task_meta(
         self, task_id: str, title: str | None, meta_update: dict[str, Any] | None, now: str

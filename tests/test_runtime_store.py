@@ -262,6 +262,31 @@ def test_prune_inactive_respects_retention(tmp_path, monkeypatch):
     asyncio.run(_prune(_make_store(tmp_path, monkeypatch)))
 
 
+async def _delete_agent_removes_only_runtime_agent(store):
+    agent = await store.create_agent(
+        unified_msg_origin="umo1", agent_name="butler", sender_id="u1"
+    )
+    run = await store.create_run(_make_run(agent.agent_id, "9" * 32, umo="umo1"))
+    await store.append_message(agent.agent_id, {"role": "user", "content": "hello"})
+    await store.finalize_run(agent.agent_id, run.task_id, status="completed", result="done")
+    memory_file = store.data_dir / "memory" / "keep.txt"
+    legacy_file = store.data_dir / "sessions" / "keep.json"
+    memory_file.parent.mkdir(parents=True, exist_ok=True)
+    legacy_file.parent.mkdir(parents=True, exist_ok=True)
+    memory_file.write_text("keep", encoding="utf-8")
+    legacy_file.write_text("{}", encoding="utf-8")
+
+    assert await store.delete_agent(agent.agent_id) is True
+    assert await store.load_agent(agent.agent_id) is None
+    assert memory_file.exists()
+    assert legacy_file.exists()
+    assert await store.delete_agent(agent.agent_id) is False
+
+
+def test_delete_agent_removes_only_runtime_agent(tmp_path, monkeypatch):
+    asyncio.run(_delete_agent_removes_only_runtime_agent(_make_store(tmp_path, monkeypatch)))
+
+
 async def _list_by_umo(store):
     a1 = await store.create_agent(
         unified_msg_origin="umo1", agent_name="butler", sender_id="u1"

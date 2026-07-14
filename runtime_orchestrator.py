@@ -51,6 +51,10 @@ class AgentBusyError(RuntimeError):
     """An agent already owns an active run."""
 
 
+class PendingNotificationError(RuntimeError):
+    """An agent still has a terminal result waiting to be delivered or claimed."""
+
+
 class RunNotFoundError(KeyError):
     """A referenced task or agent does not exist."""
 
@@ -405,6 +409,10 @@ class RuntimeOrchestrator:
                 )
 
         async with self._lock:
+            current_meta = await self.store.load_agent(agent_id)
+            if current_meta is None:
+                raise RunNotFoundError(f"未找到 agent: {agent_id}")
+            meta = current_meta
             if agent_id in self._active_tasks:
                 raise AgentBusyError(f"agent 已有活跃 run: {agent_id}")
             self._reserve_capacity_unlocked(meta.unified_msg_origin, 1)
@@ -704,6 +712,29 @@ class RuntimeOrchestrator:
             current,
             query_status=("success" if current.status in TERMINAL_STATUSES else "not_ready"),
         )
+
+    async def delete_agent(self, agent_id: str) -> int:
+        """Delete a terminal agent after all notifications have been claimed."""
+        normalized = (agent_id or "").strip().casefold()
+        async with self._lock:
+            meta = await self.store.load_agent(normalized)
+            if meta is None:
+                raise RunNotFoundError(f"未找到 agent: {normalized}")
+            active = self._active_tasks.get(normalized)
+            if active is not None and not active.done():
+                raise AgentBusyError(f"agent 仍有活跃 run，无法删除: {normalized}")
+            runs = await self.store.list_runs(normalized)
+            if any(run.status in ACTIVE_STATUSES for run in runs):
+                raise AgentBusyError(f"agent 仍有活跃 run，无法删除: {normalized}")
+            if any(
+                run.notification is not None and not run.notification.delivered for run in runs
+            ):
+                raise PendingNotificationError(
+                    "agent 仍有待投递结果；请先读取结果，再删除该 Agent。"
+                )
+            if not await self.store.delete_agent(normalized):
+                raise RuntimeError(f"删除 runtime agent 失败: {normalized}")
+            return len(runs)
 
     async def list_active_runs(
         self,

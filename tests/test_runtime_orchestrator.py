@@ -13,9 +13,11 @@ from astrbot_plugin_maid_agent.runtime_orchestrator import (
     STATUS_RUNNING,
     STATUS_STARTING,
     STATUS_STOPPED,
+    AgentBusyError,
     BatchCapacityError,
     CapacityExceededError,
     DispatchRequest,
+    PendingNotificationError,
     RuntimeOrchestrator,
 )
 from astrbot_plugin_maid_agent.runtime_store import RuntimeStore
@@ -418,6 +420,46 @@ async def _resume_terminal_creates_new_task_background(tmp_path, monkeypatch):
 
 def test_resume_terminal_creates_new_task_background(tmp_path, monkeypatch):
     asyncio.run(_resume_terminal_creates_new_task_background(tmp_path, monkeypatch))
+
+
+async def _delete_agent_requires_terminal_claimed_runs(tmp_path, monkeypatch):
+    store = _make_store(tmp_path, monkeypatch)
+    runner = _ScriptedRunner(result="done")
+    orch = RuntimeOrchestrator(store, _FakeConfig(), runner_factory=None)
+
+    async def _factory(run, event, payload):
+        return runner
+
+    orch._runner_factory = _factory
+    outcome = await orch.dispatch_single(
+        event=_make_event(),
+        request=DispatchRequest(
+            request_text="background", agent_name="butler", run_in_background=True
+        ),
+    )
+    try:
+        await orch.delete_agent(outcome.agent_id)
+    except AgentBusyError:
+        pass
+    else:
+        raise AssertionError("expected active agent deletion to be rejected")
+
+    runner.release()
+    await asyncio.sleep(0.1)
+    try:
+        await orch.delete_agent(outcome.agent_id)
+    except PendingNotificationError:
+        pass
+    else:
+        raise AssertionError("expected pending notification deletion to be rejected")
+
+    await store.claim_notification(outcome.agent_id, outcome.task_id)
+    assert await orch.delete_agent(outcome.agent_id) == 1
+    assert await store.load_agent(outcome.agent_id) is None
+
+
+def test_delete_agent_requires_terminal_claimed_runs(tmp_path, monkeypatch):
+    asyncio.run(_delete_agent_requires_terminal_claimed_runs(tmp_path, monkeypatch))
 
 
 async def _stop_running_agent(tmp_path, monkeypatch):

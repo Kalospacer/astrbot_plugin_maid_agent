@@ -410,6 +410,20 @@ textarea {
 .session-item:hover .session-actions {
   display: flex;
 }
+.session-item.active .session-actions {
+  display: flex;
+}
+.session-copy {
+  flex: 1;
+  min-width: 0;
+}
+.session-copy small {
+  display: block;
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .session-action-btn {
   color: var(--text-muted);
   padding: 4px;
@@ -418,6 +432,10 @@ textarea {
 .session-action-btn:hover {
   color: var(--text-main);
   background: #e0e0e0;
+}
+.session-action-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.35;
 }
 .empty-state,
 .modal-empty {

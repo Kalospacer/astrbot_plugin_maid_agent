@@ -6,6 +6,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
+from string import Formatter
 from typing import Any
 
 from astrbot.api import logger
@@ -26,6 +27,12 @@ DEFAULT_DISPATCH_PROMPT_TEMPLATE = (
     "如果大小姐误解了对方的需求，你以对方的需求为准完成任务，如果大小姐拒绝了对方的请求，你应当停止工作并汇报结束，"
     "如果大小姐和对方的需求一致，结合两者的需求准确完成任务。你的汇报对象是大小姐，不是对方。"
 )
+
+_DISPATCH_PROMPT_FIELDS = frozenset(
+    {"user_input_block", "maid_full_reply_block", "maid_request_block"}
+)
+_warned_deprecated_prompt_templates: set[str] = set()
+_warned_invalid_prompt_templates: set[str] = set()
 
 DEPRECATED_CONFIG_KEYS = (
     "session_enabled",
@@ -54,6 +61,81 @@ class MaidModeConfig:
     max_active_per_umo: int = DEFAULT_MAX_ACTIVE_PER_UMO
     max_active_global: int = DEFAULT_MAX_ACTIVE_GLOBAL
     retention_days: int = DEFAULT_RETENTION_DAYS
+
+
+def _render_default_dispatch_prompt(values: Mapping[str, str]) -> str:
+    return DEFAULT_DISPATCH_PROMPT_TEMPLATE.format_map(values).strip()
+
+
+def render_dispatch_prompt(
+    template: str,
+    *,
+    user_input_block: str,
+    maid_request_block: str,
+    maid_full_reply_block: str = "",
+) -> str:
+    """Render a configured dispatch prompt with 1.2 placeholder compatibility.
+
+    Unknown or malformed placeholders fall back to the 1.3 default template so
+    a stale user configuration cannot turn an otherwise valid runtime run into
+    an immediate failure.
+    """
+    values = {
+        "user_input_block": user_input_block,
+        "maid_full_reply_block": maid_full_reply_block,
+        "maid_request_block": maid_request_block,
+    }
+    normalized_template = str(template or "")
+    if not normalized_template.strip():
+        return _render_default_dispatch_prompt(values)
+
+    try:
+        parsed_fields = [
+            field_name
+            for _, field_name, _, _ in Formatter().parse(normalized_template)
+            if field_name is not None
+        ]
+    except ValueError as exc:
+        if normalized_template not in _warned_invalid_prompt_templates:
+            _warned_invalid_prompt_templates.add(normalized_template)
+            logger.warning(
+                "[大小姐模式] dispatch_prompt_template 格式无效，已回退 1.3 默认模板: %s",
+                exc,
+            )
+        return _render_default_dispatch_prompt(values)
+
+    unknown_fields = sorted(
+        {field_name for field_name in parsed_fields if field_name not in _DISPATCH_PROMPT_FIELDS}
+    )
+    if unknown_fields:
+        if normalized_template not in _warned_invalid_prompt_templates:
+            _warned_invalid_prompt_templates.add(normalized_template)
+            logger.warning(
+                "[大小姐模式] dispatch_prompt_template 包含未知占位符 %s，已回退 1.3 默认模板。",
+                ", ".join(repr(field) for field in unknown_fields),
+            )
+        return _render_default_dispatch_prompt(values)
+
+    if (
+        "maid_full_reply_block" in parsed_fields
+        and normalized_template not in _warned_deprecated_prompt_templates
+    ):
+        _warned_deprecated_prompt_templates.add(normalized_template)
+        logger.warning(
+            "[大小姐模式] dispatch_prompt_template 仍使用已弃用占位符 "
+            "{maid_full_reply_block}；1.3 runtime 会将其映射为空，1.4 将移除兼容。"
+        )
+
+    try:
+        return normalized_template.format_map(values).strip()
+    except (AttributeError, KeyError, TypeError, ValueError) as exc:
+        if normalized_template not in _warned_invalid_prompt_templates:
+            _warned_invalid_prompt_templates.add(normalized_template)
+            logger.warning(
+                "[大小姐模式] dispatch_prompt_template 渲染失败，已回退 1.3 默认模板: %s",
+                exc,
+            )
+        return _render_default_dispatch_prompt(values)
 
 
 def _parse_bool(value: Any, default: bool) -> bool:

@@ -23,6 +23,7 @@ Claude Code 风格 subagent runtime 重构：foreground-first 调度，稳定 ag
 - `call_maid` 新接口：`request_text`/`agent_name`/`resume_agent_id`/`run_in_background`/`tasks`/`action`。旧 `action=dispatch/steer/stop/done` 保留兼容转换并输出弃用提示；`done` 变为无状态 no-op。
 - 主模型工具集现在同时暴露 `call_maid` 与 `maid_task`。
 - 重启遗留的 `starting/running` run 静默转为 `interrupted`，不自动重放、不主动通知。
+- 兼容 1.2 用户配置中遗留的 `{maid_full_reply_block}`：1.3 runtime 将其映射为空并记录弃用警告；未知或损坏的模板占位符自动回退默认模板，不再导致 run 立即 failed。
 - metadata.yaml / pyproject.toml / `__version__` 升至 1.3.0。
 
 ### 不变

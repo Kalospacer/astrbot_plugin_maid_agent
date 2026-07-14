@@ -20,6 +20,7 @@ from astrbot.core.astr_agent_tool_exec import FunctionToolExecutor
 from astrbot.core.utils.active_event_registry import active_event_registry
 from astrbot.core.utils.llm_metadata import LLM_METADATAS
 
+from .config import render_dispatch_prompt
 from .constants import CALL_MAID_TOOL_NAME
 from .session_store import MaidAgentSession, MaidSessionStore
 
@@ -97,13 +98,12 @@ def _build_dispatch_prompt(
         if maid_request and maid_request.strip()
         else ""
     )
-    return dispatch_prompt_template.format_map(
-        {
-            "user_input_block": user_input_block,
-            "maid_full_reply_block": maid_full_reply_block,
-            "maid_request_block": maid_request_block,
-        }
-    ).strip()
+    return render_dispatch_prompt(
+        dispatch_prompt_template,
+        user_input_block=user_input_block,
+        maid_full_reply_block=maid_full_reply_block,
+        maid_request_block=maid_request_block,
+    )
 
 
 def _normalize_begin_dialogs(dialogs: Any) -> list[Message] | None:

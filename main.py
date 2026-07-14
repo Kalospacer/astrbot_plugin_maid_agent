@@ -43,7 +43,7 @@ from astrbot.core.utils.history_saver import persist_agent_history
 
 from .background_registry import MaidBackgroundTaskRegistry, MaidTaskConflictError
 from .batch_registry import MaidBatchRegistry
-from .config import load_maid_mode_config
+from .config import load_maid_mode_config, render_dispatch_prompt
 from .console_store import ConsoleTaskPatch, MaidConsoleEventStore
 from .constants import (
     CALL_MAID_TOOL_NAME,
@@ -490,9 +490,12 @@ class MaidAgent(Star):
         image_urls = await collect_child_image_urls(event, image_urls_raw)
         user_input_block = f"【对方原话】\n{true_user_input}\n\n" if true_user_input.strip() else ""
         maid_request_block = f"【大小姐请求】\n{request_text}\n\n"
-        dispatch_prompt = self.maid_mode_config.dispatch_prompt_template.format_map(
-            {"user_input_block": user_input_block, "maid_request_block": maid_request_block}
-        ).strip()
+        dispatch_prompt = render_dispatch_prompt(
+            self.maid_mode_config.dispatch_prompt_template,
+            user_input_block=user_input_block,
+            maid_request_block=maid_request_block,
+            maid_full_reply_block="",
+        )
 
         runner_holder: dict[str, object] = {}
 

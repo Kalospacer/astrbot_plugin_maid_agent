@@ -41,3 +41,6 @@ Thumbs.db
 # Logs
 *.log
 logs/
+
+# Local AstrBot runtime data when imports/tests run from this directory
+data/

@@ -8,7 +8,7 @@
   </head>
   <body>
     <main class="shell chat-layout">
-      <!-- 侧边栏: Session 列表 -->
+      <!-- 侧边栏: Agent -> Run 层级 -->
       <aside id="paneLeft" class="pane pane-left" aria-label="侧边栏">
         <div class="sidebar-header">
           <span id="streamState" class="signal signal-idle">连接中</span>
@@ -20,7 +20,7 @@
           <div class="sidebar-actions">
             <button id="newChatButton" class="primary w-full" type="button">
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
-              开启新对话
+              新建 Agent Run
             </button>
           </div>
           
@@ -112,7 +112,7 @@
             <div class="action-grid">
               <button id="stopButton" class="danger" type="button">停止</button>
               <button id="rerunButton" type="button">重跑</button>
-              <button id="doneButton" type="button">结束 Session</button>
+              <button id="resultButton" type="button">读取结果</button>
             </div>
             <div class="audit-header">
               <h3>操作审计</h3>
@@ -180,12 +180,27 @@
               <label><input id="settingHideNative" type="checkbox" />隐藏原生工具</label>
               <label><input id="settingHideTransfer" type="checkbox" />隐藏 transfer</label>
               <label><input id="settingRawInput" type="checkbox" />附带用户原话</label>
-              <label><input id="settingSession" type="checkbox" />启用 session</label>
               <label><input id="settingLogRaw" type="checkbox" />记录 LLM 原文</label>
             </div>
             <label>
-              <span>Session 超时</span>
-              <input id="settingTimeout" type="number" min="1" step="1" />
+              <span>Foreground 超时（秒）</span>
+              <input id="settingForegroundTimeout" type="number" min="1" max="55" step="1" />
+            </label>
+            <label>
+              <span>启用 Memory 的 Agent（逗号分隔）</span>
+              <input id="settingMemoryAgents" autocomplete="off" />
+            </label>
+            <label>
+              <span>每 UMO 最大活跃 Run</span>
+              <input id="settingMaxPerUmo" type="number" min="1" step="1" />
+            </label>
+            <label>
+              <span>全局最大活跃 Run</span>
+              <input id="settingMaxGlobal" type="number" min="1" step="1" />
+            </label>
+            <label>
+              <span>轨迹保留天数</span>
+              <input id="settingRetention" type="number" min="1" step="1" />
             </label>
             <label>
               <span>调度提示模板</span>

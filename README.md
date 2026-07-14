@@ -9,6 +9,23 @@
 
 ---
 
+## 1.3.0 — Claude Code 风格 Subagent Runtime
+
+1.3.0 将原有的“回复发送后统一后台执行”重构为 **foreground-first** runtime，对齐 Claude Code 的 AgentTool 语义：
+
+- **前台同步优先**：`call_maid` 默认在前台同步等待管家执行（最多 50 秒），短任务在同一 tool turn 直接返回结果给主模型；超时后同一 runner 原地转后台继续执行，返回带 `background_reason=timeout` 的结构化句柄。
+- **稳定 agent_id + 独立 task_id**：新 dispatch 永远创建新 agent；显式 `resume_agent_id` 才恢复。running agent 的 resume 作为 steer 注入下一 tool round，terminal/interrupted 的 resume 创建新 task 始终后台执行。
+- **`maid_task` 工具**：对齐 Claude TaskOutput，支持 `status/result/stop/steer`，`result` 默认阻塞 30 秒（最大 600 秒），成功读终态时认领 notification 避免重复唤醒。
+- **批量并发**：`call_maid(tasks=[...])` 最多 5 项，原子预留容量，不足整批拒绝。
+- **notification outbox**：终态生成稳定 `notification_id`，首次完成立即唤醒，无定时重试，仅在重启/新消息/`maid_task(result)` 时重试。snapshot 语义 + best-effort 去重。
+- **隔离持久化**：`agents/<agent_id>/{agent.json,transcript.jsonl,runs/<task_id>.json,outputs/<task_id>.txt}`，与旧 `sessions/*.json` 完全隔离。transcript append-only，resume 过滤损坏尾部与未配对 tool calls。30 天清理（不删 memory）。
+- **递归禁止 + memory**：child 移除 `call_maid`/`maid_task`/`transfer_to_*`；`memory_agent_names` opt-in 的 agent 自动获得原生 Read/Write/Edit，memory 以 UMO+agent_name 隔离。
+- **并发容量**：每会话最多 5 个 active runs，全局最多 20，超限立即拒绝。
+
+旧 `call_maid(action=...)` 接口保留兼容转换并输出弃用提示。不修改 AstrBot Core 任何文件。
+
+---
+
 本项目受到项目 `Muika-After-Story` 启发，用于验证一种旨在优化 LLM 角色扮演能力的概念架构——**“大小姐-管家”模式**。
 
 在传统的角色扮演 Agent 架构中，大量 Function Calling 系统提示词的注入往往会导致模型出现“过拟合”问题，使得模型说话风格变得像刻板的 AI 助手，从而失去原有的角色扮演沉浸感。
@@ -45,40 +62,39 @@
 **标准交互执行流：**
 
 1. 用户发送消息。
-2. 大小姐先输出第一轮自然语言回复。
-3. 若需后台执行任务，大小姐调用 \`call_maid\` 工具。
-4. 插件在当前回复发送后，将登记好的请求投递到后台调度目标 SubAgent（管家）。
-5. 管家执行完毕，将结果回灌给大小姐。
-6. 大小姐根据管家的结果，生成第二轮面向用户的自然语言回复。
-7. 管家执行完成后，插件会再次唤醒大小姐整理结果，并将该回复写回主对话历史。
+2. 若需执行任务，大小姐直接调用 `call_maid`，并传入自包含的 `request_text`。
+3. 短任务在当前 tool turn 内返回；超过 foreground 阈值后，同一 runner 原地转后台。
+4. 后台 run 结束后写入持久化 notification outbox，并唤醒大小姐整理结果。
+5. 可用 `maid_task(status/result/stop/steer)` 按 task/agent ID 查询或控制。
 
 ## ✨ 当前能力
 
 - [x] 主模型请求阶段清洗非自然语言上下文
 - [x] `hide_native_tools` 可配置控制大小姐是否暴露 AstrBot 原生工具
 - [x] 原生 `call_maid` 工具调度
-- [x] 支持单轮多次 `call_maid(dispatch)` 组成 batch 并发调度
+- [x] `call_maid(tasks=[...])` foreground/background 混合 batch 并发调度
 - [x] 子 Agent (SubAgent) 的主动调度与结果回灌闭环
 - [x] batch 结果统一汇总后仅回灌一次给大小姐
 - [x] 面向对外显示的输出结果自动清洗
-- [x] 单任务 active session 与 batch 独立 session 持久化
-- [x] Session 超时无感失效流转
+- [x] 稳定 `agent_id` + 每次运行独立 `task_id`
+- [x] 每 UMO 5 / 全局 20 的 active run 原子容量控制
 - [x] Follow-up 第二轮回复深度清洗机制
 - [x] 管家 Runner 完美透传 AstrBot 的上下文压缩配置
 - [x] 后台任务状态查询 / 停止 / steering
+- [x] `agent_id` / `parent_message_id` 父子溯源与精确历史回灌
+- [x] chat / batch / dashboard 统一任务分流与原子活跃任务占用
+- [x] append-only JSONL transcript 与不完整 tool-call 轨迹过滤
+- [x] 重启遗留 run 静默收敛为 `interrupted`
 
-## 📦 Session 机制
+## 📦 Agent / Run Runtime
 
-插件目前采用 **“单 Active Session”** 模式设计：
+- 新 dispatch 永远创建新 agent；只有显式 `resume_agent_id` 才恢复稳定身份。
+- 每个 agent 同时最多一个 active run；每个 UMO 可并发多个不同 agent。
+- running agent 的 resume 转为 steer；terminal/interrupted agent 的 resume 创建新 task 并后台执行。
+- `action=done` 在 1.3.x 仅为无状态兼容 no-op，1.4 将移除。
 
-- 每个通信来源 (\`unified_msg_origin\`) 同时只维护一个处于 Active 状态的管家 Session。
-- 只要当前 Session 不被主动关闭，后续对管家的调度指令都会追加复用该 Session 的完整上下文。
-- 当大小姐调用 \`call_maid(action=\"done\")\` 后，当前 Session 会被正式关闭。
-- 当 Session 超过设定的 \`session_timeout_minutes\` 阈值未被操作时，会自动作废重建。
-
-> **数据存储**：
-> Session 的通信数据不污染 AstrBot 的主 Conversation 存储，而是独立保存在插件的数据目录下：
-> \`data/plugin_data/astrbot_plugin_maid_agent/\`
+> **数据存储**：`data/plugin_data/astrbot_plugin_maid_agent/agents/<agent_id>/`。
+> 旧 `sessions/*.json` 保留但不作为 1.3 runtime 状态真源。
 
 ## ⚙️ 运行依赖
 
@@ -125,17 +141,19 @@ system_prompt: |
 
 最小化默认配置参考：
 
-\`\`\`yaml
-default_agent_name: \"muiceagent\"
+```yaml
+default_agent_name: "muiceagent"
 allowed_agent_names:
-
-- \"muiceagent\"
-  hide_native_tools: true
-  hide_transfer_tools: true
-  include_raw_user_input: true
-  session_enabled: true
-  session_timeout_minutes: 20
-  \`\`\`
+  - "muiceagent"
+hide_native_tools: true
+hide_transfer_tools: true
+include_raw_user_input: true
+foreground_timeout_seconds: 50
+memory_agent_names: []
+max_active_per_umo: 5
+max_active_global: 20
+retention_days: 30
+```
 
 ### 配置项速查表
 
@@ -143,11 +161,14 @@ allowed_agent_names:
 | ------------------------------- | ----------------------------------------------------------------------------------------------- |
 | \`default_agent_name\`          | 默认被调度的 SubAgent 名称。                                                                    |
 | \`allowed_agent_names\`         | 允许 \`call_maid(dispatch)\` 显式指定的 Agent 白名单列表。                                      |
-| \`hide_native_tools\`           | 是否隐藏主模型可见的 AstrBot 原生工具。开启后只保留 \`call_maid\`。                           |
+| \`hide_native_tools\`           | 是否隐藏主模型可见的 AstrBot 原生工具。开启后只保留 `call_maid` 与 `maid_task`。                 |
 | \`hide_transfer_tools\`         | 当 \`hide_native_tools=false\` 时，是否额外隐藏全部 \`transfer_to_*\` 工具。                  |
 | \`include_raw_user_input\`      | 是否把真实的用户原话一并透传给管家。                                                            |
-| \`session_enabled\`             | 是否启用管家的 Session 上下文持久化/状态留存机制。                                              |
-| \`session_timeout_minutes\`     | 并发 Session 闲置自动失效的分钟数。                                                             |
+| `foreground_timeout_seconds`    | 前台等待阈值，默认 50 秒；超时后同一 runner 转后台。                                            |
+| `memory_agent_names`            | 启用持久记忆和原生 Read/Write/Edit 的 agent 名称列表。                                          |
+| `max_active_per_umo`            | 每 UMO foreground/background 活跃 run 总上限。                                                   |
+| `max_active_global`             | 全局 foreground/background 活跃 run 总上限。                                                     |
+| `retention_days`                | agent 元数据、run、transcript、output 的保留天数；不删除 memory/旧 sessions。                    |
 | \`dispatch_prompt_template\`    | 发送给管家执行机时的中继调度系统提示词模板。                                                    |
 
 ## 📝 提示词模板

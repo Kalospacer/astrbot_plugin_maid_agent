@@ -7,6 +7,7 @@ from __future__ import annotations
 import asyncio
 import json
 from typing import TYPE_CHECKING, Any
+from weakref import WeakValueDictionary
 
 from astrbot.api import logger
 from astrbot.api.provider import ProviderRequest
@@ -19,9 +20,10 @@ from astrbot.core.astr_agent_tool_exec import FunctionToolExecutor
 from astrbot.core.utils.active_event_registry import active_event_registry
 from astrbot.core.utils.llm_metadata import LLM_METADATAS
 
+from .constants import CALL_MAID_TOOL_NAME
 from .session_store import MaidAgentSession, MaidSessionStore
 
-_provider_config_locks: dict[int, asyncio.Lock] = {}
+_provider_config_locks: WeakValueDictionary[int, asyncio.Lock] = WeakValueDictionary()
 
 if TYPE_CHECKING:
     from astrbot.api.event import AstrMessageEvent
@@ -179,6 +181,14 @@ def _build_session_contexts(
     return begin_dialogs
 
 
+def _sanitize_subagent_toolset(tools):
+    """Keep maid control-plane tools out of the worker's execution plane."""
+    if tools is None:
+        return None
+    tools.remove_tool(CALL_MAID_TOOL_NAME)
+    return None if tools.empty() else tools
+
+
 def _should_stop_background_subagent(event: AstrMessageEvent) -> bool:
     return event.is_stopped() or bool(event.get_extra("agent_stop_requested"))
 
@@ -208,6 +218,7 @@ def _format_assistant_message(message: Message) -> str:
             arguments = getattr(function, "arguments", None)
             if arguments:
                 import json
+
                 try:
                     args_str = json.dumps(json.loads(arguments), ensure_ascii=False, indent=2)
                     tool_lines.append(f"调用工具 {name}: {args_str}")
@@ -276,6 +287,44 @@ def _get_latest_assistant_output(messages: list[Message]) -> str:
         if rendered:
             return rendered
     return ""
+
+
+async def _checkpoint_runner_session(
+    *,
+    session: MaidAgentSession | None,
+    session_store: MaidSessionStore,
+    runner: ToolLoopAgentRunner,
+    maid_request: str,
+    explicit_session_id: str | None,
+    final_result: str | None = None,
+) -> bool:
+    """Best-effort transcript checkpoint after each complete agent step."""
+    if session is None:
+        return False
+
+    session.messages = [msg.model_dump() for msg in runner.run_context.messages]
+    session.last_maid_request = maid_request
+    latest_output = (
+        final_result
+        if final_result is not None
+        else _get_latest_assistant_output(runner.run_context.messages)
+    )
+    if latest_output:
+        session.last_agent_result = latest_output
+
+    try:
+        return await session_store.save_session_if_active(
+            session,
+            require_active_session_id=not explicit_session_id,
+        )
+    except Exception as exc:
+        logger.warning(
+            "[大小姐模式] 管家 transcript checkpoint 失败，将继续执行: session_id=%s error=%s",
+            session.session_id,
+            exc,
+            exc_info=True,
+        )
+        return False
 
 
 async def _build_runner(
@@ -359,6 +408,9 @@ async def dispatch_to_maid_agent(
     on_runner_unregistered=None,
     on_assistant_output_updated=None,
     on_tool_chain_updated=None,
+    *,
+    agent_id: str = "",
+    parent_message_id: str = "",
 ) -> tuple[str, str]:
     """根据 agent 名调用对应子 agent，并返回其自然语言结果与实际命中的 agent 名。"""
     handoff, resolved_agent_name = _resolve_handoff(
@@ -372,7 +424,9 @@ async def dispatch_to_maid_agent(
     agent_context = AstrAgentContext(context=context, event=runner_event)
     run_context = AgentContextWrapper(context=agent_context, tool_call_timeout=60)
 
-    toolset = FunctionToolExecutor._build_handoff_toolset(run_context, handoff.agent.tools)
+    toolset = _sanitize_subagent_toolset(
+        FunctionToolExecutor._build_handoff_toolset(run_context, handoff.agent.tools)
+    )
     image_urls = await FunctionToolExecutor._collect_handoff_image_urls(run_context, image_urls_raw)
 
     provider_id = getattr(
@@ -404,16 +458,23 @@ async def dispatch_to_maid_agent(
 
     session: MaidAgentSession | None = None
     if session_store.config.session_enabled:
+        owner_sender_id = str(event.get_sender_id() or "")
         if explicit_session_id:
             session, reused = await session_store.get_or_create_detached_session(
                 event.unified_msg_origin,
                 resolved_agent_name,
                 session_id=explicit_session_id,
+                parent_message_id=parent_message_id,
+                agent_id=agent_id,
+                owner_sender_id=owner_sender_id,
             )
         else:
             session, reused = await session_store.get_or_create_active_session(
                 event.unified_msg_origin,
                 resolved_agent_name,
+                parent_message_id=parent_message_id,
+                agent_id=agent_id,
+                owner_sender_id=owner_sender_id,
             )
         if reused:
             logger.info(
@@ -489,6 +550,13 @@ async def dispatch_to_maid_agent(
                 on_tool_chain_updated,
                 last_published_tool_chain,
             )
+            await _checkpoint_runner_session(
+                session=session,
+                session_store=session_store,
+                runner=runner,
+                maid_request=maid_request,
+                explicit_session_id=explicit_session_id,
+            )
 
         if not runner.done():
             logger.warning(
@@ -516,11 +584,26 @@ async def dispatch_to_maid_agent(
                 on_tool_chain_updated,
                 last_published_tool_chain,
             )
+            await _checkpoint_runner_session(
+                session=session,
+                session_store=session_store,
+                runner=runner,
+                maid_request=maid_request,
+                explicit_session_id=explicit_session_id,
+            )
     finally:
-        if on_runner_unregistered is not None:
-            on_runner_unregistered(event.unified_msg_origin, runner)
-        if event_registered:
-            active_event_registry.unregister(runner_event)
+        try:
+            if on_runner_unregistered is not None:
+                on_runner_unregistered(event.unified_msg_origin, runner)
+        except Exception as exc:
+            logger.warning(
+                "[大小姐模式] 注销后台 runner 回调失败: %s",
+                exc,
+                exc_info=True,
+            )
+        finally:
+            if event_registered:
+                active_event_registry.unregister(runner_event)
 
     llm_resp = runner.get_final_llm_resp()
     if llm_resp is None:
@@ -542,12 +625,13 @@ async def dispatch_to_maid_agent(
 
     if session is not None:
         session.agent_name = resolved_agent_name
-        session.messages = [msg.model_dump() for msg in runner.run_context.messages]
-        session.last_maid_request = maid_request
-        session.last_agent_result = llm_resp.completion_text or ""
-        persisted = await session_store.save_session_if_active(
-            session,
-            require_active_session_id=not explicit_session_id,
+        persisted = await _checkpoint_runner_session(
+            session=session,
+            session_store=session_store,
+            runner=runner,
+            maid_request=maid_request,
+            explicit_session_id=explicit_session_id,
+            final_result=llm_resp.completion_text or "",
         )
         if persisted:
             logger.debug(

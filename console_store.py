@@ -52,6 +52,11 @@ class ConsoleTaskPatch:
     request_text: str = ""
     parent_task_id: str = ""
     meta: dict[str, Any] | None = None
+    # 1.3.0 runtime fields (stored inside meta_json for backward compatibility).
+    agent_id: str = ""
+    run_mode: str = ""  # foreground | background
+    background_reason: str = ""
+    notification_id: str = ""
 
 
 class MaidConsoleEventStore:
@@ -68,6 +73,11 @@ class MaidConsoleEventStore:
     async def initialize(self) -> None:
         self.data_dir.mkdir(parents=True, exist_ok=True)
         await asyncio.to_thread(self._init_db)
+
+    async def reconcile_incomplete_tasks(self) -> list[str]:
+        """Close persisted tasks whose in-memory runner disappeared after restart."""
+        async with self._write_lock:
+            return await asyncio.to_thread(self._reconcile_incomplete_tasks, _utcnow())
 
     async def close(self) -> None:
         async with self._subscriber_lock:
@@ -91,6 +101,17 @@ class MaidConsoleEventStore:
 
     async def ensure_task(self, patch: ConsoleTaskPatch) -> dict[str, Any]:
         now = _utcnow()
+        meta = dict(patch.meta or {})
+        # 1.3.0 runtime fields are merged into meta_json so the SQLite schema
+        # stays backward compatible with 1.2.0 audits.
+        if patch.agent_id:
+            meta.setdefault("agent_id", patch.agent_id)
+        if patch.run_mode:
+            meta.setdefault("run_mode", patch.run_mode)
+        if patch.background_reason:
+            meta.setdefault("background_reason", patch.background_reason)
+        if patch.notification_id:
+            meta.setdefault("notification_id", patch.notification_id)
         payload = {
             "task_id": patch.task_id,
             "parent_task_id": patch.parent_task_id,
@@ -102,10 +123,15 @@ class MaidConsoleEventStore:
             "status": patch.status,
             "title": patch.title or patch.request_text[:80],
             "request_text": patch.request_text,
-            "meta_json": _dump_json(patch.meta or {}),
+            "meta_json": _dump_json(meta),
             "created_at": now,
             "updated_at": now,
-            "completed_at": now if patch.status in {"done", "error", "stopped"} else "",
+            "completed_at": (
+                now
+                if patch.status
+                in {"done", "error", "completed", "failed", "stopped", "interrupted"}
+                else ""
+            ),
         }
         async with self._write_lock:
             task = await asyncio.to_thread(self._upsert_task, payload)
@@ -196,6 +222,17 @@ class MaidConsoleEventStore:
 
     async def get_task(self, task_id: str) -> dict[str, Any] | None:
         return await asyncio.to_thread(self._get_task, task_id)
+
+    async def list_agents(self, unified_msg_origin: str = "") -> list[dict[str, Any]]:
+        """Aggregate distinct agent_id -> latest task summary from the audit store.
+
+        1.3.0 runtime agents are surfaced by scanning task meta_json. The SQLite
+        store remains an audit layer (not the runtime source of truth)."""
+        return await asyncio.to_thread(self._list_agents, unified_msg_origin)
+
+    async def get_agent_runs(self, agent_id: str) -> list[dict[str, Any]]:
+        """Return all audited runs/tasks for a given 1.3.0 agent_id."""
+        return await asyncio.to_thread(self._get_agent_runs, agent_id)
 
     async def get_task_events(self, task_id: str) -> list[dict[str, Any]]:
         return await asyncio.to_thread(self._get_task_events, task_id)
@@ -310,6 +347,50 @@ class MaidConsoleEventStore:
             conn.execute("CREATE INDEX IF NOT EXISTS idx_events_task ON task_events(task_id, id)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_actions_task ON task_actions(task_id, id)")
 
+    def _reconcile_incomplete_tasks(self, now: str) -> list[str]:
+        active_statuses = ("queued", "running", "stopping")
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT task_id, meta_json FROM tasks WHERE status IN (?, ?, ?)",
+                active_statuses,
+            ).fetchall()
+            task_ids: list[str] = []
+            for row in rows:
+                task_id = str(row["task_id"])
+                meta = _load_json(row["meta_json"])
+                next_meta = meta if isinstance(meta, dict) else {}
+                next_meta.update(
+                    {
+                        "recovered_after_restart": True,
+                        "interruption_reason": "plugin restarted before task completion",
+                    }
+                )
+                conn.execute(
+                    """
+                    UPDATE tasks
+                    SET status = 'stopped', updated_at = ?, completed_at = ?, meta_json = ?
+                    WHERE task_id = ?
+                    """,
+                    (now, now, _dump_json(next_meta), task_id),
+                )
+                conn.execute(
+                    """
+                    INSERT INTO task_events (
+                        task_id, event_type, title, message, source, status,
+                        payload_json, created_at
+                    ) VALUES (?, 'interrupted', ?, ?, 'system', 'stopped', ?, ?)
+                    """,
+                    (
+                        task_id,
+                        "任务因插件重启而中断",
+                        "运行中的内存执行器已不存在，任务状态已收敛为 stopped。",
+                        _dump_json({"recovered_after_restart": True}),
+                        now,
+                    ),
+                )
+                task_ids.append(task_id)
+        return task_ids
+
     def _row_to_task(self, row: sqlite3.Row | None) -> dict[str, Any] | None:
         if row is None:
             return None
@@ -400,7 +481,20 @@ class MaidConsoleEventStore:
         now: str,
         meta_json: str | None,
     ) -> dict[str, Any] | None:
-        completed_at = now if status in {"done", "error", "stopped", "partial_done"} else ""
+        completed_at = (
+            now
+            if status
+            in {
+                "done",
+                "error",
+                "completed",
+                "failed",
+                "stopped",
+                "interrupted",
+                "partial_done",
+            }
+            else ""
+        )
         with self._connect() as conn:
             if meta_json is None:
                 conn.execute(
@@ -484,11 +578,7 @@ class MaidConsoleEventStore:
             conditions.append("(title LIKE ? OR request_text LIKE ? OR agent_name LIKE ?)")
             params.extend([like, like, like])
         where_sql = f"WHERE {' AND '.join(conditions)}" if conditions else ""
-        sql = (
-            "SELECT * FROM tasks "
-            f"{where_sql} "
-            "ORDER BY updated_at DESC, created_at DESC LIMIT ?"
-        )
+        sql = f"SELECT * FROM tasks {where_sql} ORDER BY updated_at DESC, created_at DESC LIMIT ?"
         params.append(limit)
         with self._connect() as conn:
             rows = conn.execute(sql, params).fetchall()
@@ -498,6 +588,65 @@ class MaidConsoleEventStore:
         with self._connect() as conn:
             row = conn.execute("SELECT * FROM tasks WHERE task_id = ?", (task_id,)).fetchone()
         return self._row_to_task(row)
+
+    def _list_agents(self, unified_msg_origin: str) -> list[dict[str, Any]]:
+        """Aggregate distinct agent_id -> latest task summary.
+
+        Scans all tasks (optionally filtered by UMO) and groups by the
+        ``agent_id`` stored inside meta_json. Returns one summary per agent
+        using its most recently updated task.
+        """
+        sql = "SELECT * FROM tasks"
+        params: list[Any] = []
+        if unified_msg_origin:
+            sql += " WHERE unified_msg_origin = ?"
+            params.append(unified_msg_origin)
+        sql += " ORDER BY updated_at DESC, created_at DESC"
+        with self._connect() as conn:
+            rows = conn.execute(sql, params).fetchall()
+        agents: dict[str, dict[str, Any]] = {}
+        for row in rows:
+            task = self._row_to_task(row)
+            if task is None:
+                continue
+            meta = task.get("meta") if isinstance(task.get("meta"), dict) else {}
+            agent_id = str(meta.get("agent_id") or "")
+            if not agent_id or agent_id in agents:
+                continue
+            agents[agent_id] = {
+                "agent_id": agent_id,
+                "agent_name": task.get("agent_name", ""),
+                "unified_msg_origin": task.get("unified_msg_origin", ""),
+                "last_status": task.get("status", ""),
+                "last_task_id": task.get("task_id", ""),
+                "run_mode": str(meta.get("run_mode") or ""),
+                "background_reason": str(meta.get("background_reason") or ""),
+                "updated_at": task.get("updated_at", ""),
+            }
+        return list(agents.values())
+
+    def _get_agent_runs(self, agent_id: str) -> list[dict[str, Any]]:
+        """Return all audited tasks whose meta.agent_id matches."""
+        if not agent_id:
+            return []
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM tasks ORDER BY updated_at DESC, created_at DESC"
+            ).fetchall()
+        runs: list[dict[str, Any]] = []
+        for row in rows:
+            task = self._row_to_task(row)
+            if task is None:
+                continue
+            meta = task.get("meta") if isinstance(task.get("meta"), dict) else {}
+            if str(meta.get("agent_id") or "") != agent_id:
+                continue
+            task["run_mode"] = str(meta.get("run_mode") or "")
+            task["background_reason"] = str(meta.get("background_reason") or "")
+            task["notification_id"] = str(meta.get("notification_id") or "")
+            task["agent_id"] = str(meta.get("agent_id") or "")
+            runs.append(task)
+        return runs
 
     def _get_task_events(self, task_id: str) -> list[dict[str, Any]]:
         with self._connect() as conn:
@@ -577,7 +726,9 @@ class MaidConsoleEventStore:
                 """,
                 (task_id, task_id),
             )
-            conn.execute("DELETE FROM tasks WHERE task_id = ? OR parent_task_id = ?", (task_id, task_id))
+            conn.execute(
+                "DELETE FROM tasks WHERE task_id = ? OR parent_task_id = ?", (task_id, task_id)
+            )
 
     def _update_task_meta(
         self, task_id: str, title: str | None, meta_update: dict[str, Any] | None, now: str

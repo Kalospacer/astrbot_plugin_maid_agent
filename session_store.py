@@ -51,6 +51,9 @@ class MaidAgentSession:
     updated_at: str
     last_maid_request: str
     last_agent_result: str
+    parent_message_id: str = ""
+    agent_id: str = ""
+    owner_sender_id: str = ""
 
     @classmethod
     def create(
@@ -58,6 +61,10 @@ class MaidAgentSession:
         unified_msg_origin: str,
         agent_name: str,
         session_id: str | None = None,
+        *,
+        parent_message_id: str = "",
+        agent_id: str = "",
+        owner_sender_id: str = "",
     ) -> MaidAgentSession:
         now = _utcnow().isoformat()
         return cls(
@@ -70,6 +77,9 @@ class MaidAgentSession:
             updated_at=now,
             last_maid_request="",
             last_agent_result="",
+            parent_message_id=parent_message_id,
+            agent_id=agent_id,
+            owner_sender_id=owner_sender_id,
         )
 
     @classmethod
@@ -86,6 +96,9 @@ class MaidAgentSession:
             updated_at=str(data.get("updated_at", "")),
             last_maid_request=str(data.get("last_maid_request", "")),
             last_agent_result=str(data.get("last_agent_result", "")),
+            parent_message_id=str(data.get("parent_message_id", "") or ""),
+            agent_id=str(data.get("agent_id", "") or ""),
+            owner_sender_id=str(data.get("owner_sender_id", "") or ""),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -99,6 +112,9 @@ class MaidAgentSession:
             "updated_at": self.updated_at,
             "last_maid_request": self.last_maid_request,
             "last_agent_result": self.last_agent_result,
+            "parent_message_id": self.parent_message_id,
+            "agent_id": self.agent_id,
+            "owner_sender_id": self.owner_sender_id,
         }
 
     def touch(self) -> None:
@@ -303,6 +319,10 @@ class MaidSessionStore:
         self,
         unified_msg_origin: str,
         agent_name: str,
+        *,
+        parent_message_id: str = "",
+        agent_id: str = "",
+        owner_sender_id: str = "",
     ) -> tuple[MaidAgentSession, bool]:
         async with self._hold_umo_lock(unified_msg_origin):
             session = await self._get_active_session_unlocked(unified_msg_origin)
@@ -319,9 +339,27 @@ class MaidSessionStore:
                         agent_name,
                     )
                 else:
+                    metadata_changed = False
+                    if parent_message_id and session.parent_message_id != parent_message_id:
+                        session.parent_message_id = parent_message_id
+                        metadata_changed = True
+                    if agent_id and not session.agent_id:
+                        session.agent_id = agent_id
+                        metadata_changed = True
+                    if owner_sender_id and session.owner_sender_id != owner_sender_id:
+                        session.owner_sender_id = owner_sender_id
+                        metadata_changed = True
+                    if metadata_changed:
+                        await self.save_session(session)
                     return session, True
 
-            session = MaidAgentSession.create(unified_msg_origin, agent_name)
+            session = MaidAgentSession.create(
+                unified_msg_origin,
+                agent_name,
+                parent_message_id=parent_message_id,
+                agent_id=agent_id,
+                owner_sender_id=owner_sender_id,
+            )
             await self.save_session(session)
             await self._set_active_session_id(unified_msg_origin, session.session_id)
             logger.info(
@@ -337,6 +375,10 @@ class MaidSessionStore:
         unified_msg_origin: str,
         agent_name: str,
         session_id: str | None = None,
+        *,
+        parent_message_id: str = "",
+        agent_id: str = "",
+        owner_sender_id: str = "",
     ) -> tuple[MaidAgentSession, bool]:
         async with self._hold_umo_lock(unified_msg_origin):
             existing_session: MaidAgentSession | None = None
@@ -349,6 +391,24 @@ class MaidSessionStore:
                                 existing_session.agent_name.strip().casefold()
                                 == agent_name.strip().casefold()
                             ):
+                                metadata_changed = False
+                                if (
+                                    parent_message_id
+                                    and existing_session.parent_message_id != parent_message_id
+                                ):
+                                    existing_session.parent_message_id = parent_message_id
+                                    metadata_changed = True
+                                if agent_id and not existing_session.agent_id:
+                                    existing_session.agent_id = agent_id
+                                    metadata_changed = True
+                                if (
+                                    owner_sender_id
+                                    and existing_session.owner_sender_id != owner_sender_id
+                                ):
+                                    existing_session.owner_sender_id = owner_sender_id
+                                    metadata_changed = True
+                                if metadata_changed:
+                                    await self.save_session(existing_session)
                                 return existing_session, True
                             existing_session.status = "expired"
                             await self.save_session(existing_session)
@@ -374,6 +434,9 @@ class MaidSessionStore:
                 unified_msg_origin,
                 agent_name,
                 session_id=session_id,
+                parent_message_id=parent_message_id,
+                agent_id=agent_id,
+                owner_sender_id=owner_sender_id,
             )
             await self.save_session(session)
             logger.info(

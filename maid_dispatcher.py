@@ -28,7 +28,6 @@ from .toolset_adapter import (
     _load_provider_settings as _load_provider_settings_umo,
 )
 from .toolset_adapter import (
-    _sanitize_child_toolset,
     build_child_toolset,
     collect_child_image_urls,
 )
@@ -177,11 +176,6 @@ def _build_session_contexts(
             messages = messages[1:]
         return messages or None
     return begin_dialogs
-
-
-def _sanitize_subagent_toolset(tools):
-    """Keep maid control-plane tools out of the worker's execution plane."""
-    return _sanitize_child_toolset(tools)
 
 
 def _should_stop_background_subagent(event: AstrMessageEvent) -> bool:

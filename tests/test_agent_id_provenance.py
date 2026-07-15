@@ -8,13 +8,13 @@ import astrbot_plugin_maid_agent.session_store as session_store_module
 from astrbot_plugin_maid_agent.config import MaidModeConfig
 from astrbot_plugin_maid_agent.maid_dispatcher import (
     _checkpoint_runner_session,
-    _sanitize_subagent_toolset,
 )
 from astrbot_plugin_maid_agent.main import MaidAgent
 from astrbot_plugin_maid_agent.session_store import (
     MaidAgentSession,
     MaidSessionStore,
 )
+from astrbot_plugin_maid_agent.toolset_adapter import _sanitize_child_toolset
 
 from astrbot.core.agent.message import Message
 from astrbot.core.agent.tool import FunctionTool, ToolSet
@@ -217,7 +217,7 @@ def test_subagent_toolset_cannot_recursively_call_maid() -> None:
         ]
     )
 
-    sanitized = _sanitize_subagent_toolset(toolset)
+    sanitized = _sanitize_child_toolset(toolset)
     assert sanitized is not None
     assert sanitized.get_tool("call_maid") is None
     assert sanitized.get_tool("safe_tool") is not None

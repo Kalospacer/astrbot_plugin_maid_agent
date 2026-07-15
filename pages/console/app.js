@@ -28,6 +28,7 @@ const state = {
   pendingDeleteAgentId: "",
   pendingDeleteTimer: 0,
   pendingDeleteAgentTimer: 0,
+  attachments: [],
 };
 
 const $ = (selector) => document.querySelector(selector);
@@ -109,6 +110,129 @@ async function apiGet(endpoint, params) {
 
 async function apiPost(endpoint, body) {
   return ensureBridge().apiPost(endpoint, body);
+}
+
+async function uploadFile(endpoint, file) {
+  const pageBridge = ensureBridge();
+  if (typeof pageBridge.upload !== "function") {
+    throw new Error("当前 AstrBot 页面桥不支持文件上传，请刷新 Dashboard。");
+  }
+  return pageBridge.upload(endpoint, file);
+}
+
+function formatFileSize(bytes) {
+  const size = Number(bytes) || 0;
+  if (size < 1024) return `${size} B`;
+  if (size < 1024 * 1024) return `${Math.round(size / 1024)} KB`;
+  return `${(size / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function renderAttachments() {
+  const strip = $("#attachmentStrip");
+  if (!strip) return;
+  strip.classList.toggle("hidden", state.attachments.length === 0);
+  strip.innerHTML = state.attachments
+    .map((attachment) => {
+      const stateLabel =
+        attachment.status === "uploading"
+          ? "上传中"
+          : attachment.status === "error"
+            ? "上传失败"
+            : formatFileSize(attachment.size);
+      return `
+        <article class="attachment-chip ${escapeHtml(attachment.status)}" title="${escapeHtml(attachment.error || attachment.name)}">
+          <img src="${escapeHtml(attachment.previewUrl)}" alt="">
+          <span class="attachment-meta">
+            <strong>${escapeHtml(attachment.name)}</strong>
+            <small>${escapeHtml(stateLabel)}</small>
+          </span>
+          <button type="button" class="attachment-remove" data-remove-attachment="${escapeHtml(attachment.id)}" aria-label="移除 ${escapeHtml(attachment.name)}">×</button>
+        </article>
+      `;
+    })
+    .join("");
+}
+
+async function uploadAttachment(attachment) {
+  try {
+    const result = await uploadFile("console/upload", attachment.file);
+    if (!result?.path) throw new Error("上传接口没有返回图片路径。");
+    attachment.path = result.path;
+    attachment.size = result.size ?? attachment.size;
+    attachment.status = "ready";
+  } catch (err) {
+    attachment.status = "error";
+    attachment.error = err.message || "图片上传失败";
+  } finally {
+    renderAttachments();
+  }
+  return attachment;
+}
+
+function addImageFiles(fileList) {
+  const allowedTypes = new Set(["image/jpeg", "image/png", "image/webp", "image/gif"]);
+  const files = Array.from(fileList || []);
+  let skipped = 0;
+  for (const file of files) {
+    if (state.attachments.length >= 5) {
+      skipped += 1;
+      continue;
+    }
+    if (!allowedTypes.has(file.type) || file.size <= 0 || file.size > 10 * 1024 * 1024) {
+      skipped += 1;
+      continue;
+    }
+    const attachment = {
+      id: `attachment_${Date.now()}_${Math.random().toString(16).slice(2)}`,
+      file,
+      name: file.name || "image",
+      size: file.size,
+      previewUrl: URL.createObjectURL(file),
+      path: "",
+      status: "uploading",
+      error: "",
+      uploadPromise: null,
+    };
+    state.attachments.push(attachment);
+    attachment.uploadPromise = uploadAttachment(attachment);
+  }
+  renderAttachments();
+  if (skipped) toast("部分图片未添加：仅支持 JPEG/PNG/WEBP/GIF，最多 5 张且每张不超过 10 MB");
+}
+
+function removeAttachment(attachmentId) {
+  const index = state.attachments.findIndex((item) => item.id === attachmentId);
+  if (index < 0) return;
+  const [attachment] = state.attachments.splice(index, 1);
+  if (attachment.previewUrl) URL.revokeObjectURL(attachment.previewUrl);
+  renderAttachments();
+}
+
+function clearAttachments() {
+  for (const attachment of state.attachments) {
+    if (attachment.previewUrl) URL.revokeObjectURL(attachment.previewUrl);
+  }
+  state.attachments = [];
+  renderAttachments();
+  const input = $("#imageInput");
+  if (input) input.value = "";
+}
+
+async function readyAttachmentPaths() {
+  await Promise.all(
+    state.attachments.map((attachment) => attachment.uploadPromise).filter(Boolean),
+  );
+  const failed = state.attachments.find((attachment) => attachment.status === "error");
+  if (failed) throw new Error(`${failed.name}：${failed.error || "上传失败"}`);
+  return state.attachments
+    .filter((attachment) => attachment.status === "ready" && attachment.path)
+    .map((attachment) => attachment.path);
+}
+
+function clearPromptComposer(input) {
+  input.value = "";
+  input.style.height = "auto";
+  clearAttachments();
 }
 
 function isAtBottom(el) {
@@ -951,7 +1075,7 @@ function renderInspector() {
 async function submitPrompt() {
   const input = $("#promptText");
   const text = input?.value.trim() || "";
-  if (!text) return;
+  if (!text && state.attachments.length === 0) return;
 
   const agent = $("#dispatchAgent")?.value || state.settings?.default_agent_name || "butler";
   const selectedRoot = getSelectedRootTask();
@@ -962,23 +1086,27 @@ async function submitPrompt() {
     return;
   }
 
-  input.value = "";
-  input.style.height = "auto";
   const btn = $("#sendBtn");
   if (btn) btn.disabled = true;
 
   try {
+    const imageUrlsRaw = await readyAttachmentPaths();
+    const requestText = text || "请查看并处理附带的图片。";
     const runtimeRun = state.selectedAgentId
       ? (state.runtimeRuns[state.selectedAgentId] || []).find(
           (run) => run.task_id === state.selectedSessionId,
         )
       : null;
     if (runtimeRun && ["starting", "running"].includes(runtimeRun.status)) {
+      if (imageUrlsRaw.length) {
+        throw new Error("运行中的 steer 目前只支持文字；请等待完成后用 Resume 附图。 ");
+      }
       await apiPost("console/actions/steer", {
         agent_id: state.selectedAgentId,
         task_id: runtimeRun.task_id,
-        message_text: text,
+        message_text: requestText,
       });
+      clearPromptComposer(input);
       toast("已 steer 当前 Agent");
       await refreshConsole({ silent: true, keepSession: true });
       return;
@@ -986,10 +1114,12 @@ async function submitPrompt() {
     if (runtimeRun && state.selectedAgentId) {
       const res = await apiPost("console/actions/resume", {
         agent_id: state.selectedAgentId,
-        request_text: text,
+        request_text: requestText,
         unified_msg_origin: umo,
+        image_urls_raw: imageUrlsRaw,
       });
       if (!res.outcome) throw new Error(res.error || "resume 失败");
+      clearPromptComposer(input);
       await refreshConsole({ silent: true, keepSession: false });
       await loadRuntimeRun(res.outcome.agent_id, res.outcome.task_id, { scrollMode: "bottom" });
       toast("已 Resume Agent");
@@ -999,10 +1129,14 @@ async function submitPrompt() {
     const activeTask = getActiveTaskInSession();
     let res;
     if (activeTask) {
+      if (imageUrlsRaw.length) {
+        throw new Error("运行中的 steer 目前只支持文字；请等待任务完成后再附图。 ");
+      }
       res = await apiPost("console/actions/steer", {
         task_id: activeTask.task_id,
-        message_text: text,
+        message_text: requestText,
       });
+      clearPromptComposer(input);
       toast("已续接当前任务");
       await refreshConsole({ silent: true, keepSession: true });
       return;
@@ -1011,10 +1145,12 @@ async function submitPrompt() {
     res = await apiPost("console/actions/dispatch", {
       unified_msg_origin: umo,
       agent_name: agent,
-      request_text: text,
+      request_text: requestText,
       run_in_background: true,
+      image_urls_raw: imageUrlsRaw,
     });
     if (!res.outcome) throw new Error(res.error || "派发失败");
+    clearPromptComposer(input);
     await refreshConsole({ silent: true, keepSession: false });
     await loadRuntimeRun(res.outcome.agent_id, res.outcome.task_id, { scrollMode: "bottom" });
     toast("已创建 Agent Run");
@@ -1472,6 +1608,15 @@ function bindEvents() {
   });
 
   const promptText = $("#promptText");
+  $("#attachButton")?.addEventListener("click", () => $("#imageInput")?.click());
+  $("#imageInput")?.addEventListener("change", (event) => {
+    addImageFiles(event.target.files);
+    event.target.value = "";
+  });
+  $("#attachmentStrip")?.addEventListener("click", (event) => {
+    const button = event.target.closest("[data-remove-attachment]");
+    if (button) removeAttachment(button.dataset.removeAttachment);
+  });
   promptText?.addEventListener("keydown", (event) => {
     if (event.key === "Enter" && !event.shiftKey) {
       event.preventDefault();

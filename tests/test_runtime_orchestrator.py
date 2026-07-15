@@ -362,6 +362,20 @@ async def _resume_running_routes_to_steer(tmp_path, monkeypatch):
     assert outcome.background_reason == "steer"
     assert outcome.task_id == bg.task_id
     assert runner.steer_calls == ["follow up"]
+    try:
+        await orch.dispatch_single(
+            event=_make_event(),
+            request=DispatchRequest(
+                request_text="follow up with image",
+                agent_name="butler",
+                resume_agent_id=bg.agent_id,
+            ),
+            runner_payload={"image_urls_raw": ["uploaded.png"]},
+        )
+    except ValueError as exc:
+        assert "只支持文字" in str(exc)
+    else:
+        raise AssertionError("running resume must not silently discard image attachments")
     runner.release()
     await orch.wait_for_idle()
 

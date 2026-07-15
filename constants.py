@@ -15,7 +15,11 @@ PENDING_MAID_FOLLOW_UP_EXTRA_KEY = "_maid_agent_pending_follow_up"
 PENDING_MAID_DISPATCHES_EXTRA_KEY = "_maid_agent_pending_dispatches"
 PENDING_MAID_TOOL_HISTORY_EXTRA_KEY = "_maid_agent_pending_tool_history"
 MAID_AGENT_ID_META_KEY = "_maid_agent_id"
+# Notification dedup markers written into conversation history messages.
+# Singular form is set when exactly one notification is delivered; plural form
+# (a list) is always set. Both are scanned for dedup.
 MAID_NOTIFICATION_ID_META_KEY = "_maid_notification_id"
+MAID_NOTIFICATION_IDS_META_KEY = "_maid_notification_ids"
 
 # Session 持久化（1.2.0 legacy，1.3.0 runtime 与之隔离）
 ACTIVE_SESSION_INDEX_KEY = "active_sessions_v1"

@@ -53,6 +53,7 @@ from .constants import (
     CALL_MAID_TOOL_NAME,
     MAID_AGENT_ID_META_KEY,
     MAID_NOTIFICATION_ID_META_KEY,
+    MAID_NOTIFICATION_IDS_META_KEY,
     MAID_TASK_TOOL_NAME,
     PENDING_MAID_DISPATCHES_EXTRA_KEY,
     PENDING_MAID_FOLLOW_UP_EXTRA_KEY,
@@ -67,7 +68,6 @@ from .maid_dispatcher import (
     dispatch_to_maid_agent,
 )
 from .notification_outbox import (
-    NOTIFICATION_IDS_META_KEY,
     NotificationOutbox,
     NotifierResult,
 )
@@ -850,7 +850,7 @@ class MaidAgent(Star):
             summary = "\n".join(summary_lines)
             notification_ids = [item.notification_id for item in notifications]
             extras = {
-                NOTIFICATION_IDS_META_KEY: notification_ids,
+                MAID_NOTIFICATION_IDS_META_KEY: notification_ids,
                 "background_task_results": [
                     {
                         "task_id": item.task_id,
@@ -920,7 +920,7 @@ class MaidAgent(Star):
             persisted = await ctx.conversation_manager.get_conversation(umo, conversation_id)
             history = json.loads(persisted.history or "[]") if persisted else []
             if history and isinstance(history[-1], dict):
-                history[-1][NOTIFICATION_IDS_META_KEY] = notification_ids
+                history[-1][MAID_NOTIFICATION_IDS_META_KEY] = notification_ids
                 if len(notification_ids) == 1:
                     history[-1][MAID_NOTIFICATION_ID_META_KEY] = notification_ids[0]
                 await ctx.conversation_manager.update_conversation(
@@ -2901,7 +2901,7 @@ class MaidAgent(Star):
         1. 保存原始对话输入到 event.extra
         2. 按配置重建主模型可见工具
         """
-        if event.get_extra(NOTIFICATION_IDS_META_KEY):
+        if event.get_extra(MAID_NOTIFICATION_IDS_META_KEY):
             logger.debug("[大小姐模式] notification 唤醒请求保留专用 send_message_to_user 工具。")
             return
         raw_input = req.prompt or event.message_str or ""

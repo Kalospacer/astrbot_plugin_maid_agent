@@ -25,6 +25,7 @@ import astrbot.api.message_components as Comp
 from astrbot.api import logger
 from astrbot.api.event import MessageChain, filter
 from astrbot.api.star import Star
+from astrbot.core.agent.hooks import BaseAgentRunHooks
 from astrbot.core.agent.message import (
     AssistantMessageSegment,
     TextPart,
@@ -195,6 +196,80 @@ class _ChildRunner:
 
     async def run(self) -> str:
         return await self._coro()
+
+
+class _RuntimeTraceHooks(BaseAgentRunHooks):
+    """Persist tool start/end controls before runner messages are finalized."""
+
+    __slots__ = (
+        "_active_call_id",
+        "_active_tool_name",
+        "_publish",
+        "_run",
+        "_sequence",
+        "_store",
+    )
+
+    def __init__(self, run: RunMeta, store: RuntimeStore, publish) -> None:
+        self._run = run
+        self._store = store
+        self._publish = publish
+        self._sequence = 0
+        self._active_call_id = ""
+        self._active_tool_name = ""
+
+    async def on_tool_start(self, _run_context, tool, tool_args) -> None:
+        self._sequence += 1
+        self._active_call_id = f"runtime_{self._run.task_id}_{self._sequence}"
+        self._active_tool_name = str(getattr(tool, "name", "") or "")
+        await self._store.append_control(
+            self._run.agent_id,
+            "tool_start",
+            {
+                "task_id": self._run.task_id,
+                "tool_call_id": self._active_call_id,
+                "tool_name": self._active_tool_name,
+                "arguments": tool_args or {},
+            },
+        )
+        await self._publish()
+
+    async def on_tool_end(self, _run_context, tool, _tool_args, tool_result) -> None:
+        call_id = self._active_call_id
+        if not call_id:
+            self._sequence += 1
+            call_id = f"runtime_{self._run.task_id}_{self._sequence}"
+        await self._store.append_control(
+            self._run.agent_id,
+            "tool_end",
+            {
+                "task_id": self._run.task_id,
+                "tool_call_id": call_id,
+                "tool_name": str(getattr(tool, "name", "") or ""),
+                "result": MaidAgent._runtime_tool_result_to_text(tool_result),
+            },
+        )
+        self._active_call_id = ""
+        self._active_tool_name = ""
+        await self._publish()
+
+    async def close_unfinished_tool(self) -> None:
+        """Close a start record when Core skipped on_tool_end after an error."""
+        if not self._active_call_id:
+            return
+        await self._store.append_control(
+            self._run.agent_id,
+            "tool_end",
+            {
+                "task_id": self._run.task_id,
+                "tool_call_id": self._active_call_id,
+                "tool_name": self._active_tool_name,
+                "result": "error: 工具执行异常结束，未收到正常结束回调。",
+            },
+        )
+        self._active_call_id = ""
+        self._active_tool_name = ""
+        await self._publish()
 
 
 def _max_step_message():
@@ -497,6 +572,11 @@ class MaidAgent(Star):
             maid_request_block=maid_request_block,
             maid_full_reply_block="",
         )
+        trace_hooks = _RuntimeTraceHooks(
+            run,
+            self.runtime_store,
+            lambda: self._publish_runtime_trace_safe(run),
+        )
 
         runner_holder: dict[str, object] = {}
 
@@ -537,6 +617,7 @@ class MaidAgent(Star):
                 tool_schema_mode=str(provider_settings.get("tool_schema_mode", "full") or "full"),
                 max_context_tokens=self._ensure_provider_max_context_tokens(provider),
                 session_id=run.task_id,
+                agent_hooks=trace_hooks,
             )
             runner_holder["runner"] = runner
             self.orchestrator.register_steer_handler(run.agent_id, _steer_handler)
@@ -573,6 +654,7 @@ class MaidAgent(Star):
                         runner,
                         persisted_count,
                     )
+                    await trace_hooks.close_unfinished_tool()
                 if not runner.done():
                     if runner.req:
                         runner.req.func_tool = None
@@ -585,11 +667,13 @@ class MaidAgent(Star):
                             runner,
                             persisted_count,
                         )
+                    await trace_hooks.close_unfinished_tool()
                 llm_resp = runner.get_final_llm_resp()
                 if llm_resp is None:
                     return ""
                 return llm_resp.completion_text or ""
             finally:
+                await trace_hooks.close_unfinished_tool()
                 self.orchestrator.unregister_steer_handler(run.agent_id)
                 await self.runtime_store.append_control(
                     run.agent_id, "run_end", {"task_id": run.task_id}
@@ -612,10 +696,33 @@ class MaidAgent(Star):
             for msg in msgs[persisted_count:]:
                 dumped = msg.model_dump() if hasattr(msg, "model_dump") else msg
                 await self.runtime_store.append_message(run.agent_id, dumped)
+            if len(msgs) > persisted_count:
+                await self._publish_runtime_trace_safe(run)
             return len(msgs)
         except Exception as exc:  # noqa: BLE001
             logger.warning("[大小姐模式] 追加 transcript 失败: %s", exc)
             return persisted_count
+
+    async def _publish_runtime_trace_safe(self, run: RunMeta) -> None:
+        try:
+            records = await self.runtime_store.load_run_transcript(
+                run.agent_id,
+                run.task_id,
+            )
+            tool_chain = self._build_runtime_tool_chain_payload(records)
+            current = await self.runtime_store.load_run(run.agent_id, run.task_id)
+            await self.console_store.publish_runtime_trace(
+                agent_id=run.agent_id,
+                task_id=run.task_id,
+                status=current.status if current is not None else run.status,
+                tool_chain=tool_chain,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "[大小姐模式] 发布 runtime 工具调用链失败: task_id=%s err=%s",
+                run.task_id,
+                exc,
+            )
 
     def _isolate_child_event(self, event: AstrMessageEvent):
         """Return a child event sharing UMO/sender/role/group/platform but with
@@ -872,6 +979,12 @@ class MaidAgent(Star):
                 "List runs for a 1.3.0 runtime agent",
             ),
             (
+                f"{prefix}/agents/<agent_id>/runs/<task_id>/trace",
+                self.console_agent_run_trace,
+                ["GET"],
+                "Get one 1.3.0 runtime run trace",
+            ),
+            (
                 f"{prefix}/agents/<agent_id>/delete",
                 self.console_delete_agent,
                 ["POST"],
@@ -1124,6 +1237,85 @@ class MaidAgent(Star):
             "entries": entries,
             "messages": raw_messages,
             "message_count": len(raw_messages),
+        }
+
+    @staticmethod
+    def _runtime_tool_result_to_text(tool_result: Any) -> str:
+        if tool_result is None:
+            return "工具未返回内容。"
+        parts: list[str] = []
+        for item in getattr(tool_result, "content", []) or []:
+            text = getattr(item, "text", None)
+            if text is not None:
+                parts.append(str(text))
+                continue
+            mime_type = getattr(item, "mimeType", None)
+            if mime_type:
+                parts.append(f"[{mime_type} 内容]")
+        result = "\n\n".join(part for part in parts if part).strip()
+        if not result:
+            result = str(tool_result)
+        if bool(getattr(tool_result, "isError", False)) and not result.lower().startswith("error"):
+            result = f"error: {result}"
+        return result
+
+    @classmethod
+    def _build_runtime_tool_chain_payload(
+        cls,
+        records: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        messages = [record for record in records if not record.get("_control")]
+        has_tool_controls = any(
+            record.get("_control") and record.get("kind") == "tool_start"
+            for record in records
+        )
+        if not has_tool_controls:
+            return cls._build_tool_chain_payload(messages)
+
+        entries: list[dict[str, Any]] = []
+        for index, record in enumerate(records):
+            if record.get("_control"):
+                kind = str(record.get("kind") or "")
+                if kind == "tool_start":
+                    entries.append(
+                        {
+                            "index": index,
+                            "kind": "tool_call",
+                            "title": f"调用 {record.get('tool_name') or '工具'}",
+                            "message": cls._stringify_tool_value(record.get("arguments")),
+                            "tool_name": str(record.get("tool_name") or ""),
+                            "tool_call_id": str(record.get("tool_call_id") or ""),
+                            "arguments": record.get("arguments"),
+                        }
+                    )
+                elif kind == "tool_end":
+                    entries.append(
+                        {
+                            "index": index,
+                            "kind": "tool_result",
+                            "title": f"{record.get('tool_name') or '工具'} 返回",
+                            "message": str(record.get("result") or ""),
+                            "tool_name": str(record.get("tool_name") or ""),
+                            "tool_call_id": str(record.get("tool_call_id") or ""),
+                        }
+                    )
+                continue
+            if str(record.get("role") or "") != "assistant":
+                continue
+            content_text = cls._message_content_to_text(record.get("content"))
+            if content_text.strip():
+                entries.append(
+                    {
+                        "index": index,
+                        "kind": "assistant",
+                        "title": "子 agent 输出",
+                        "message": content_text,
+                    }
+                )
+        return {
+            "entries": entries,
+            "messages": messages,
+            "message_count": len(messages),
         }
 
     async def _console_tool_chain_snapshot_safe(
@@ -1630,6 +1822,23 @@ class MaidAgent(Star):
             return self._console_error("agent 不存在。", status_code=404)
         runs = [run.to_dict() for run in await self.runtime_store.list_runs(agent_id)]
         return self._console_ok({"agent": meta.to_dict(), "runs": runs})
+
+    async def console_agent_run_trace(self, agent_id: str, task_id: str):
+        try:
+            run = await self.runtime_store.load_run(agent_id, task_id)
+            if run is None or run.agent_id != str(agent_id or "").strip().casefold():
+                return self._console_error("run 不存在。", status_code=404)
+            records = await self.runtime_store.load_run_transcript(agent_id, task_id)
+            return self._console_ok(
+                {
+                    "agent_id": run.agent_id,
+                    "task_id": run.task_id,
+                    "status": run.status,
+                    "tool_chain": self._build_runtime_tool_chain_payload(records),
+                }
+            )
+        except ValueError as exc:
+            return self._console_error(str(exc))
 
     async def console_delete_agent(self, agent_id: str):
         try:

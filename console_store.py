@@ -264,6 +264,25 @@ class MaidConsoleEventStore:
             await self._publish({"type": "reset", "created_at": _utcnow()})
         return removed
 
+    async def publish_runtime_trace(
+        self,
+        *,
+        agent_id: str,
+        task_id: str,
+        status: str,
+        tool_chain: dict[str, Any],
+    ) -> None:
+        """Push an ephemeral runtime trace without making SQLite the truth."""
+        await self._publish(
+            {
+                "type": "runtime_trace",
+                "agent_id": agent_id,
+                "task_id": task_id,
+                "status": status,
+                "tool_chain": tool_chain,
+            }
+        )
+
     async def update_task_meta(
         self,
         task_id: str,

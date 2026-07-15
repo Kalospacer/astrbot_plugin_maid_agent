@@ -22,6 +22,7 @@
 - **递归禁止 + memory**：child 移除 `call_maid`/`maid_task`/`transfer_to_*`；`memory_agent_names` opt-in 的 agent 自动获得原生 Read/Write/Edit，memory 以 UMO+agent_name 隔离。
 - **并发容量**：每会话最多 5 个 active runs，全局最多 20，超限立即拒绝。
 - **Console Agent/Run 操作**：运行记录支持停止和读取结果；终态 Agent 在无待通知结果时可二次确认删除，并同步清理 transcript、runs、outputs 与 SQLite 审计记录。
+- **实时调用链**：runtime 工具开始/结束通过独立 SSE 推送；刷新或查看历史 Run 时按 `run_start/run_end` 从 transcript 恢复，不依赖 SQLite 快照。
 
 旧 `call_maid(action=...)` 接口保留兼容转换并输出弃用提示。不修改 AstrBot Core 任何文件。
 

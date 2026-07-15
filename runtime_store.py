@@ -485,9 +485,15 @@ class RuntimeStore:
             if data is None:
                 return None
             run = RunMeta.from_dict(data)
-            if run.status == "interrupted":
-                return run
-            if run.status in TERMINAL_RUN_STATUSES and run.notification is not None:
+            if run.status in TERMINAL_RUN_STATUSES:
+                if run.notification is None and run.status != "interrupted":
+                    logger.warning(
+                        "[大小姐模式] run 已处于终态但缺少 notification，拒绝重复 finalize: "
+                        "agent_id=%s task_id=%s status=%s",
+                        agent_id,
+                        task_id,
+                        run.status,
+                    )
                 return run
             run.status = status
             run.result = result

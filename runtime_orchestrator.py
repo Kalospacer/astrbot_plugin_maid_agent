@@ -578,6 +578,7 @@ class RuntimeOrchestrator:
         event: AstrMessageEvent | None = None,
         sender_id: str = "",
         unified_msg_origin: str = "",
+        trusted_internal: bool = False,
     ) -> str:
         text = (message_text or "").strip()
         if not text:
@@ -591,6 +592,7 @@ class RuntimeOrchestrator:
             event=event,
             sender_id=sender_id,
             unified_msg_origin=unified_msg_origin,
+            trusted_internal=trusted_internal,
         )
         handler = self._steer_handlers.get(agent_id)
         if handler is None and agent_id in self._active_tasks:
@@ -633,20 +635,20 @@ class RuntimeOrchestrator:
         event: AstrMessageEvent | None = None,
         sender_id: str = "",
         unified_msg_origin: str = "",
-        source: str = "chat",
+        trusted_internal: bool = False,
     ) -> DispatchOutcome:
         found = await self.store.find_run(task_id)
         if found is None:
             raise RunNotFoundError(f"未找到 task: {task_id}")
         agent, run = found
-        if source == "chat":
-            self._authorize_values(
-                run.unified_msg_origin,
-                run.sender_id,
-                event=event,
-                sender_id=sender_id,
-                unified_msg_origin=unified_msg_origin,
-            )
+        self._authorize_values(
+            run.unified_msg_origin,
+            run.sender_id,
+            event=event,
+            sender_id=sender_id,
+            unified_msg_origin=unified_msg_origin,
+            trusted_internal=trusted_internal,
+        )
         active_task_id = self._active_task_ids.get(agent.agent_id)
         if active_task_id != task_id:
             return self._outcome_from_run(run)
@@ -675,6 +677,7 @@ class RuntimeOrchestrator:
         block: bool = True,
         timeout_ms: int = 30000,
         agent_id: str = "",
+        trusted_internal: bool = False,
     ) -> DispatchOutcome:
         found = await self.store.find_run(task_id)
         if found is None:
@@ -688,6 +691,7 @@ class RuntimeOrchestrator:
             event=event,
             sender_id=sender_id,
             unified_msg_origin=unified_msg_origin,
+            trusted_internal=trusted_internal,
         )
         if run.status in TERMINAL_STATUSES:
             return self._outcome_from_run(run, query_status="success")
@@ -768,11 +772,12 @@ class RuntimeOrchestrator:
         event: AstrMessageEvent | None = None,
         sender_id: str = "",
         unified_msg_origin: str = "",
+        trusted_internal: bool = False,
     ) -> None:
+        if trusted_internal:
+            return
         actual_umo = event.unified_msg_origin if event is not None else unified_msg_origin
         actual_sender = event.get_sender_id() if event is not None else sender_id
-        if event is None and not sender_id and not unified_msg_origin:
-            return
         if expected_umo and expected_umo != actual_umo:
             raise PermissionError("该任务不属于当前会话，无法操作。")
         if expected_sender and expected_sender != actual_sender:
@@ -801,6 +806,15 @@ class RuntimeOrchestrator:
 
     def _default_agent_name(self) -> str:
         return getattr(self.config, "default_agent_name", "butler")
+
+    async def wait_for_idle(self) -> None:
+        """Wait until the current execution snapshot has reached a terminal state."""
+        while True:
+            async with self._lock:
+                tasks = [task for task in self._active_tasks.values() if not task.done()]
+            if not tasks:
+                return
+            await asyncio.gather(*tasks, return_exceptions=True)
 
     async def shutdown(self) -> None:
         """Cancel all live runners and persist them as silent interrupted runs."""

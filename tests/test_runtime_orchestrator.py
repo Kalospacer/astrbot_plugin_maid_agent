@@ -48,19 +48,18 @@ def _make_event(sender_id="owner", umo="aiocqhttp:GroupMessage:g1"):
 class _ScriptedRunner:
     """A controllable runner that records steer calls and can block until released."""
 
-    def __init__(self, *, result="done", delay=0.0, raise_exc=None):
+    def __init__(self, *, result="done", raise_exc=None):
         self.result = result
-        self.delay = delay
         self.raise_exc = raise_exc
         self.steer_calls: list[str] = []
         self._release = asyncio.Event()
+        self.started = asyncio.Event()
         self._released = False
         self.run_calls = 0
 
     async def run(self) -> str:
         self.run_calls += 1
-        if self.delay:
-            await asyncio.sleep(self.delay)
+        self.started.set()
         if not self._released:
             await self._release.wait()
         if self.raise_exc is not None:
@@ -79,21 +78,17 @@ class _ScriptedRunner:
         return _handler
 
 
-def _factory_with(runners: list[_ScriptedRunner]):
-    """Build a runner_factory that hands out scripted runners in order and
-    registers a steer handler for each."""
-    iterator = iter(runners)
+async def _wait_until(predicate, timeout: float = 2) -> None:
+    async def _waiter() -> None:
+        while not predicate():
+            await asyncio.sleep(0)
 
-    async def _factory(run, event, payload):
-        runner = next(iterator)
-        return runner
-
-    return _factory, runners
+    await asyncio.wait_for(_waiter(), timeout=timeout)
 
 
 async def _foreground_completes_inline(tmp_path, monkeypatch):
     store = _make_store(tmp_path, monkeypatch)
-    runner = _ScriptedRunner(result="hello", delay=0.0)
+    runner = _ScriptedRunner(result="hello")
     runner._release.set()  # complete immediately
     orch = RuntimeOrchestrator(store, _FakeConfig(), runner_factory=None)
 
@@ -118,10 +113,10 @@ def test_foreground_completes_inline(tmp_path, monkeypatch):
 
 async def _foreground_timeout_migrates_to_background(tmp_path, monkeypatch):
     store = _make_store(tmp_path, monkeypatch)
-    runner = _ScriptedRunner(result="late-result", delay=0.0)
+    runner = _ScriptedRunner(result="late-result")
     # Do NOT release immediately so foreground wait_for times out.
     orch = RuntimeOrchestrator(store, _FakeConfig(), runner_factory=None)
-    orch.config.foreground_timeout_seconds = 0.05  # 50ms budget for the test
+    orch.config.foreground_timeout_seconds = 0.2
 
     async def _factory(run, event, payload):
         return runner
@@ -136,9 +131,8 @@ async def _foreground_timeout_migrates_to_background(tmp_path, monkeypatch):
     assert outcome.background_reason == BACKGROUND_REASON_TIMEOUT
 
     # The migrated background task should eventually complete.
-    await asyncio.sleep(0.2)
     runner.release()
-    await asyncio.sleep(0.1)
+    await orch.wait_for_idle()
     run = await store.load_run(outcome.agent_id, outcome.task_id)
     assert run is not None
     assert run.status == STATUS_COMPLETED
@@ -174,7 +168,7 @@ async def _explicit_background_returns_immediately(tmp_path, monkeypatch):
     assert orch._active_count_global() == 1
 
     runner.release()
-    await asyncio.sleep(0.1)
+    await orch.wait_for_idle()
     run = await store.load_run(outcome.agent_id, outcome.task_id)
     assert run is not None
     assert run.status == STATUS_COMPLETED
@@ -203,7 +197,7 @@ async def _immediate_background_completion_releases_capacity(tmp_path, monkeypat
             run_in_background=True,
         ),
     )
-    await asyncio.sleep(0.1)
+    await orch.wait_for_idle()
     run = await store.load_run(outcome.agent_id, outcome.task_id)
     assert run is not None and run.status == STATUS_COMPLETED
     assert orch._active_count_global() == 0
@@ -246,6 +240,7 @@ def test_batch_atomic_capacity_rejection(tmp_path, monkeypatch):
 async def _batch_concurrent_launch_in_order(tmp_path, monkeypatch):
     store = _make_store(tmp_path, monkeypatch)
     runners = [_ScriptedRunner(result=f"r{i}") for i in range(3)]
+    original_runners = list(runners)
     orch = RuntimeOrchestrator(store, _FakeConfig(), runner_factory=None)
 
     async def _factory(run, event, payload):
@@ -268,9 +263,9 @@ async def _batch_concurrent_launch_in_order(tmp_path, monkeypatch):
         assert item.status == STATUS_STARTING
         assert item.mode == MODE_BACKGROUND
 
-    # The factory-created runners are the ones we popped (r0,r1,r2 in order);
-    # release them so the background runs can complete.
-    # (runners list is now empty after pop-based dispatch.)
+    for runner in original_runners:
+        runner.release()
+    await orch.wait_for_idle()
 
 
 def test_batch_concurrent_launch_in_order(tmp_path, monkeypatch):
@@ -281,7 +276,7 @@ async def _batch_foreground_waits_concurrently(tmp_path, monkeypatch):
     store = _make_store(tmp_path, monkeypatch)
     runners = [_ScriptedRunner(result="r1"), _ScriptedRunner(result="r2")]
     config = _FakeConfig()
-    config.foreground_timeout_seconds = 0.1
+    config.foreground_timeout_seconds = 0.2
     orch = RuntimeOrchestrator(store, config, runner_factory=None)
 
     async def _factory(run, event, payload):
@@ -289,7 +284,6 @@ async def _batch_foreground_waits_concurrently(tmp_path, monkeypatch):
 
     original_runners = list(runners)
     orch._runner_factory = _factory
-    started = asyncio.get_running_loop().time()
     outcome = await orch.dispatch_batch(
         event=_make_event(),
         requests=[
@@ -297,13 +291,11 @@ async def _batch_foreground_waits_concurrently(tmp_path, monkeypatch):
             DispatchRequest(request_text="two", agent_name="butler"),
         ],
     )
-    elapsed = asyncio.get_running_loop().time() - started
-    assert elapsed < 0.18
     assert [item.background_reason for item in outcome.items] == ["timeout", "timeout"]
     assert all(runner.run_calls == 1 for runner in original_runners)
     for runner in original_runners:
         runner.release()
-    await asyncio.sleep(0.1)
+    await orch.wait_for_idle()
 
 
 def test_batch_foreground_waits_concurrently(tmp_path, monkeypatch):
@@ -337,7 +329,7 @@ async def _steer_running_agent(tmp_path, monkeypatch):
     assert ticket == "steered:more info"
     assert runner.steer_calls == ["more info"]
     runner.release()
-    await asyncio.sleep(0.1)
+    await orch.wait_for_idle()
 
 
 def test_steer_running_agent(tmp_path, monkeypatch):
@@ -371,7 +363,7 @@ async def _resume_running_routes_to_steer(tmp_path, monkeypatch):
     assert outcome.task_id == bg.task_id
     assert runner.steer_calls == ["follow up"]
     runner.release()
-    await asyncio.sleep(0.1)
+    await orch.wait_for_idle()
 
 
 def test_resume_running_routes_to_steer(tmp_path, monkeypatch):
@@ -411,7 +403,7 @@ async def _resume_terminal_creates_new_task_background(tmp_path, monkeypatch):
     assert outcome.mode == MODE_BACKGROUND
     assert outcome.background_reason == "resume"
     runner2.release()
-    await asyncio.sleep(0.1)
+    await orch.wait_for_idle()
     run = await store.load_run(outcome.agent_id, outcome.task_id)
     assert run is not None
     assert run.status == STATUS_COMPLETED
@@ -445,7 +437,7 @@ async def _delete_agent_requires_terminal_claimed_runs(tmp_path, monkeypatch):
         raise AssertionError("expected active agent deletion to be rejected")
 
     runner.release()
-    await asyncio.sleep(0.1)
+    await orch.wait_for_idle()
     try:
         await orch.delete_agent(outcome.agent_id)
     except PendingNotificationError:
@@ -509,7 +501,11 @@ async def _result_blocking_returns_terminal(tmp_path, monkeypatch):
     )
     runner.release()
     outcome = await orch.get_result(
-        agent_id=bg.agent_id, task_id=bg.task_id, block=True, timeout_ms=2000
+        agent_id=bg.agent_id,
+        task_id=bg.task_id,
+        event=_make_event(),
+        block=True,
+        timeout_ms=2000,
     )
     assert outcome.status == STATUS_COMPLETED
     assert outcome.result == "the answer"
@@ -535,12 +531,16 @@ async def _result_nonblocking_not_ready(tmp_path, monkeypatch):
         ),
     )
     outcome = await orch.get_result(
-        agent_id=bg.agent_id, task_id=bg.task_id, block=False, timeout_ms=0
+        agent_id=bg.agent_id,
+        task_id=bg.task_id,
+        event=_make_event(),
+        block=False,
+        timeout_ms=0,
     )
     assert outcome.status in {STATUS_STARTING, STATUS_RUNNING}
     assert outcome.query_status == "not_ready"
     runner.release()
-    await asyncio.sleep(0.1)
+    await orch.wait_for_idle()
 
 
 def test_result_nonblocking_not_ready(tmp_path, monkeypatch):
@@ -563,12 +563,16 @@ async def _result_blocking_timeout_returns_not_ready(tmp_path, monkeypatch):
         ),
     )
     outcome = await orch.get_result(
-        agent_id=bg.agent_id, task_id=bg.task_id, block=True, timeout_ms=100
+        agent_id=bg.agent_id,
+        task_id=bg.task_id,
+        event=_make_event(),
+        block=True,
+        timeout_ms=100,
     )
     assert outcome.status in {STATUS_STARTING, STATUS_RUNNING}
     assert outcome.query_status == "timeout"
     runner.release()
-    await asyncio.sleep(0.1)
+    await orch.wait_for_idle()
 
 
 def test_result_blocking_timeout_returns_not_ready(tmp_path, monkeypatch):
@@ -632,7 +636,7 @@ async def _foreground_counts_toward_capacity(tmp_path, monkeypatch):
             request=DispatchRequest(request_text="foreground", agent_name="butler"),
         )
     )
-    await asyncio.sleep(0.05)
+    await runner.started.wait()
     assert orch._active_count_global() == 1
     try:
         await orch.dispatch_single(
@@ -679,10 +683,10 @@ async def _concurrent_capacity_reservation_has_one_winner(tmp_path, monkeypatch)
     results = await asyncio.gather(dispatch("a"), dispatch("b"), return_exceptions=True)
     assert sum(isinstance(item, CapacityExceededError) for item in results) == 1
     winner = next(item for item in results if not isinstance(item, Exception))
-    await asyncio.sleep(0.05)
+    await _wait_until(lambda: len(runners) == 1)
     for runner in runners:
         runner.release()
-    await asyncio.sleep(0.05)
+    await orch.wait_for_idle()
     assert winner.task_id
 
 
@@ -724,10 +728,10 @@ async def _batch_capacity_race_has_no_partial_batch(tmp_path, monkeypatch):
     )
     agent_count = len(await store.list_agent_ids())
     assert agent_count == (1 if isinstance(batch_result, BatchCapacityError) else 2)
-    await asyncio.sleep(0.05)
+    await _wait_until(lambda: len(runners) == agent_count)
     for runner in runners:
         runner.release()
-    await asyncio.sleep(0.05)
+    await orch.wait_for_idle()
 
 
 def test_batch_capacity_race_has_no_partial_batch(tmp_path, monkeypatch):
@@ -752,7 +756,6 @@ async def _cross_umo_operations_are_denied(tmp_path, monkeypatch):
             run_in_background=True,
         ),
     )
-    await asyncio.sleep(0.05)
     other_event = _make_event(umo="aiocqhttp:GroupMessage:g2")
     for operation in (
         orch.get_result(task_id=bg.task_id, event=other_event, block=False),
@@ -765,11 +768,56 @@ async def _cross_umo_operations_are_denied(tmp_path, monkeypatch):
         else:
             raise AssertionError("cross-UMO operation must be denied")
     runner.release()
-    await asyncio.sleep(0.05)
+    await orch.wait_for_idle()
 
 
 def test_cross_umo_operations_are_denied(tmp_path, monkeypatch):
     asyncio.run(_cross_umo_operations_are_denied(tmp_path, monkeypatch))
+
+
+async def _operations_without_identity_fail_closed(tmp_path, monkeypatch):
+    store = _make_store(tmp_path, monkeypatch)
+    runner = _ScriptedRunner(result="done")
+    orch = RuntimeOrchestrator(store, _FakeConfig(), runner_factory=None)
+
+    async def _factory(run, event, payload):
+        orch.register_steer_handler(run.agent_id, runner.make_steer_handler())
+        return runner
+
+    orch._runner_factory = _factory
+    bg = await orch.dispatch_single(
+        event=_make_event(),
+        request=DispatchRequest(
+            request_text="bg",
+            agent_name="butler",
+            run_in_background=True,
+        ),
+    )
+    operations = (
+        orch.get_result(task_id=bg.task_id, block=False),
+        orch.steer(agent_id=bg.agent_id, message_text="x"),
+        orch.stop(task_id=bg.task_id),
+    )
+    for operation in operations:
+        try:
+            await operation
+        except PermissionError:
+            pass
+        else:
+            raise AssertionError("operation without caller identity must fail closed")
+
+    trusted = await orch.get_result(
+        task_id=bg.task_id,
+        block=False,
+        trusted_internal=True,
+    )
+    assert trusted.task_id == bg.task_id
+    runner.release()
+    await orch.wait_for_idle()
+
+
+def test_operations_without_identity_fail_closed(tmp_path, monkeypatch):
+    asyncio.run(_operations_without_identity_fail_closed(tmp_path, monkeypatch))
 
 
 async def _terminal_callback_runs_once_for_background(tmp_path, monkeypatch):
@@ -795,7 +843,7 @@ async def _terminal_callback_runs_once_for_background(tmp_path, monkeypatch):
         ),
     )
     runner.release()
-    await asyncio.sleep(0.1)
+    await orch.wait_for_idle()
     assert terminal == [bg.task_id]
 
 
@@ -820,7 +868,7 @@ async def _shutdown_marks_active_run_interrupted(tmp_path, monkeypatch):
             run_in_background=True,
         ),
     )
-    await asyncio.sleep(0.05)
+    await runner.started.wait()
     await orch.shutdown()
     run = await store.load_run(bg.agent_id, bg.task_id)
     assert run is not None

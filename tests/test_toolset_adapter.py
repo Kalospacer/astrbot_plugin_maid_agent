@@ -7,6 +7,7 @@ import asyncio
 from astrbot_plugin_maid_agent.toolset_adapter import (
     MEMORY_MAX_BYTES,
     MEMORY_MAX_LINES,
+    _get_runtime_computer_tools,
     _is_handoff_tool,
     _is_recursion_tool,
     _sanitize_child_toolset,
@@ -58,6 +59,29 @@ def test_sanitize_drops_inactive_tools():
     sanitized = _sanitize_child_toolset(ts)
     assert sanitized is not None
     assert sanitized.names() == ["keep"]
+
+
+def test_runtime_computer_tool_roster_matches_current_core_contract():
+    from astrbot.core.astr_agent_tool_exec import FunctionToolExecutor
+
+    class _ToolMgr:
+        @staticmethod
+        def get_builtin_tool(cls):
+            return _tool(cls.__name__)
+
+    manager = _ToolMgr()
+    for runtime, booter in (("local", ""), ("sandbox", ""), ("sandbox", "cua")):
+        plugin_tools = _get_runtime_computer_tools(
+            runtime,
+            manager,
+            {"sandbox": {"booter": booter}},
+        )
+        core_tools = FunctionToolExecutor._get_runtime_computer_tools(
+            runtime,
+            manager,
+            booter,
+        )
+        assert set(plugin_tools) == set(core_tools)
 
 
 def _memory_dir(tmp_path, monkeypatch, umo="aiocqhttp:GroupMessage:g1", agent="butler"):

@@ -20,7 +20,7 @@ from astrbot.core.astr_agent_tool_exec import FunctionToolExecutor
 from astrbot.core.utils.active_event_registry import active_event_registry
 from astrbot.core.utils.llm_metadata import LLM_METADATAS
 
-from .config import render_dispatch_prompt
+from .config import _safe_int, render_dispatch_prompt
 from .session_store import MaidAgentSession, MaidSessionStore
 from .toolset_adapter import (
     _load_provider_settings as _load_provider_settings_umo,
@@ -36,13 +36,6 @@ if TYPE_CHECKING:
     from astrbot.api.star import Context
     from astrbot.core.agent.handoff import HandoffTool
     from astrbot.core.provider.provider import Provider
-
-
-def _safe_int(value: Any, default: int) -> int:
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        return default
 
 
 def _list_handoffs(context: Context) -> list[HandoffTool]:

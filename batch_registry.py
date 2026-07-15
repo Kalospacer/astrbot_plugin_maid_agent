@@ -6,6 +6,10 @@ from dataclasses import dataclass, field
 
 from .time_utils import iso_now
 
+# 1.2 batch item terminals. Intentionally omits partial_done (batch-level only
+# via background_registry) and 1.3 runtime statuses.
+# 1.2 batch item terminals. Intentionally omits partial_done (batch-level only
+# via background_registry) and 1.3 runtime statuses.
 TERMINAL_BATCH_ITEM_STATUSES = {"done", "error", "stopped"}
 
 

@@ -6,6 +6,12 @@ from dataclasses import dataclass
 
 from .time_utils import iso_now
 
+# 1.2 in-memory background task registry only. Distinct from runtime
+# TERMINAL_STATUSES / TERMINAL_RUN_STATUSES (1.3 vocabulary) and from the
+# console audit union — do not merge memberships without a migration plan.
+# 1.2 in-memory background task registry only. Distinct from runtime
+# TERMINAL_STATUSES / TERMINAL_RUN_STATUSES (1.3 vocabulary) and from the
+# console audit union — do not merge memberships without a migration plan.
 TERMINAL_TASK_STATUSES = {"done", "error", "stopped", "partial_done"}
 
 

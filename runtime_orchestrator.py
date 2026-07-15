@@ -26,6 +26,9 @@ STATUS_STOPPED = "stopped"
 STATUS_INTERRUPTED = "interrupted"
 
 ACTIVE_STATUSES = frozenset({STATUS_STARTING, STATUS_RUNNING})
+# Orchestrator view of finished runs. Includes interrupted (shutdown/restart).
+# runtime_store.TERMINAL_RUN_STATUSES intentionally omits interrupted because
+# finalize_run / notification emission only applies to completed|failed|stopped.
 TERMINAL_STATUSES = frozenset(
     {STATUS_COMPLETED, STATUS_FAILED, STATUS_STOPPED, STATUS_INTERRUPTED}
 )

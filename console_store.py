@@ -17,6 +17,10 @@ from .json_io import dump_json as _dump_json
 from .json_io import load_json_value as _load_json
 from .time_utils import iso_now
 
+# Console SQLite audit union of 1.2 task words + 1.3 runtime words. Used only to
+# refuse "un-terminalizing" an already-finished audit row — not a state machine.
+# Console SQLite audit union of 1.2 task words + 1.3 runtime words. Used only to
+# refuse "un-terminalizing" an already-finished audit row — not a state machine.
 _TERMINAL_TASK_STATUSES = frozenset(
     {"done", "error", "completed", "failed", "stopped", "interrupted", "partial_done"}
 )

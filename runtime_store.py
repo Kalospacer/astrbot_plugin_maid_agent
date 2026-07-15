@@ -33,6 +33,8 @@ from astrbot.api import logger
 from astrbot.api.star import StarTools
 
 from .constants import PLUGIN_DATA_DIR_NAME
+from .json_io import atomic_write_json as _atomic_write_json
+from .json_io import read_json_dict as _read_json
 from .time_utils import UTC, iso_now, utcnow
 
 if TYPE_CHECKING:
@@ -86,26 +88,6 @@ def _safe_path(base: Path, child: str) -> Path:
     except ValueError as exc:
         raise ValueError(f"路径越界: {child!r}") from exc
     return resolved
-
-
-def _atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp_path = path.with_suffix(f"{path.suffix}.tmp")
-    with tmp_path.open("w", encoding="utf-8") as fh:
-        json.dump(payload, fh, ensure_ascii=False, indent=2)
-    os.replace(tmp_path, path)
-
-
-def _read_json(path: Path) -> dict[str, Any] | None:
-    try:
-        with path.open("r", encoding="utf-8") as fh:
-            data = json.load(fh)
-    except FileNotFoundError:
-        return None
-    except (OSError, json.JSONDecodeError) as exc:
-        logger.warning("[大小姐模式] 读取 JSON 失败，已跳过: path=%s err=%s", path, exc)
-        return None
-    return data if isinstance(data, dict) else None
 
 
 def _read_jsonl(path: Path) -> list[dict[str, Any]]:

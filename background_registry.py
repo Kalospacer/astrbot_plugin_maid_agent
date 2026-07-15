@@ -3,14 +3,10 @@ from __future__ import annotations
 import asyncio
 import uuid
 from dataclasses import dataclass
-from datetime import datetime, timezone
 
-UTC = timezone.utc
+from .time_utils import iso_now
+
 TERMINAL_TASK_STATUSES = {"done", "error", "stopped", "partial_done"}
-
-
-def _utcnow() -> datetime:
-    return datetime.now(UTC)
 
 
 @dataclass(slots=True)
@@ -40,7 +36,7 @@ class MaidBackgroundTaskInfo:
         kind: str = "single",
         task_id: str | None = None,
     ) -> MaidBackgroundTaskInfo:
-        now = _utcnow().isoformat()
+        now = iso_now()
         return cls(
             task_id=(task_id or uuid.uuid4().hex),
             unified_msg_origin=unified_msg_origin,
@@ -54,7 +50,7 @@ class MaidBackgroundTaskInfo:
         )
 
     def touch(self) -> None:
-        self.updated_at = _utcnow().isoformat()
+        self.updated_at = iso_now()
 
 
 class MaidTaskConflictError(RuntimeError):

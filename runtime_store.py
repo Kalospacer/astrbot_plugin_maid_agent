@@ -23,7 +23,7 @@ import os
 import re
 import uuid
 from dataclasses import asdict, dataclass, field
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -31,11 +31,10 @@ from astrbot.api import logger
 from astrbot.api.star import StarTools
 
 from .constants import PLUGIN_DATA_DIR_NAME
+from .time_utils import UTC, iso_now, utcnow
 
 if TYPE_CHECKING:
     from .config import MaidModeConfig
-
-UTC = timezone.utc
 
 AGENTS_SUBDIR = "agents"
 TRANSCRIPT_FILENAME = "transcript.jsonl"
@@ -59,14 +58,6 @@ ACTIVE_RUN_STATUSES = frozenset({"starting", "running"})
 
 _AGENT_ID_RE = re.compile(r"^[0-9a-f]{32}$")
 _TASK_ID_RE = re.compile(r"^[0-9a-f]{32}$")
-
-
-def _utcnow() -> datetime:
-    return datetime.now(UTC)
-
-
-def _iso_now() -> str:
-    return _utcnow().isoformat()
 
 
 def _new_agent_id() -> str:
@@ -166,7 +157,7 @@ class PendingNotification:
     status: str
     result: str = ""
     error: str = ""
-    created_at: str = field(default_factory=_iso_now)
+    created_at: str = field(default_factory=iso_now)
     delivered: bool = False
     delivered_at: str = ""
 
@@ -183,7 +174,7 @@ class PendingNotification:
             status=str(data.get("status") or "failed"),
             result=str(data.get("result") or ""),
             error=str(data.get("error") or ""),
-            created_at=str(data.get("created_at") or _iso_now()),
+            created_at=str(data.get("created_at") or iso_now()),
             delivered=bool(data.get("delivered", False)),
             delivered_at=str(data.get("delivered_at") or ""),
         )
@@ -205,8 +196,8 @@ class RunMeta:
     request_text: str = ""
     resume_of: str = ""  # agent_id resumed from, if any
     background_reason: str = ""  # "timeout"|"explicit"|"resume"|...
-    created_at: str = field(default_factory=_iso_now)
-    updated_at: str = field(default_factory=_iso_now)
+    created_at: str = field(default_factory=iso_now)
+    updated_at: str = field(default_factory=iso_now)
     started_at: str = ""
     ended_at: str = ""
     result: str = ""
@@ -240,8 +231,8 @@ class RunMeta:
             request_text=str(data.get("request_text") or ""),
             resume_of=str(data.get("resume_of") or ""),
             background_reason=str(data.get("background_reason") or ""),
-            created_at=str(data.get("created_at") or _iso_now()),
-            updated_at=str(data.get("updated_at") or _iso_now()),
+            created_at=str(data.get("created_at") or iso_now()),
+            updated_at=str(data.get("updated_at") or iso_now()),
             started_at=str(data.get("started_at") or ""),
             ended_at=str(data.get("ended_at") or ""),
             result=str(data.get("result") or ""),
@@ -260,8 +251,8 @@ class AgentMeta:
     unified_msg_origin: str
     agent_name: str
     sender_id: str
-    created_at: str = field(default_factory=_iso_now)
-    updated_at: str = field(default_factory=_iso_now)
+    created_at: str = field(default_factory=iso_now)
+    updated_at: str = field(default_factory=iso_now)
     active_task_id: str = ""
     last_status: str = "starting"
     last_task_id: str = ""
@@ -276,8 +267,8 @@ class AgentMeta:
             unified_msg_origin=str(data.get("unified_msg_origin") or ""),
             agent_name=str(data.get("agent_name") or ""),
             sender_id=str(data.get("sender_id") or ""),
-            created_at=str(data.get("created_at") or _iso_now()),
-            updated_at=str(data.get("updated_at") or _iso_now()),
+            created_at=str(data.get("created_at") or iso_now()),
+            updated_at=str(data.get("updated_at") or iso_now()),
             active_task_id=str(data.get("active_task_id") or ""),
             last_status=str(data.get("last_status") or "starting"),
             last_task_id=str(data.get("last_task_id") or ""),
@@ -301,7 +292,7 @@ class RuntimeStore:
 
     @staticmethod
     def iso_now() -> str:
-        return _iso_now()
+        return iso_now()
 
     # ------------------------------------------------------------------ paths
 
@@ -362,7 +353,7 @@ class RuntimeStore:
         return AgentMeta.from_dict(data) if data else None
 
     async def update_agent_meta(self, meta: AgentMeta) -> AgentMeta:
-        meta.updated_at = _iso_now()
+        meta.updated_at = iso_now()
         async with self._lock:
             _atomic_write_json(self._agent_meta_path(meta.agent_id), meta.to_dict())
         return meta
@@ -388,7 +379,7 @@ class RuntimeStore:
             meta.active_task_id = task_id
             meta.last_task_id = task_id
             meta.last_status = status
-            meta.updated_at = _iso_now()
+            meta.updated_at = iso_now()
             _atomic_write_json(self._agent_meta_path(agent_id), meta.to_dict())
             return meta
 
@@ -406,14 +397,14 @@ class RuntimeStore:
             meta.active_task_id = ""
             if last_status:
                 meta.last_status = last_status
-            meta.updated_at = _iso_now()
+            meta.updated_at = iso_now()
             _atomic_write_json(self._agent_meta_path(agent_id), meta.to_dict())
             return meta
 
     # -------------------------------------------------------------- run meta
 
     async def create_run(self, run: RunMeta) -> RunMeta:
-        run.created_at = _iso_now()
+        run.created_at = iso_now()
         run.updated_at = run.created_at
         async with self._lock:
             self._runs_dir(run.agent_id).mkdir(parents=True, exist_ok=True)
@@ -460,7 +451,7 @@ class RuntimeStore:
                 run.output_file = output_file
             if notification is not None:
                 run.notification = notification
-            run.updated_at = _iso_now()
+            run.updated_at = iso_now()
             if status in TERMINAL_RUN_STATUSES and not run.ended_at:
                 run.ended_at = run.updated_at
             _atomic_write_json(self._run_meta_path(agent_id, task_id), run.to_dict())
@@ -506,7 +497,7 @@ class RuntimeStore:
                 os.replace(tmp_path, output_path)
                 output_file = str(output_path)
             run.output_file = output_file or run.output_file
-            run.updated_at = _iso_now()
+            run.updated_at = iso_now()
             run.ended_at = run.updated_at
             notification = PendingNotification(
                 notification_id=uuid.uuid4().hex,
@@ -545,8 +536,8 @@ class RuntimeStore:
             if run.notification is None:
                 return run
             run.notification.delivered = True
-            run.notification.delivered_at = _iso_now()
-            run.updated_at = _iso_now()
+            run.notification.delivered_at = iso_now()
+            run.updated_at = iso_now()
             _atomic_write_json(self._run_meta_path(agent_id, task_id), run.to_dict())
             return run
 
@@ -560,7 +551,7 @@ class RuntimeStore:
             if run.status not in ACTIVE_RUN_STATUSES:
                 return run
             run.status = "interrupted"
-            run.updated_at = _iso_now()
+            run.updated_at = iso_now()
             run.ended_at = run.updated_at
             run.error = run.error or "插件停止时任务仍在运行，已标记为 interrupted。"
             run.notification = None
@@ -605,7 +596,7 @@ class RuntimeStore:
         record = {
             "_control": True,
             "kind": kind,
-            "ts": _iso_now(),
+            "ts": iso_now(),
             **(payload or {}),
         }
         async with self._lock:
@@ -617,7 +608,7 @@ class RuntimeStore:
         if data is None:
             return
         meta = AgentMeta.from_dict(data)
-        meta.updated_at = _iso_now()
+        meta.updated_at = iso_now()
         _atomic_write_json(self._agent_meta_path(agent_id), meta.to_dict())
 
     async def load_transcript(self, agent_id: str) -> list[dict[str, Any]]:
@@ -803,7 +794,7 @@ class RuntimeStore:
         intentionally untouched."""
         if retention_days <= 0:
             return 0
-        cutoff = _utcnow() - timedelta(days=retention_days)
+        cutoff = utcnow() - timedelta(days=retention_days)
         removed = 0
         async with self._lock:
             if not self.agents_dir.exists():
@@ -822,7 +813,7 @@ class RuntimeStore:
                 try:
                     updated = datetime.fromisoformat(meta.updated_at)
                 except ValueError:
-                    updated = _utcnow()
+                    updated = utcnow()
                 if updated.tzinfo is None:
                     updated = updated.replace(tzinfo=UTC)
                 if updated >= cutoff:
@@ -878,7 +869,7 @@ class RuntimeStore:
                         if run.status not in ACTIVE_RUN_STATUSES:
                             continue
                         run.status = "interrupted"
-                        run.updated_at = _iso_now()
+                        run.updated_at = iso_now()
                         run.ended_at = run.updated_at
                         run.error = (
                             run.error
@@ -900,7 +891,7 @@ class RuntimeStore:
                     meta.last_task_id = next(
                         run.task_id for run in reversed(reconciled) if run.agent_id == agent_id
                     )
-                meta.updated_at = _iso_now()
+                meta.updated_at = iso_now()
                 _atomic_write_json(self._agent_meta_path(agent_id), meta.to_dict())
         if reconciled:
             logger.warning(

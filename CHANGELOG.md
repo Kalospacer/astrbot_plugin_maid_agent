@@ -26,6 +26,9 @@ Claude Code 风格 subagent runtime 重构：foreground-first 调度，稳定 ag
 - 主模型工具集现在同时暴露 `call_maid` 与 `maid_task`。
 - 重启遗留的 `starting/running` run 静默转为 `interrupted`，不自动重放、不主动通知。
 - 兼容 1.2 用户配置中遗留的 `{maid_full_reply_block}`：1.3 runtime 将其映射为空并记录弃用警告；未知或损坏的模板占位符自动回退默认模板，不再导致 run 立即 failed。
+- runtime 控制操作改为默认拒绝缺少 event/UMO/sender 的调用；Console 仅在三个明确调用点使用 `trusted_internal=True`，不再通过 `source=dashboard` 隐式绕过权限。
+- 已处于任意终态的 run 不再重复 finalize 或重新生成 notification；child computer-tool roster 增加与当前 Core 的契约测试，legacy toolset 过滤不再原地修改输入对象。
+- runtime/outbox 并发测试改用 started/idle 事件和条件等待，移除固定 20–200ms wall-clock 等待及未使用的 factory helper。
 - metadata.yaml / pyproject.toml / `__version__` 升至 1.3.0。
 
 ### 不变

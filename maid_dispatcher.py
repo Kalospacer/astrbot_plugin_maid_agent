@@ -21,8 +21,8 @@ from astrbot.core.utils.active_event_registry import active_event_registry
 from astrbot.core.utils.llm_metadata import LLM_METADATAS
 
 from .config import render_dispatch_prompt
-from .constants import CALL_MAID_TOOL_NAME
 from .session_store import MaidAgentSession, MaidSessionStore
+from .toolset_adapter import _sanitize_child_toolset
 
 _provider_config_locks: WeakValueDictionary[int, asyncio.Lock] = WeakValueDictionary()
 
@@ -183,10 +183,7 @@ def _build_session_contexts(
 
 def _sanitize_subagent_toolset(tools):
     """Keep maid control-plane tools out of the worker's execution plane."""
-    if tools is None:
-        return None
-    tools.remove_tool(CALL_MAID_TOOL_NAME)
-    return None if tools.empty() else tools
+    return _sanitize_child_toolset(tools)
 
 
 def _should_stop_background_subagent(event: AstrMessageEvent) -> bool:

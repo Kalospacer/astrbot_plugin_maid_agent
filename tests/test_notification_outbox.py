@@ -98,9 +98,11 @@ async def _new_completion_during_delivery_picked_up_next(tmp_path, monkeypatch):
     store = _make_store(tmp_path, monkeypatch)
     delivered: list[str] = []
     block_notifier = asyncio.Event()
+    notifier_started = asyncio.Event()
 
     async def notifier(notifications):
         # Block the first delivery so a new completion can land mid-flight.
+        notifier_started.set()
         await block_notifier.wait()
         delivered.extend(item.task_id for item in notifications)
         return NotifierResult(delivered=True)
@@ -111,7 +113,7 @@ async def _new_completion_during_delivery_picked_up_next(tmp_path, monkeypatch):
     await _finalize(store, a1.agent_id, r1.task_id)
 
     await outbox.queue_delivery("umo1")
-    await asyncio.sleep(0.02)
+    await notifier_started.wait()
     # While delivery is blocked, finalize a second run.
     a2 = await store.create_agent(unified_msg_origin="umo1", agent_name="butler", sender_id="u1")
     r2 = await store.create_run(_make_run(a2.agent_id, "e" * 32))
@@ -119,7 +121,6 @@ async def _new_completion_during_delivery_picked_up_next(tmp_path, monkeypatch):
     # Trigger a second queue_delivery — should be deferred (in flight) then
     # re-scheduled after the first pass completes.
     await outbox.queue_delivery("umo1")
-    await asyncio.sleep(0.02)
 
     block_notifier.set()
     await outbox.wait_for_idle()
@@ -197,7 +198,7 @@ async def _no_periodic_retry_only_on_triggers(tmp_path, monkeypatch):
     # A new user message triggers retry, and now it succeeds.
     outbox.set_notifier(notifier)
     await outbox.note_user_message("umo1")
-    await asyncio.sleep(0.05)
+    await outbox.wait_for_idle()
     assert delivered == [run.task_id]
 
 

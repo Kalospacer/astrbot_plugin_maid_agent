@@ -101,6 +101,40 @@ def test_run_lifecycle_atomic_finalize_with_notification(tmp_path, monkeypatch):
     asyncio.run(_run_lifecycle(_make_store(tmp_path, monkeypatch)))
 
 
+async def _terminal_without_notification_is_not_refinalized(store):
+    agent = await store.create_agent(
+        unified_msg_origin="umo1", agent_name="butler", sender_id="u1"
+    )
+    run = await store.create_run(_make_run(agent.agent_id, "8" * 32))
+    terminal = await store.update_run(
+        agent.agent_id,
+        run.task_id,
+        status="failed",
+        error="original",
+    )
+    assert terminal is not None
+    assert terminal.notification is None
+    ended_at = terminal.ended_at
+
+    repeated = await store.finalize_run(
+        agent.agent_id,
+        run.task_id,
+        status="completed",
+        result="late overwrite",
+    )
+
+    assert repeated is not None
+    assert repeated.status == "failed"
+    assert repeated.error == "original"
+    assert repeated.result == ""
+    assert repeated.notification is None
+    assert repeated.ended_at == ended_at
+
+
+def test_terminal_without_notification_is_not_refinalized(tmp_path, monkeypatch):
+    asyncio.run(_terminal_without_notification_is_not_refinalized(_make_store(tmp_path, monkeypatch)))
+
+
 async def _claim_notification(store):
     agent = await store.create_agent(
         unified_msg_origin="aiocqhttp:GroupMessage:g1",

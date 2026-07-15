@@ -1620,6 +1620,7 @@ class MaidAgent(Star):
             ticket = await self.orchestrator.steer(
                 agent_id=agent_id,
                 message_text=message_text,
+                trusted_internal=True,
             )
         except Exception as exc:
             return self._console_error(str(exc))
@@ -1638,7 +1639,10 @@ class MaidAgent(Star):
         if not task_id:
             return self._console_error("需要 task_id。")
         try:
-            outcome = await self.orchestrator.stop(task_id=task_id, source="dashboard")
+            outcome = await self.orchestrator.stop(
+                task_id=task_id,
+                trusted_internal=True,
+            )
         except Exception as exc:
             return self._console_error(str(exc))
         await self._console_action_safe(
@@ -1921,6 +1925,7 @@ class MaidAgent(Star):
                 task_id=task_id,
                 block=block,
                 timeout_ms=timeout_ms,
+                trusted_internal=True,
             )
             if outcome.status in {STATUS_COMPLETED, STATUS_FAILED, STATUS_STOPPED}:
                 await self.outbox.note_result_claimed(target_agent, task_id)
@@ -2994,7 +2999,6 @@ class MaidAgent(Star):
                     await self.orchestrator.stop(
                         task_id=run.task_id,
                         event=event,
-                        source="chat",
                     )
                     for run in active
                 ]
@@ -3091,7 +3095,6 @@ class MaidAgent(Star):
                 outcome = await self.orchestrator.stop(
                     task_id=task_id,
                     event=event,
-                    source="chat",
                 )
             except RunNotFoundError as exc:
                 return self._json_outcome({"status": "error", "error": str(exc)})
@@ -4255,7 +4258,6 @@ class MaidAgent(Star):
                 await self.orchestrator.stop(
                     task_id=run.task_id,
                     event=event,
-                    source="chat",
                 )
             yield event.plain_result(f"已请求停止 {len(active)} 个活跃 run。")
             return

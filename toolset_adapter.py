@@ -47,6 +47,33 @@ _HANDOFF_TOOL_PREFIX = "transfer_to_"
 # Builtin file tools auto-added to memory-enabled children.
 _FILE_TOOL_CLASS_NAMES = ("FileReadTool", "FileWriteTool", "FileEditTool")
 
+# Kept in contract-test parity with AstrBot 4.26.6
+# FunctionToolExecutor._get_runtime_computer_tools. Production code deliberately
+# avoids calling that private Core method.
+_SANDBOX_TOOL_CLASS_NAMES = (
+    "ExecuteShellTool",
+    "PythonTool",
+    "FileUploadTool",
+    "FileDownloadTool",
+    "FileReadTool",
+    "FileWriteTool",
+    "FileEditTool",
+    "GrepTool",
+)
+_LOCAL_TOOL_CLASS_NAMES = (
+    "ExecuteShellTool",
+    "LocalPythonTool",
+    "FileReadTool",
+    "FileWriteTool",
+    "FileEditTool",
+    "GrepTool",
+)
+_CUA_TOOL_CLASS_NAMES = (
+    "CuaScreenshotTool",
+    "CuaMouseClickTool",
+    "CuaKeyboardTypeTool",
+)
+
 
 def _is_handoff_tool(tool: FunctionTool) -> bool:
     return tool.name.startswith(_HANDOFF_TOOL_PREFIX)
@@ -262,36 +289,21 @@ def _get_runtime_computer_tools(
 
     tools: dict[str, FunctionTool] = {}
     if runtime == "sandbox":
-        mapping = {
-            "ExecuteShellTool": ct.ExecuteShellTool,
-            "PythonTool": ct.PythonTool,
-            "FileUploadTool": ct.FileUploadTool,
-            "FileDownloadTool": ct.FileDownloadTool,
-            "FileReadTool": ct.FileReadTool,
-            "FileWriteTool": ct.FileWriteTool,
-            "FileEditTool": ct.FileEditTool,
-            "GrepTool": ct.GrepTool,
-        }
-        for cls in mapping.values():
+        for class_name in _SANDBOX_TOOL_CLASS_NAMES:
+            cls = getattr(ct, class_name)
             tool = _get(cls)
             if tool is not None:
                 tools[tool.name] = tool
         if booter == "cua":
-            for cls in (ct.CuaScreenshotTool, ct.CuaMouseClickTool, ct.CuaKeyboardTypeTool):
+            for class_name in _CUA_TOOL_CLASS_NAMES:
+                cls = getattr(ct, class_name)
                 tool = _get(cls)
                 if tool is not None:
                     tools[tool.name] = tool
         return tools
     if runtime == "local":
-        mapping = {
-            "ExecuteShellTool": ct.ExecuteShellTool,
-            "LocalPythonTool": ct.LocalPythonTool,
-            "FileReadTool": ct.FileReadTool,
-            "FileWriteTool": ct.FileWriteTool,
-            "FileEditTool": ct.FileEditTool,
-            "GrepTool": ct.GrepTool,
-        }
-        for cls in mapping.values():
+        for class_name in _LOCAL_TOOL_CLASS_NAMES:
+            cls = getattr(ct, class_name)
             tool = _get(cls)
             if tool is not None:
                 tools[tool.name] = tool

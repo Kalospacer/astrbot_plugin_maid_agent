@@ -111,6 +111,9 @@ class NotificationOutbox:
         pending: list[PendingNotification] = []
         for _run, notification in snapshot:
             if self._history_contains(history, notification.notification_id):
+                # A persisted history marker is evidence that this notification
+                # already reached the conversation. If a wake failed before
+                # persistence, the marker is absent and the item stays pending.
                 await self.store.claim_notification(
                     notification.agent_id,
                     notification.task_id,

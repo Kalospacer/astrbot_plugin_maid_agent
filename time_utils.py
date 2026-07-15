@@ -1,7 +1,4 @@
-"""大小姐管家模式插件 - 时间工具函数。
-
-集中提供 UTC 时间获取，避免各 store 模块各自重复定义 ``_utcnow`` / ``_iso_now``。
-"""
+"""大小姐管家模式插件 - UTC 时间工具函数。"""
 
 from __future__ import annotations
 

@@ -87,7 +87,11 @@ from .runtime_store import RunMeta, RuntimeStore
 from .session_store import MaidSessionStore
 from .toolset_adapter import (
     _agent_memory_enabled as _agent_memory_enabled_fn,
+)
+from .toolset_adapter import (
     _load_provider_settings as _load_provider_settings_fn,
+)
+from .toolset_adapter import (
     build_child_toolset,
     collect_child_image_urls,
     get_memory_dir,
@@ -620,10 +624,10 @@ class MaidAgent(Star):
         true_user_input = str(payload.get("true_user_input") or "")
         image_urls_raw = payload.get("image_urls_raw")
         provider_settings = self._load_provider_settings(umo)
-        tool_call_timeout = self._safe_int_setting(
+        tool_call_timeout = _safe_int(
             provider_settings.get("tool_call_timeout", 60), 60
         )
-        agent_max_step = self._safe_int_setting(
+        agent_max_step = _safe_int(
             provider_settings.get("max_agent_step", 30), 30
         )
         image_urls = await collect_child_image_urls(event, image_urls_raw)
@@ -667,14 +671,14 @@ class MaidAgent(Star):
                 stream=bool(provider_settings.get("streaming_response", False)),
                 tool_call_timeout=tool_call_timeout,
                 llm_compress_instruction=str(provider_settings.get("llm_compress_instruction", "") or ""),
-                llm_compress_keep_recent=self._safe_int_setting(
+                llm_compress_keep_recent=_safe_int(
                     provider_settings.get("llm_compress_keep_recent", 4), 4
                 ),
                 llm_compress_provider=_get_compress_provider(context, provider_settings),
-                truncate_turns=self._safe_int_setting(
+                truncate_turns=_safe_int(
                     provider_settings.get("dequeue_context_length", 1), 1
                 ),
-                enforce_max_turns=self._safe_int_setting(
+                enforce_max_turns=_safe_int(
                     provider_settings.get("max_context_length", -1), -1
                 ),
                 tool_schema_mode=str(provider_settings.get("tool_schema_mode", "full") or "full"),
@@ -804,10 +808,6 @@ class MaidAgent(Star):
     def _load_provider_settings(self, umo: str) -> dict:
         return _load_provider_settings_fn(self.context, umo)
 
-    @staticmethod
-    def _safe_int_setting(value, default: int) -> int:
-        return _safe_int(value, default)
-
     def _ensure_provider_max_context_tokens(self, provider) -> int:
         from .maid_dispatcher import _ensure_provider_max_context_tokens
 
@@ -882,7 +882,7 @@ class MaidAgent(Star):
                 req.func_tool.add_tool(send_tool)
             provider_settings = self._load_provider_settings(umo)
             config = MainAgentBuildConfig(
-                tool_call_timeout=self._safe_int_setting(
+                tool_call_timeout=_safe_int(
                     provider_settings.get("tool_call_timeout", 60),
                     60,
                 ),

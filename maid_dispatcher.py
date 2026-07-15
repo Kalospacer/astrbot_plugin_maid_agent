@@ -9,6 +9,8 @@ import json
 from typing import TYPE_CHECKING, Any
 from weakref import WeakValueDictionary
 
+from pydantic import ValidationError
+
 from astrbot.api import logger
 from astrbot.api.provider import ProviderRequest
 from astrbot.core.agent.context.token_counter import EstimateTokenCounter
@@ -245,7 +247,7 @@ def _dump_runner_messages(runner: ToolLoopAgentRunner) -> list[dict[str, Any]]:
                 dumped.append(message)
             else:
                 dumped.append({"repr": repr(message)})
-        except Exception as exc:
+        except (ValidationError, TypeError, ValueError) as exc:
             dumped.append({"repr": repr(message), "dump_error": str(exc)})
     return dumped
 

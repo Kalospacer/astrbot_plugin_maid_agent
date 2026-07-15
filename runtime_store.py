@@ -27,6 +27,8 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from pydantic import ValidationError
+
 from astrbot.api import logger
 from astrbot.api.star import StarTools
 
@@ -579,7 +581,7 @@ class RuntimeStore:
         if hasattr(message, "model_dump"):
             try:
                 message = message.model_dump()
-            except Exception:
+            except (ValidationError, TypeError, ValueError):
                 message = {"repr": repr(message)}
         if not isinstance(message, dict):
             message = {"repr": str(message)}

@@ -8,23 +8,17 @@ import sqlite3
 import uuid
 from contextlib import suppress
 from dataclasses import dataclass
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from astrbot.api.star import StarTools
 
 from .constants import PLUGIN_DATA_DIR_NAME
+from .time_utils import iso_now
 
 _TERMINAL_TASK_STATUSES = frozenset(
     {"done", "error", "completed", "failed", "stopped", "interrupted", "partial_done"}
 )
-
-UTC = timezone.utc
-
-
-def _utcnow() -> str:
-    return datetime.now(UTC).isoformat()
 
 
 def _dump_json(data: Any) -> str:
@@ -81,7 +75,7 @@ class MaidConsoleEventStore:
     async def reconcile_incomplete_tasks(self) -> list[str]:
         """Close persisted tasks whose in-memory runner disappeared after restart."""
         async with self._write_lock:
-            return await asyncio.to_thread(self._reconcile_incomplete_tasks, _utcnow())
+            return await asyncio.to_thread(self._reconcile_incomplete_tasks, iso_now())
 
     async def close(self) -> None:
         async with self._subscriber_lock:
@@ -91,7 +85,7 @@ class MaidConsoleEventStore:
             if queue.full():
                 with suppress(asyncio.QueueEmpty):
                     queue.get_nowait()
-            queue.put_nowait({"type": "closed", "created_at": _utcnow()})
+            queue.put_nowait({"type": "closed", "created_at": iso_now()})
 
     async def subscribe(self) -> asyncio.Queue[dict[str, Any]]:
         queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue(maxsize=200)
@@ -104,7 +98,7 @@ class MaidConsoleEventStore:
             self._subscribers.discard(queue)
 
     async def ensure_task(self, patch: ConsoleTaskPatch) -> dict[str, Any]:
-        now = _utcnow()
+        now = iso_now()
         meta = dict(patch.meta or {})
         # 1.3.0 runtime fields are merged into meta_json so the SQLite schema
         # stays backward compatible with 1.2.0 audits.
@@ -149,7 +143,7 @@ class MaidConsoleEventStore:
         *,
         meta: dict[str, Any] | None = None,
     ) -> dict[str, Any] | None:
-        now = _utcnow()
+        now = iso_now()
         async with self._write_lock:
             task = await asyncio.to_thread(
                 self._update_task_status,
@@ -173,7 +167,7 @@ class MaidConsoleEventStore:
         status: str = "",
         payload: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        now = _utcnow()
+        now = iso_now()
         event_payload = {
             "task_id": task_id,
             "event_type": event_type,
@@ -199,7 +193,7 @@ class MaidConsoleEventStore:
         result_text: str = "",
         status: str = "ok",
     ) -> dict[str, Any]:
-        now = _utcnow()
+        now = iso_now()
         action_payload = {
             "task_id": task_id,
             "action": action,
@@ -253,19 +247,19 @@ class MaidConsoleEventStore:
     async def clear_history(self) -> None:
         async with self._write_lock:
             await asyncio.to_thread(self._clear_history)
-        await self._publish({"type": "reset", "created_at": _utcnow()})
+        await self._publish({"type": "reset", "created_at": iso_now()})
 
     async def delete_task(self, task_id: str) -> None:
         async with self._write_lock:
             await asyncio.to_thread(self._delete_task, task_id)
-        await self._publish({"type": "reset", "created_at": _utcnow()})
+        await self._publish({"type": "reset", "created_at": iso_now()})
 
     async def delete_agent_tasks(self, agent_id: str) -> int:
         """Delete SQLite audit rows associated with one runtime agent."""
         async with self._write_lock:
             removed = await asyncio.to_thread(self._delete_agent_tasks, agent_id)
         if removed:
-            await self._publish({"type": "reset", "created_at": _utcnow()})
+            await self._publish({"type": "reset", "created_at": iso_now()})
         return removed
 
     async def publish_runtime_trace(
@@ -293,7 +287,7 @@ class MaidConsoleEventStore:
         title: str | None = None,
         meta_update: dict[str, Any] | None = None,
     ) -> dict[str, Any] | None:
-        now = _utcnow()
+        now = iso_now()
         async with self._write_lock:
             task = await asyncio.to_thread(
                 self._update_task_meta,
@@ -308,7 +302,7 @@ class MaidConsoleEventStore:
 
     async def _publish(self, item: dict[str, Any]) -> None:
         item.setdefault("event_id", uuid.uuid4().hex)
-        item.setdefault("created_at", _utcnow())
+        item.setdefault("created_at", iso_now())
         async with self._subscriber_lock:
             subscribers = list(self._subscribers)
         for queue in subscribers:
@@ -735,7 +729,7 @@ class MaidConsoleEventStore:
                 for row in conn.execute("SELECT * FROM task_actions ORDER BY id ASC")
             ]
         return {
-            "exported_at": _utcnow(),
+            "exported_at": iso_now(),
             "tasks": [task for task in tasks if task is not None],
             "events": events,
             "actions": actions,

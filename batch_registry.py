@@ -3,14 +3,10 @@ from __future__ import annotations
 import asyncio
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
 
-UTC = timezone.utc
+from .time_utils import iso_now
+
 TERMINAL_BATCH_ITEM_STATUSES = {"done", "error", "stopped"}
-
-
-def _utcnow() -> datetime:
-    return datetime.now(UTC)
 
 
 @dataclass(slots=True)
@@ -38,12 +34,12 @@ class MaidBatchInfo:
     reasoning_signature: str | None = None
     status: str = "queued"
     stop_requested: bool = False
-    created_at: str = field(default_factory=lambda: _utcnow().isoformat())
-    updated_at: str = field(default_factory=lambda: _utcnow().isoformat())
+    created_at: str = field(default_factory=iso_now)
+    updated_at: str = field(default_factory=iso_now)
     items: list[MaidBatchItemInfo] = field(default_factory=list)
 
     def touch(self) -> None:
-        self.updated_at = _utcnow().isoformat()
+        self.updated_at = iso_now()
 
 
 class MaidBatchRegistry:

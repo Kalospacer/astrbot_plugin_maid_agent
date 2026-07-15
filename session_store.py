@@ -11,7 +11,7 @@ import re
 import uuid
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -19,16 +19,10 @@ from astrbot.api import logger
 from astrbot.api.star import StarTools
 
 from .constants import ACTIVE_SESSION_INDEX_KEY, PLUGIN_DATA_DIR_NAME
+from .time_utils import UTC, iso_now, utcnow
 
 if TYPE_CHECKING:
     from .config import MaidModeConfig
-
-UTC = timezone.utc
-
-
-def _utcnow() -> datetime:
-    return datetime.now(UTC)
-
 
 LOCK_ENTRY_TTL = timedelta(hours=1)
 
@@ -66,7 +60,7 @@ class MaidAgentSession:
         agent_id: str = "",
         owner_sender_id: str = "",
     ) -> MaidAgentSession:
-        now = _utcnow().isoformat()
+        now = iso_now()
         return cls(
             session_id=session_id or uuid.uuid4().hex,
             unified_msg_origin=unified_msg_origin,
@@ -118,7 +112,7 @@ class MaidAgentSession:
         }
 
     def touch(self) -> None:
-        self.updated_at = _utcnow().isoformat()
+        self.updated_at = iso_now()
 
     def is_expired(self, timeout_minutes: int) -> bool:
         if timeout_minutes <= 0:
@@ -129,7 +123,7 @@ class MaidAgentSession:
             return True
         if updated_at.tzinfo is None:
             updated_at = updated_at.replace(tzinfo=UTC)
-        return _utcnow() - updated_at > timedelta(minutes=timeout_minutes)
+        return utcnow() - updated_at > timedelta(minutes=timeout_minutes)
 
 
 class MaidSessionStore:
@@ -163,7 +157,7 @@ class MaidSessionStore:
             self._umo_locks.pop(key, None)
 
     async def _acquire_umo_lock_entry(self, unified_msg_origin: str) -> _UmoLockEntry:
-        now = _utcnow()
+        now = utcnow()
         async with self._umo_locks_guard:
             self._prune_stale_umo_locks_unlocked(now)
             entry = self._umo_locks.get(unified_msg_origin)
@@ -179,7 +173,7 @@ class MaidSessionStore:
         unified_msg_origin: str,
         entry: _UmoLockEntry,
     ) -> None:
-        now = _utcnow()
+        now = utcnow()
         async with self._umo_locks_guard:
             current = self._umo_locks.get(unified_msg_origin)
             if current is entry:

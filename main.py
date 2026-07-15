@@ -947,9 +947,7 @@ class MaidAgent(Star):
             conv = await self.context.conversation_manager.get_conversation(umo, cid)
             if conv is None:
                 return []
-            import json as _json
-
-            history = _json.loads(conv.history or "[]")
+            history = json.loads(conv.history or "[]")
             return history if isinstance(history, list) else []
         except Exception as exc:  # noqa: BLE001
             logger.warning("[大小姐模式] 读取会话历史失败: %s", exc)
@@ -2317,18 +2315,6 @@ class MaidAgent(Star):
                 "extra_user_content_parts",
             )
         )
-
-    @staticmethod
-    def _get_missing_provider_request_attrs(req: object) -> list[str]:
-        required = (
-            "prompt",
-            "image_urls",
-            "contexts",
-            "system_prompt",
-            "model",
-            "extra_user_content_parts",
-        )
-        return [attr for attr in required if not hasattr(req, attr)]
 
     @staticmethod
     def _clear_pending_follow_up(event: AstrMessageEvent) -> None:

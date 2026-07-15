@@ -55,7 +55,10 @@ CTRL_RESUME = "resume"
 CTRL_TOOL_START = "tool_start"
 CTRL_TOOL_END = "tool_end"
 
-# Terminal run statuses (mirrors orchestrator state machine).
+# Persistence finalize/notification terminals. Does NOT include interrupted —
+# those are written via mark_interrupted / reconcile_on_restart, not finalize_run.
+# Orchestrator TERMINAL_STATUSES is the broader set that also treats interrupted
+# as finished for capacity/query purposes.
 TERMINAL_RUN_STATUSES = frozenset({"completed", "failed", "stopped"})
 # Active-ish statuses that on restart must collapse to "interrupted".
 ACTIVE_RUN_STATUSES = frozenset({"starting", "running"})

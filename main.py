@@ -47,7 +47,7 @@ from astrbot.core.utils.history_saver import persist_agent_history
 
 from .background_registry import MaidBackgroundTaskRegistry, MaidTaskConflictError
 from .batch_registry import MaidBatchRegistry
-from .config import load_maid_mode_config, render_dispatch_prompt
+from .config import _safe_int, load_maid_mode_config, render_dispatch_prompt
 from .console_store import ConsoleTaskPatch, MaidConsoleEventStore
 from .constants import (
     CALL_MAID_TOOL_NAME,
@@ -806,10 +806,7 @@ class MaidAgent(Star):
 
     @staticmethod
     def _safe_int_setting(value, default: int) -> int:
-        try:
-            return int(value)
-        except (TypeError, ValueError):
-            return default
+        return _safe_int(value, default)
 
     def _ensure_provider_max_context_tokens(self, provider) -> int:
         from .maid_dispatcher import _ensure_provider_max_context_tokens

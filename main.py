@@ -2274,6 +2274,65 @@ class MaidAgent(Star):
         resp.tools_call_ids = []
         resp.tools_call_extra_content = {}
 
+    async def _deliver_follow_up_reply(
+        self,
+        *,
+        event: AstrMessageEvent,
+        req: ProviderRequest,
+        follow_up_resp: LLMResponse,
+        agent_id: str,
+        history_request_text: str,
+        history_agent_name: str,
+        history_tool_result: str,
+        console_task_id: str = "",
+        console_sent_title: str = "大小姐追答已发送",
+        console_sent_status: str = "running",
+    ) -> tuple[str, str]:
+        """Strip/rewrite/send/persist a follow-up reply.
+
+        Returns ``(sanitized, raw_completion)`` so callers can compose the same
+        ``sanitized or raw`` / ``sanitized or fallback`` expressions as before.
+        """
+        follow_up_completion_text = follow_up_resp.completion_text or ""
+        sanitized_follow_up = follow_up_completion_text.strip()
+        if sanitized_follow_up != follow_up_completion_text and sanitized_follow_up:
+            self._rewrite_response_text(follow_up_resp, sanitized_follow_up)
+
+        if follow_up_resp.result_chain is not None or sanitized_follow_up.strip():
+            chain = follow_up_resp.result_chain or MessageChain(
+                chain=[Comp.Plain(sanitized_follow_up)]
+            )
+            await event.send(chain)
+            await self._persist_assistant_reply(
+                event,
+                req,
+                sanitized_follow_up or follow_up_completion_text,
+                agent_id=agent_id,
+            )
+            await self._persist_call_maid_tool_history(
+                event,
+                req,
+                [
+                    {
+                        "action": "dispatch",
+                        "request_text": history_request_text,
+                        "agent_name": history_agent_name,
+                        "tool_result": history_tool_result,
+                    }
+                ],
+                agent_id=agent_id,
+            )
+            if console_task_id:
+                await self._console_event_safe(
+                    task_id=console_task_id,
+                    event_type="follow_up_sent",
+                    title=console_sent_title,
+                    message=sanitized_follow_up or follow_up_completion_text,
+                    source="chat",
+                    status=console_sent_status,
+                )
+        return sanitized_follow_up, follow_up_completion_text
+
     @staticmethod
     def _clear_response(resp: LLMResponse) -> None:
         resp.result_chain = None
@@ -3480,44 +3539,16 @@ class MaidAgent(Star):
                     str(reasoning_signature) if reasoning_signature is not None else None
                 ),
             )
-            follow_up_completion_text = follow_up_resp.completion_text or ""
-            sanitized_follow_up = follow_up_completion_text.strip()
-            if sanitized_follow_up != follow_up_completion_text and sanitized_follow_up:
-                self._rewrite_response_text(follow_up_resp, sanitized_follow_up)
-
-            if follow_up_resp.result_chain is not None or sanitized_follow_up.strip():
-                chain = follow_up_resp.result_chain or MessageChain(
-                    chain=[Comp.Plain(sanitized_follow_up)]
-                )
-                await event.send(chain)
-                await self._persist_assistant_reply(
-                    event,
-                    req,
-                    sanitized_follow_up or follow_up_completion_text,
-                    agent_id=agent_id,
-                )
-                await self._persist_call_maid_tool_history(
-                    event,
-                    req,
-                    [
-                        {
-                            "action": "dispatch",
-                            "request_text": maid_request,
-                            "agent_name": resolved_agent_name,
-                            "tool_result": agent_result,
-                        }
-                    ],
-                    agent_id=agent_id,
-                )
-                if task_id:
-                    await self._console_event_safe(
-                        task_id=task_id,
-                        event_type="follow_up_sent",
-                        title="大小姐追答已发送",
-                        message=sanitized_follow_up or follow_up_completion_text,
-                        source="chat",
-                        status="running",
-                    )
+            sanitized_follow_up, follow_up_completion_text = await self._deliver_follow_up_reply(
+                event=event,
+                req=req,
+                follow_up_resp=follow_up_resp,
+                agent_id=agent_id,
+                history_request_text=maid_request,
+                history_agent_name=resolved_agent_name,
+                history_tool_result=agent_result,
+                console_task_id=task_id,
+            )
 
             final_status = (
                 "stopped"
@@ -3950,43 +3981,18 @@ class MaidAgent(Star):
                 reasoning_content=batch.reasoning_content,
                 reasoning_signature=batch.reasoning_signature,
             )
-            follow_up_completion_text = follow_up_resp.completion_text or ""
-            sanitized_follow_up = follow_up_completion_text.strip()
-            if sanitized_follow_up != follow_up_completion_text and sanitized_follow_up:
-                self._rewrite_response_text(follow_up_resp, sanitized_follow_up)
-
-            if follow_up_resp.result_chain is not None or sanitized_follow_up.strip():
-                chain = follow_up_resp.result_chain or MessageChain(
-                    chain=[Comp.Plain(sanitized_follow_up)]
-                )
-                await event.send(chain)
-                await self._persist_assistant_reply(
-                    event,
-                    req,
-                    sanitized_follow_up or follow_up_completion_text,
-                    agent_id=agent_id,
-                )
-                await self._persist_call_maid_tool_history(
-                    event,
-                    req,
-                    [
-                        {
-                            "action": "dispatch",
-                            "request_text": "批量管家结果汇总",
-                            "agent_name": "batch",
-                            "tool_result": batch_result,
-                        }
-                    ],
-                    agent_id=agent_id,
-                )
-                await self._console_event_safe(
-                    task_id=batch_id,
-                    event_type="follow_up_sent",
-                    title="批量结果追答已发送",
-                    message=sanitized_follow_up or follow_up_completion_text,
-                    source="chat",
-                    status=batch.status,
-                )
+            sanitized_follow_up, follow_up_completion_text = await self._deliver_follow_up_reply(
+                event=event,
+                req=req,
+                follow_up_resp=follow_up_resp,
+                agent_id=agent_id,
+                history_request_text="批量管家结果汇总",
+                history_agent_name="batch",
+                history_tool_result=batch_result,
+                console_task_id=batch_id,
+                console_sent_title="批量结果追答已发送",
+                console_sent_status=batch.status,
+            )
 
             await self.background_tasks.finish(
                 batch_id,

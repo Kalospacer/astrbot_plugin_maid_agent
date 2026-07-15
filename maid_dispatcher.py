@@ -347,6 +347,7 @@ async def _build_runner(
     tool_schema_mode: str,
     max_context_tokens: int,
     session_id: str,
+    agent_hooks=None,
 ) -> ToolLoopAgentRunner:
     agent_context = AstrAgentContext(context=context, event=event)
     runner = ToolLoopAgentRunner()
@@ -375,7 +376,7 @@ async def _build_runner(
                     tool_call_timeout=tool_call_timeout,
                 ),
                 tool_executor=FunctionToolExecutor(),
-                agent_hooks=BaseAgentRunHooks[AstrAgentContext](),
+                agent_hooks=agent_hooks or BaseAgentRunHooks[AstrAgentContext](),
                 streaming=stream,
                 llm_compress_instruction=llm_compress_instruction,
                 llm_compress_keep_recent=llm_compress_keep_recent,

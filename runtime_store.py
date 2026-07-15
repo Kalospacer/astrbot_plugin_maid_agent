@@ -49,6 +49,8 @@ CTRL_RUN_END = "run_end"
 CTRL_STEER = "steer"
 CTRL_STOP = "stop"
 CTRL_RESUME = "resume"
+CTRL_TOOL_START = "tool_start"
+CTRL_TOOL_END = "tool_end"
 
 # Terminal run statuses (mirrors orchestrator state machine).
 TERMINAL_RUN_STATUSES = frozenset({"completed", "failed", "stopped"})
@@ -615,6 +617,36 @@ class RuntimeStore:
     async def load_transcript(self, agent_id: str) -> list[dict[str, Any]]:
         async with self._lock:
             return _read_jsonl(self._transcript_path(agent_id))
+
+    async def load_run_transcript(
+        self,
+        agent_id: str,
+        task_id: str,
+    ) -> list[dict[str, Any]]:
+        """Return records between one run's start/end control markers.
+
+        The end marker is optional so an active run can be inspected while it
+        is still appending records.
+        """
+        normalized_task_id = _validate_hex_id(task_id, "task_id")
+        records = await self.load_transcript(agent_id)
+        selected: list[dict[str, Any]] = []
+        inside = False
+        for record in records:
+            if record.get("_control"):
+                kind = str(record.get("kind") or "")
+                record_task_id = str(record.get("task_id") or "").strip().casefold()
+                if kind == CTRL_RUN_START and record_task_id == normalized_task_id:
+                    inside = True
+                    selected = []
+                    continue
+                if kind == CTRL_RUN_END and record_task_id == normalized_task_id:
+                    if inside:
+                        break
+                    continue
+            if inside:
+                selected.append(record)
+        return selected
 
     async def rebuild_contexts_for_resume(
         self,

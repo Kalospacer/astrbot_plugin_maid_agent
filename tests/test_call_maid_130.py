@@ -7,7 +7,11 @@ import json
 from types import SimpleNamespace
 
 from astrbot_plugin_maid_agent.config import MaidModeConfig
-from astrbot_plugin_maid_agent.main import MaidAgent, _DashboardMaidEvent
+from astrbot_plugin_maid_agent.main import (
+    MaidAgent,
+    _DashboardMaidEvent,
+    _RuntimeTraceHooks,
+)
 from astrbot_plugin_maid_agent.notification_outbox import NOTIFICATION_IDS_META_KEY
 from astrbot_plugin_maid_agent.runtime_orchestrator import (
     BatchCapacityError,
@@ -516,6 +520,7 @@ def test_child_event_copies_identity_without_sharing_state():
 def test_persist_runner_step_appends_only_new_messages():
     async def scenario():
         appended = []
+        published = []
 
         class _Store:
             async def append_message(self, agent_id, message):
@@ -523,7 +528,12 @@ def test_persist_runner_step_appends_only_new_messages():
 
         plugin = object.__new__(MaidAgent)
         plugin.runtime_store = _Store()
-        run = SimpleNamespace(agent_id="a" * 32)
+
+        async def publish(run):
+            published.append(run.task_id)
+
+        plugin._publish_runtime_trace_safe = publish
+        run = SimpleNamespace(agent_id="a" * 32, task_id="1" * 32)
         runner = SimpleNamespace(
             run_context=SimpleNamespace(
                 messages=[
@@ -535,9 +545,133 @@ def test_persist_runner_step_appends_only_new_messages():
         count = await plugin._persist_runner_step(run, runner, 1)
         assert count == 2
         assert appended == [("a" * 32, {"role": "assistant", "content": "new"})]
+        assert published == ["1" * 32]
         count = await plugin._persist_runner_step(run, runner, count)
         assert count == 2
         assert len(appended) == 1
+        assert published == ["1" * 32]
+
+    asyncio.run(scenario())
+
+
+def test_runtime_tool_controls_render_live_and_historical_trace():
+    records = [
+        {"role": "user", "content": "do it"},
+        {
+            "_control": True,
+            "kind": "tool_start",
+            "tool_call_id": "live-1",
+            "tool_name": "search",
+            "arguments": {"query": "AstrBot"},
+        },
+    ]
+    running = MaidAgent._build_runtime_tool_chain_payload(records)
+    assert [entry["kind"] for entry in running["entries"]] == ["tool_call"]
+    assert running["entries"][0]["tool_name"] == "search"
+
+    records.extend(
+        [
+            {
+                "_control": True,
+                "kind": "tool_end",
+                "tool_call_id": "live-1",
+                "tool_name": "search",
+                "result": "found",
+            },
+            {
+                "role": "assistant",
+                "content": "done",
+                "tool_calls": [
+                    {
+                        "id": "provider-call-1",
+                        "function": {"name": "search", "arguments": '{"query":"AstrBot"}'},
+                    }
+                ],
+            },
+            {"role": "tool", "tool_call_id": "provider-call-1", "content": "found"},
+        ]
+    )
+    completed = MaidAgent._build_runtime_tool_chain_payload(records)
+    assert [entry["kind"] for entry in completed["entries"]] == [
+        "tool_call",
+        "tool_result",
+        "assistant",
+    ]
+    assert completed["entries"][1]["message"] == "found"
+
+
+def test_legacy_runtime_transcript_without_controls_still_builds_history():
+    payload = MaidAgent._build_runtime_tool_chain_payload(
+        [
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call-1",
+                        "function": {"name": "read", "arguments": '{"path":"a.txt"}'},
+                    }
+                ],
+            },
+            {"role": "tool", "tool_call_id": "call-1", "content": "text"},
+        ]
+    )
+    assert [entry["kind"] for entry in payload["entries"]] == [
+        "tool_call",
+        "tool_result",
+    ]
+
+
+def test_runtime_trace_hooks_publish_tool_start_and_end():
+    async def scenario():
+        controls = []
+        publishes = []
+
+        class _Store:
+            async def append_control(self, agent_id, kind, payload):
+                controls.append((agent_id, kind, payload))
+
+        async def publish():
+            publishes.append(True)
+
+        run = SimpleNamespace(agent_id="a" * 32, task_id="1" * 32)
+        hooks = _RuntimeTraceHooks(run, _Store(), publish)
+        tool = SimpleNamespace(name="search")
+        await hooks.on_tool_start(None, tool, {"query": "x"})
+        await hooks.on_tool_end(
+            None,
+            tool,
+            {"query": "x"},
+            SimpleNamespace(content=[SimpleNamespace(text="ok")], isError=False),
+        )
+
+        assert [item[1] for item in controls] == ["tool_start", "tool_end"]
+        assert controls[0][2]["tool_call_id"] == controls[1][2]["tool_call_id"]
+        assert controls[1][2]["result"] == "ok"
+        assert len(publishes) == 2
+
+    asyncio.run(scenario())
+
+
+def test_runtime_trace_hooks_close_missing_tool_end():
+    async def scenario():
+        controls = []
+
+        class _Store:
+            async def append_control(self, _agent_id, kind, payload):
+                controls.append((kind, payload))
+
+        async def publish():
+            return None
+
+        run = SimpleNamespace(agent_id="a" * 32, task_id="1" * 32)
+        hooks = _RuntimeTraceHooks(run, _Store(), publish)
+        await hooks.on_tool_start(None, SimpleNamespace(name="broken"), {})
+        await hooks.close_unfinished_tool()
+        await hooks.close_unfinished_tool()
+
+        assert [item[0] for item in controls] == ["tool_start", "tool_end"]
+        assert controls[1][1]["result"].startswith("error:")
 
     asyncio.run(scenario())
 

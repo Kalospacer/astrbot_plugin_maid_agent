@@ -147,6 +147,35 @@ def test_jsonl_append_and_corrupt_tail_truncation(tmp_path, monkeypatch):
     asyncio.run(_jsonl_corrupt_tail(_make_store(tmp_path, monkeypatch), tmp_path))
 
 
+async def _run_transcript_is_sliced_by_control_markers(store):
+    agent = await store.create_agent(
+        unified_msg_origin="umo1", agent_name="butler", sender_id="u1"
+    )
+    first_task_id = "1" * 32
+    second_task_id = "2" * 32
+    await store.append_control(agent.agent_id, "run_start", {"task_id": first_task_id})
+    await store.append_message(agent.agent_id, {"role": "user", "content": "first"})
+    await store.append_control(agent.agent_id, "run_end", {"task_id": first_task_id})
+    await store.append_control(agent.agent_id, "run_start", {"task_id": second_task_id})
+    await store.append_message(agent.agent_id, {"role": "user", "content": "second"})
+    await store.append_control(
+        agent.agent_id,
+        "tool_start",
+        {"task_id": second_task_id, "tool_name": "search"},
+    )
+
+    first = await store.load_run_transcript(agent.agent_id, first_task_id)
+    second = await store.load_run_transcript(agent.agent_id, second_task_id)
+
+    assert [record.get("content") for record in first] == ["first"]
+    assert second[0]["content"] == "second"
+    assert second[1]["kind"] == "tool_start"
+
+
+def test_run_transcript_is_sliced_by_control_markers(tmp_path, monkeypatch):
+    asyncio.run(_run_transcript_is_sliced_by_control_markers(_make_store(tmp_path, monkeypatch)))
+
+
 async def _truncate_unresolved(store):
     agent = await store.create_agent(
         unified_msg_origin="aiocqhttp:GroupMessage:g1",

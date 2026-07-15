@@ -273,6 +273,16 @@ async function loadRuntimeRun(agentId, taskId, { scrollMode = "bottom" } = {}) {
   const scrollSnapshot = captureFeedScroll();
   const run = (state.runtimeRuns[agentId] || []).find((item) => item.task_id === taskId);
   if (!run) return;
+  let traceData = null;
+  try {
+    traceData = await apiGet(
+      `console/agents/${encodeURIComponent(agentId)}/runs/${encodeURIComponent(taskId)}/trace`,
+    );
+  } catch {
+    // The run list remains usable if a trace disappears during refresh/delete.
+  }
+  if (traceData?.status) run.status = traceData.status;
+  if (traceData?.tool_chain) run.tool_chain = traceData.tool_chain;
   state.selectedAgentId = agentId;
   state.selectedSessionId = taskId;
   const task = {
@@ -284,6 +294,7 @@ async function loadRuntimeRun(agentId, taskId, { scrollMode = "bottom" } = {}) {
       background_reason: run.background_reason,
       notification: run.notification,
       output_file: run.output_file,
+      tool_chain: run.tool_chain || {},
     },
   };
   state.sessionTasks = [task];
@@ -400,8 +411,18 @@ function updateSessionList() {
   const runtimeAgents = state.runtimeAgents
     .filter((agent) => agent.unified_msg_origin === state.selectedUmo)
     .sort((a, b) => new Date(b.updated_at) - new Date(a.updated_at));
+  const runtimeTaskIds = new Set(
+    Object.values(state.runtimeRuns)
+      .flat()
+      .map((run) => run.task_id),
+  );
   const rootTasks = state.tasks
-    .filter((task) => task.unified_msg_origin === state.selectedUmo && !task.parent_task_id)
+    .filter(
+      (task) =>
+        task.unified_msg_origin === state.selectedUmo &&
+        !task.parent_task_id &&
+        !runtimeTaskIds.has(task.task_id),
+    )
     .sort((a, b) => {
       const pinnedDelta = Number(isPinned(b)) - Number(isPinned(a));
       if (pinnedDelta !== 0) return pinnedDelta;
@@ -1198,6 +1219,34 @@ window.handleSseMessage = async function handleSseMessage(event) {
 
   if (data.type === "reset") {
     await refreshConsole({ silent: true, keepSession: true });
+    return;
+  }
+
+  if (data.type === "runtime_trace" && data.agent_id && data.task_id) {
+    const run = (state.runtimeRuns[data.agent_id] || []).find(
+      (item) => item.task_id === data.task_id,
+    );
+    if (run) {
+      if (data.status) run.status = data.status;
+      run.tool_chain = data.tool_chain || {};
+    }
+    if (
+      state.selectedAgentId === data.agent_id &&
+      state.selectedSessionId === data.task_id
+    ) {
+      const task = state.sessionTasks.find((item) => item.task_id === data.task_id);
+      if (task) {
+        if (data.status) task.status = data.status;
+        task.meta = { ...task.meta, tool_chain: data.tool_chain || {} };
+        if (state.detail?.task?.task_id === data.task_id) state.detail.task = task;
+      }
+      const feed = $("#chatFeed");
+      const autoScroll = isAtBottom(feed);
+      renderChatFeed();
+      if (autoScroll) scrollToBottom(feed);
+      renderInspector();
+      updateSessionList();
+    }
     return;
   }
 

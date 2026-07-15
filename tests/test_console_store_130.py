@@ -160,3 +160,27 @@ async def _delete_agent_tasks_removes_matching_audits(tmp_path, monkeypatch):
 
 def test_delete_agent_tasks_removes_matching_audits(tmp_path, monkeypatch):
     asyncio.run(_delete_agent_tasks_removes_matching_audits(tmp_path, monkeypatch))
+
+
+async def _runtime_trace_is_published_without_sqlite_write(tmp_path, monkeypatch):
+    store = _make_store(tmp_path, monkeypatch)
+    await store.initialize()
+    queue = await store.subscribe()
+
+    await store.publish_runtime_trace(
+        agent_id="a" * 32,
+        task_id="1" * 32,
+        status="running",
+        tool_chain={"entries": [{"kind": "tool_call"}]},
+    )
+
+    event = queue.get_nowait()
+    assert event["type"] == "runtime_trace"
+    assert event["task_id"] == "1" * 32
+    assert event["tool_chain"]["entries"][0]["kind"] == "tool_call"
+    assert await store.list_tasks(limit=10) == []
+    await store.close()
+
+
+def test_runtime_trace_is_published_without_sqlite_write(tmp_path, monkeypatch):
+    asyncio.run(_runtime_trace_is_published_without_sqlite_write(tmp_path, monkeypatch))

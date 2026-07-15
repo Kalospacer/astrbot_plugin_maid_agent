@@ -8,10 +8,8 @@ UTC = timezone.utc
 
 
 def utcnow() -> datetime:
-    """Return the current UTC time as a timezone-aware datetime."""
     return datetime.now(UTC)
 
 
 def iso_now() -> str:
-    """Return the current UTC time as an ISO 8601 string."""
     return utcnow().isoformat()

@@ -162,6 +162,133 @@ def test_delete_agent_tasks_removes_matching_audits(tmp_path, monkeypatch):
     asyncio.run(_delete_agent_tasks_removes_matching_audits(tmp_path, monkeypatch))
 
 
+async def _recursive_task_delete_and_meta_updates(tmp_path, monkeypatch):
+    store = _make_store(tmp_path, monkeypatch)
+    await store.initialize()
+
+    parent_id = "p" * 32
+    child_id = "c" * 32
+    grandchild_id = "g" * 32
+    # Insert descendants before their ancestors to exercise order-independent traversal.
+    for task_id, parent_task_id in [
+        (grandchild_id, child_id),
+        (child_id, parent_id),
+        (parent_id, ""),
+    ]:
+        await store.ensure_task(
+            ConsoleTaskPatch(
+                task_id=task_id,
+                parent_task_id=parent_task_id,
+                unified_msg_origin="umo:a:1",
+                agent_name="butler",
+                status="completed",
+                request_text=task_id,
+                agent_id="a" * 32,
+            )
+        )
+    await store.delete_task(parent_id)
+    assert await store.get_task(parent_id) is None
+    assert await store.get_task(child_id) is None
+    assert await store.get_task(grandchild_id) is None
+
+    task_id = "m" * 32
+    await store.ensure_task(
+        ConsoleTaskPatch(
+            task_id=task_id,
+            unified_msg_origin="umo:a:1",
+            agent_name="butler",
+            status="running",
+            request_text="metadata",
+            agent_id="a" * 32,
+            run_mode="foreground",
+            meta={"run_mode": "stale", "agent_id": "stale"},
+        )
+    )
+    await store.ensure_task(
+        ConsoleTaskPatch(
+            task_id=task_id,
+            unified_msg_origin="umo:a:1",
+            agent_name="butler",
+            status="running",
+            request_text="metadata",
+            agent_id="a" * 32,
+            run_mode="background",
+            background_reason="timeout",
+            meta={"run_mode": "older", "agent_id": "older"},
+        )
+    )
+    task = await store.get_task(task_id)
+    assert task is not None
+    assert task["meta"]["agent_id"] == "a" * 32
+    assert task["meta"]["run_mode"] == "background"
+    assert task["meta"]["background_reason"] == "timeout"
+
+    await store.ensure_task(
+        ConsoleTaskPatch(
+            task_id=task_id,
+            unified_msg_origin="umo:a:1",
+            agent_name="butler",
+            status="completed",
+            request_text="metadata",
+            agent_id="a" * 32,
+            run_mode="background",
+        )
+    )
+    await store.ensure_task(
+        ConsoleTaskPatch(
+            task_id=task_id,
+            unified_msg_origin="umo:a:1",
+            agent_name="butler",
+            status="starting",
+            request_text="metadata",
+            agent_id="a" * 32,
+            run_mode="foreground",
+        )
+    )
+    task = await store.get_task(task_id)
+    assert task is not None
+    assert task["status"] == "completed"
+    assert task["meta"]["run_mode"] == "foreground"
+    await store.close()
+
+
+def test_recursive_task_delete_and_meta_updates(tmp_path, monkeypatch):
+    asyncio.run(_recursive_task_delete_and_meta_updates(tmp_path, monkeypatch))
+
+
+async def _recursive_agent_delete_follows_unowned_descendants(tmp_path, monkeypatch):
+    store = _make_store(tmp_path, monkeypatch)
+    await store.initialize()
+    root_id = "r" * 32
+    child_id = "s" * 32
+    grandchild_id = "t" * 32
+    for task_id, parent_task_id, agent_id in [
+        (grandchild_id, child_id, ""),
+        (child_id, root_id, "b" * 32),
+        (root_id, "", "a" * 32),
+    ]:
+        await store.ensure_task(
+            ConsoleTaskPatch(
+                task_id=task_id,
+                parent_task_id=parent_task_id,
+                unified_msg_origin="umo:a:1",
+                agent_name="butler",
+                status="completed",
+                request_text=task_id,
+                agent_id=agent_id,
+            )
+        )
+    assert await store.delete_agent_tasks("a" * 32) == 3
+    assert await store.get_task(root_id) is None
+    assert await store.get_task(child_id) is None
+    assert await store.get_task(grandchild_id) is None
+    await store.close()
+
+
+def test_recursive_agent_delete_follows_unowned_descendants(tmp_path, monkeypatch):
+    asyncio.run(_recursive_agent_delete_follows_unowned_descendants(tmp_path, monkeypatch))
+
+
 async def _runtime_trace_is_published_without_sqlite_write(tmp_path, monkeypatch):
     store = _make_store(tmp_path, monkeypatch)
     await store.initialize()

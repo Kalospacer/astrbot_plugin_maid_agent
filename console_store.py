@@ -16,6 +16,10 @@ from astrbot.api.star import StarTools
 
 from .constants import PLUGIN_DATA_DIR_NAME
 
+_TERMINAL_TASK_STATUSES = frozenset(
+    {"done", "error", "completed", "failed", "stopped", "interrupted", "partial_done"}
+)
+
 UTC = timezone.utc
 
 
@@ -105,13 +109,13 @@ class MaidConsoleEventStore:
         # 1.3.0 runtime fields are merged into meta_json so the SQLite schema
         # stays backward compatible with 1.2.0 audits.
         if patch.agent_id:
-            meta.setdefault("agent_id", patch.agent_id)
+            meta["agent_id"] = patch.agent_id
         if patch.run_mode:
-            meta.setdefault("run_mode", patch.run_mode)
+            meta["run_mode"] = patch.run_mode
         if patch.background_reason:
-            meta.setdefault("background_reason", patch.background_reason)
+            meta["background_reason"] = patch.background_reason
         if patch.notification_id:
-            meta.setdefault("notification_id", patch.notification_id)
+            meta["notification_id"] = patch.notification_id
         payload = {
             "task_id": patch.task_id,
             "parent_task_id": patch.parent_task_id,
@@ -438,7 +442,7 @@ class MaidConsoleEventStore:
     def _upsert_task(self, payload: dict[str, Any]) -> dict[str, Any]:
         with self._connect() as conn:
             existing_row = conn.execute(
-                "SELECT meta_json FROM tasks WHERE task_id = ?",
+                "SELECT status, completed_at, meta_json FROM tasks WHERE task_id = ?",
                 (payload["task_id"],),
             ).fetchone()
             if existing_row is not None:
@@ -448,6 +452,16 @@ class MaidConsoleEventStore:
                 if isinstance(patch_meta, dict):
                     next_meta.update(patch_meta)
                 payload = {**payload, "meta_json": _dump_json(next_meta)}
+                existing_status = str(existing_row["status"] or "")
+                if (
+                    existing_status in _TERMINAL_TASK_STATUSES
+                    and payload["status"] not in _TERMINAL_TASK_STATUSES
+                ):
+                    payload = {
+                        **payload,
+                        "status": existing_status,
+                        "completed_at": existing_row["completed_at"] or payload["completed_at"],
+                    }
             conn.execute(
                 """
                 INSERT INTO tasks (
@@ -735,26 +749,40 @@ class MaidConsoleEventStore:
         with self._connect() as conn:
             conn.execute("VACUUM")
 
+    @staticmethod
+    def _collect_descendant_task_ids(
+        rows: list[sqlite3.Row],
+        root_ids: set[str],
+    ) -> set[str]:
+        target_ids = set(root_ids)
+        while True:
+            added = False
+            for row in rows:
+                child_id = str(row["task_id"])
+                parent_id = str(row["parent_task_id"] or "")
+                if parent_id in target_ids and child_id not in target_ids:
+                    target_ids.add(child_id)
+                    added = True
+            if not added:
+                return target_ids
+
     def _delete_task(self, task_id: str) -> None:
         with self._connect() as conn:
+            rows = conn.execute("SELECT task_id, parent_task_id FROM tasks").fetchall()
+            target_ids = self._collect_descendant_task_ids(rows, {str(task_id)})
+            placeholders = ",".join("?" for _ in target_ids)
+            params = tuple(target_ids)
             conn.execute(
-                """
-                DELETE FROM task_actions
-                WHERE task_id = ?
-                   OR task_id IN (SELECT task_id FROM tasks WHERE parent_task_id = ?)
-                """,
-                (task_id, task_id),
+                f"DELETE FROM task_actions WHERE task_id IN ({placeholders})",  # noqa: S608
+                params,
             )
             conn.execute(
-                """
-                DELETE FROM task_events
-                WHERE task_id = ?
-                   OR task_id IN (SELECT task_id FROM tasks WHERE parent_task_id = ?)
-                """,
-                (task_id, task_id),
+                f"DELETE FROM task_events WHERE task_id IN ({placeholders})",  # noqa: S608
+                params,
             )
             conn.execute(
-                "DELETE FROM tasks WHERE task_id = ? OR parent_task_id = ?", (task_id, task_id)
+                f"DELETE FROM tasks WHERE task_id IN ({placeholders})",  # noqa: S608
+                params,
             )
 
     def _delete_agent_tasks(self, agent_id: str) -> int:
@@ -773,11 +801,7 @@ class MaidConsoleEventStore:
                     target_ids.add(str(row["task_id"]))
             if not target_ids:
                 return 0
-            target_ids.update(
-                str(row["task_id"])
-                for row in rows
-                if str(row["parent_task_id"] or "") in target_ids
-            )
+            target_ids = self._collect_descendant_task_ids(rows, target_ids)
             placeholders = ",".join("?" for _ in target_ids)
             params = tuple(target_ids)
             conn.execute(

@@ -61,7 +61,11 @@ from .constants import (
     RAW_INPUT_EXTRA_KEY,
     TRUE_USER_INPUT_EXTRA_KEY,
 )
-from .maid_dispatcher import dispatch_to_maid_agent
+from .maid_dispatcher import (
+    _get_compress_provider,
+    _normalize_begin_dialogs,
+    dispatch_to_maid_agent,
+)
 from .notification_outbox import (
     NOTIFICATION_IDS_META_KEY,
     NotificationOutbox,
@@ -402,6 +406,35 @@ class MaidAgent(Star):
 
     async def _on_runtime_terminal(self, run: RunMeta) -> None:
         notification_id = run.notification.notification_id if run.notification else ""
+        existing_task = None
+        try:
+            existing_task = await self.console_store.get_task(run.task_id)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "[大小姐模式] 读取终态 Console 任务失败，将使用 runtime 默认字段: "
+                "task_id=%s err=%s",
+                run.task_id,
+                exc,
+            )
+        audit_patch = self._build_task_patch(
+            task_id=run.task_id,
+            kind=str((existing_task or {}).get("kind") or "single"),
+            source=str((existing_task or {}).get("source") or "runtime"),
+            unified_msg_origin=run.unified_msg_origin,
+            sender_id=run.sender_id,
+            agent_name=run.agent_name,
+            status=run.status,
+            request_text=run.request_text,
+            parent_task_id=str((existing_task or {}).get("parent_task_id") or ""),
+            title=str((existing_task or {}).get("title") or ""),
+            meta={
+                "agent_id": run.agent_id,
+                "run_mode": run.mode,
+                "background_reason": run.background_reason,
+                "notification_id": notification_id,
+            },
+        )
+        await self._console_ensure_task_safe(audit_patch)
         await self._console_update_status_safe(
             run.task_id,
             run.status,
@@ -563,6 +596,11 @@ class MaidAgent(Star):
         resumed_contexts = None
         if run.resume_of:
             resumed_contexts = await self.runtime_store.rebuild_contexts_for_resume(run.agent_id)
+        initial_contexts = (
+            resumed_contexts
+            if run.resume_of
+            else _normalize_begin_dialogs(getattr(handoff.agent, "begin_dialogs", None))
+        )
 
         # Memory: inline MEMORY.md into the system prompt when enabled.
         system_prompt = handoff.agent.instructions or ""
@@ -623,14 +661,14 @@ class MaidAgent(Star):
                 image_urls=image_urls,
                 system_prompt=system_prompt,
                 tools=toolset,
-                contexts=resumed_contexts,
+                contexts=initial_contexts,
                 stream=bool(provider_settings.get("streaming_response", False)),
                 tool_call_timeout=tool_call_timeout,
                 llm_compress_instruction=str(provider_settings.get("llm_compress_instruction", "") or ""),
                 llm_compress_keep_recent=self._safe_int_setting(
                     provider_settings.get("llm_compress_keep_recent", 4), 4
                 ),
-                llm_compress_provider=None,
+                llm_compress_provider=_get_compress_provider(context, provider_settings),
                 truncate_turns=self._safe_int_setting(
                     provider_settings.get("dequeue_context_length", 1), 1
                 ),

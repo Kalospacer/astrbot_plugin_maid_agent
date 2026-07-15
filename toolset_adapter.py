@@ -25,6 +25,7 @@ from astrbot.api import logger
 from astrbot.api.star import StarTools
 from astrbot.core.agent.tool import FunctionTool, ToolSet
 from astrbot.core.message.components import Image
+from astrbot.core.tools import computer_tools as ct
 from astrbot.core.utils.astrbot_path import get_astrbot_temp_path
 from astrbot.core.utils.image_ref_utils import is_supported_image_ref
 from astrbot.core.utils.string_utils import normalize_and_dedupe_strings
@@ -106,11 +107,6 @@ def _get_builtin_file_tools(context: Context) -> dict[str, FunctionTool]:
     These are the same tools the main agent gets in local computer-use mode, so
     they already carry the platform's permission/audit machinery.
     """
-    try:
-        from astrbot.core.tools import computer_tools as ct
-    except ImportError:  # pragma: no cover - defensive
-        logger.warning("[大小姐模式] 无法导入 computer_tools，memory 文件工具将不可用。")
-        return {}
     tool_mgr = context.get_llm_tool_manager()
     if tool_mgr is None:
         return {}
@@ -281,11 +277,6 @@ def _get_runtime_computer_tools(
             return tool_mgr.get_builtin_tool(cls)
         except Exception:  # noqa: BLE001
             return None
-
-    try:
-        from astrbot.core.tools import computer_tools as ct
-    except ImportError:  # pragma: no cover
-        return {}
 
     tools: dict[str, FunctionTool] = {}
 

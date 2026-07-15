@@ -389,6 +389,10 @@ class RuntimeOrchestrator:
         self._authorize(meta.unified_msg_origin, meta.sender_id, event)
         active = self._active_tasks.get(agent_id)
         if active is not None and not active.done():
+            if runner_payload.get("image_urls_raw"):
+                raise ValueError(
+                    "运行中的 resume/steer 只支持文字；请等待当前 run 完成后再附图。"
+                )
             try:
                 ticket = await self.steer(
                     agent_id=agent_id,

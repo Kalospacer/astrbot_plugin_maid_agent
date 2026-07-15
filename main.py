@@ -15,6 +15,8 @@ import json
 import uuid
 from contextlib import suppress
 from dataclasses import asdict
+from inspect import isawaitable
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from weakref import WeakValueDictionary
 
@@ -40,6 +42,7 @@ from astrbot.core.platform.message_session import MessageSession
 from astrbot.core.platform.platform_metadata import PlatformMetadata
 from astrbot.core.provider.entities import ToolCallsResult
 from astrbot.core.utils.active_event_registry import active_event_registry
+from astrbot.core.utils.astrbot_path import get_astrbot_temp_path
 from astrbot.core.utils.history_saver import persist_agent_history
 
 from .background_registry import MaidBackgroundTaskRegistry, MaidTaskConflictError
@@ -91,6 +94,26 @@ if TYPE_CHECKING:
     from astrbot.api.star import Context
 
 _EMPTY_REASONING_PLACEHOLDER = " "
+_CONSOLE_IMAGE_MAX_BYTES = 10 * 1024 * 1024
+_CONSOLE_IMAGE_MAX_COUNT = 5
+_CONSOLE_IMAGE_MIME_TYPES = {
+    "jpeg": frozenset({"image/jpeg", "image/jpg", "image/pjpeg"}),
+    "png": frozenset({"image/png"}),
+    "gif": frozenset({"image/gif"}),
+    "webp": frozenset({"image/webp"}),
+}
+_CONSOLE_IMAGE_EXTENSIONS = {
+    "jpeg": ".jpg",
+    "png": ".png",
+    "gif": ".gif",
+    "webp": ".webp",
+}
+_CONSOLE_IMAGE_CANONICAL_MIME = {
+    "jpeg": "image/jpeg",
+    "png": "image/png",
+    "gif": "image/gif",
+    "webp": "image/webp",
+}
 
 
 class _DashboardMessage(AstrBotMessage):
@@ -925,6 +948,12 @@ class MaidAgent(Star):
             ),
             (f"{prefix}/stream", self.console_stream, ["GET"], "Maid console SSE stream"),
             (
+                f"{prefix}/upload",
+                self.console_upload,
+                ["POST"],
+                "Upload an image for a dashboard maid task",
+            ),
+            (
                 f"{prefix}/actions/dispatch",
                 self.console_dispatch,
                 ["POST"],
@@ -1014,6 +1043,99 @@ class MaidAgent(Star):
     async def _console_json_body() -> dict[str, Any]:
         data = await request.get_json(silent=True)
         return data if isinstance(data, dict) else {}
+
+    @staticmethod
+    def _console_upload_dir() -> Path:
+        return Path(get_astrbot_temp_path()) / PLUGIN_DATA_DIR_NAME / "console_uploads"
+
+    @staticmethod
+    def _detect_console_image_format(data: bytes) -> str:
+        if data.startswith(b"\xff\xd8\xff"):
+            return "jpeg"
+        if data.startswith(b"\x89PNG\r\n\x1a\n"):
+            return "png"
+        if data.startswith((b"GIF87a", b"GIF89a")):
+            return "gif"
+        if len(data) >= 12 and data.startswith(b"RIFF") and data[8:12] == b"WEBP":
+            return "webp"
+        return ""
+
+    @classmethod
+    async def _save_console_image_upload(cls, upload: Any) -> dict[str, Any]:
+        declared_size = getattr(upload, "content_length", None)
+        if isinstance(declared_size, int) and declared_size > _CONSOLE_IMAGE_MAX_BYTES:
+            raise ValueError("图片不能超过 10 MB。")
+
+        content_type = str(getattr(upload, "content_type", "") or "")
+        content_type = content_type.split(";", 1)[0].strip().lower()
+        allowed_mime_types = {
+            mime_type
+            for mime_types in _CONSOLE_IMAGE_MIME_TYPES.values()
+            for mime_type in mime_types
+        }
+        if content_type not in allowed_mime_types:
+            raise ValueError("仅支持 JPEG、PNG、WEBP 或 GIF 图片。")
+
+        read_result = upload.read(_CONSOLE_IMAGE_MAX_BYTES + 1)
+        data = await read_result if isawaitable(read_result) else read_result
+        if not data:
+            raise ValueError("上传的图片为空。")
+        if len(data) > _CONSOLE_IMAGE_MAX_BYTES:
+            raise ValueError("图片不能超过 10 MB。")
+
+        image_format = cls._detect_console_image_format(data)
+        if not image_format:
+            raise ValueError("文件内容不是受支持的图片。")
+        if content_type not in _CONSOLE_IMAGE_MIME_TYPES[image_format]:
+            raise ValueError("图片 MIME 类型与文件内容不一致。")
+
+        upload_dir = cls._console_upload_dir()
+        await asyncio.to_thread(upload_dir.mkdir, parents=True, exist_ok=True)
+        extension = _CONSOLE_IMAGE_EXTENSIONS[image_format]
+        destination = upload_dir / f"{uuid.uuid4().hex}{extension}"
+        await asyncio.to_thread(destination.write_bytes, data)
+
+        raw_name = str(getattr(upload, "filename", "") or "")
+        basename = raw_name.replace("\\", "/").rsplit("/", 1)[-1].strip()
+        safe_name = "".join(char for char in basename if char.isprintable())[:120]
+        if not safe_name:
+            safe_name = f"image{extension}"
+        return {
+            "path": str(destination.resolve()),
+            "name": safe_name,
+            "mime_type": _CONSOLE_IMAGE_CANONICAL_MIME[image_format],
+            "size": len(data),
+        }
+
+    @classmethod
+    def _normalize_console_image_paths(cls, value: Any) -> list[str]:
+        if value in (None, ""):
+            return []
+        raw_paths = [value] if isinstance(value, str) else value
+        if not isinstance(raw_paths, list):
+            raise ValueError("image_urls_raw 必须是图片路径数组。")
+        if len(raw_paths) > _CONSOLE_IMAGE_MAX_COUNT:
+            raise ValueError(f"每次最多发送 {_CONSOLE_IMAGE_MAX_COUNT} 张图片。")
+
+        upload_dir = cls._console_upload_dir().resolve()
+        normalized: list[str] = []
+        allowed_extensions = set(_CONSOLE_IMAGE_EXTENSIONS.values())
+        for raw_path in raw_paths:
+            if not isinstance(raw_path, str) or not raw_path.strip():
+                raise ValueError("image_urls_raw 包含无效图片路径。")
+            try:
+                path = Path(raw_path).resolve(strict=True)
+                path.relative_to(upload_dir)
+            except (OSError, ValueError) as exc:
+                raise ValueError("图片路径不是本 Console 上传的安全临时文件。") from exc
+            if not path.is_file() or path.suffix.casefold() not in allowed_extensions:
+                raise ValueError("图片临时文件无效。")
+            if path.stat().st_size > _CONSOLE_IMAGE_MAX_BYTES:
+                raise ValueError("图片不能超过 10 MB。")
+            normalized_path = str(path)
+            if normalized_path not in normalized:
+                normalized.append(normalized_path)
+        return normalized
 
     @staticmethod
     def _validate_dashboard_umo(unified_msg_origin: str) -> str:
@@ -1498,6 +1620,28 @@ class MaidAgent(Star):
         response.timeout = None  # type: ignore[attr-defined]
         return response
 
+    async def console_upload(self):
+        uploaded = None
+        try:
+            files_result = request.files
+            files = await files_result if isawaitable(files_result) else files_result
+            uploaded = files.get("file")
+            if uploaded is None:
+                return self._console_error("需要 multipart 图片字段 file。")
+            payload = await self._save_console_image_upload(uploaded)
+            return self._console_ok(payload, "图片已上传。")
+        except ValueError as exc:
+            return self._console_error(str(exc))
+        except Exception as exc:  # noqa: BLE001
+            logger.error("[大小姐模式] Console 图片上传失败: %s", exc, exc_info=True)
+            return self._console_error("图片上传失败。", status_code=500)
+        finally:
+            if uploaded is not None:
+                with suppress(Exception):
+                    close_result = uploaded.close()
+                    if isawaitable(close_result):
+                        await close_result
+
     async def _start_dashboard_dispatch_task(
         self,
         *,
@@ -1568,6 +1712,7 @@ class MaidAgent(Star):
             request_text = str(body.get("request_text") or "").strip()
             if not request_text:
                 return self._console_error("需要 request_text。")
+            image_urls_raw = self._normalize_console_image_paths(body.get("image_urls_raw"))
             agent_name = self._resolve_allowed_agent_name(
                 self.maid_mode_config.allowed_agent_names,
                 self.maid_mode_config.default_agent_name,
@@ -1578,7 +1723,6 @@ class MaidAgent(Star):
                 sender_id=str(body.get("sender_id") or "dashboard"),
                 message_text=request_text,
             )
-            event.role = "member"
             outcome = await self.orchestrator.dispatch_single(
                 event=event,
                 request=DispatchRequest(
@@ -1586,7 +1730,10 @@ class MaidAgent(Star):
                     agent_name=agent_name,
                     run_in_background=bool(body.get("run_in_background", True)),
                 ),
-                runner_payload={"true_user_input": request_text, "image_urls_raw": None},
+                runner_payload={
+                    "true_user_input": request_text,
+                    "image_urls_raw": image_urls_raw,
+                },
             )
             await self._console_ensure_task_safe(
                 self._build_task_patch(
@@ -1598,7 +1745,11 @@ class MaidAgent(Star):
                     agent_name=outcome.agent_name,
                     status=outcome.status,
                     request_text=request_text,
-                    meta={"agent_id": outcome.agent_id, "run_mode": outcome.mode},
+                    meta={
+                        "agent_id": outcome.agent_id,
+                        "run_mode": outcome.mode,
+                        "image_count": len(image_urls_raw),
+                    },
                 )
             )
             return self._console_ok({"outcome": outcome.to_dict()}, "已派发。")
@@ -1670,7 +1821,6 @@ class MaidAgent(Star):
                 sender_id=run.sender_id,
                 message_text=run.request_text,
             )
-            event.role = "member"
             outcome = await self.orchestrator.dispatch_single(
                 event=event,
                 request=DispatchRequest(
@@ -1885,6 +2035,7 @@ class MaidAgent(Star):
             umo = str(body.get("unified_msg_origin") or "").strip()
             if not agent_id or not request_text:
                 return self._console_error("需要 agent_id 和 request_text。")
+            image_urls_raw = self._normalize_console_image_paths(body.get("image_urls_raw"))
             meta = await self.runtime_store.load_agent(agent_id)
             if meta is None:
                 return self._console_error("agent 不存在。", status_code=404)
@@ -1895,14 +2046,16 @@ class MaidAgent(Star):
                 message_text=request_text,
                 sender_id=meta.sender_id,
             )
-            event.role = "member"
             outcome = await self.orchestrator.dispatch_single(
                 event=event,
                 request=DispatchRequest(
                     request_text=request_text,
                     resume_agent_id=agent_id,
                 ),
-                runner_payload={"true_user_input": request_text, "image_urls_raw": None},
+                runner_payload={
+                    "true_user_input": request_text,
+                    "image_urls_raw": image_urls_raw,
+                },
             )
             return self._console_ok({"outcome": outcome.to_dict()}, "已发起 resume。")
         except Exception as exc:

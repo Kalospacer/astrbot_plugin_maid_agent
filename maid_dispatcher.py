@@ -23,6 +23,7 @@ from astrbot.core.utils.llm_metadata import LLM_METADATAS
 from .config import render_dispatch_prompt
 from .session_store import MaidAgentSession, MaidSessionStore
 from .toolset_adapter import (
+    _load_provider_settings as _load_provider_settings_umo,
     _sanitize_child_toolset,
     build_child_toolset,
     collect_child_image_urls,
@@ -131,11 +132,7 @@ def _normalize_begin_dialogs(dialogs: Any) -> list[Message] | None:
 
 
 def _load_provider_settings(context: Context, event: AstrMessageEvent) -> dict[str, Any]:
-    root_cfg = context.get_config(umo=event.unified_msg_origin)
-    if not isinstance(root_cfg, dict):
-        return {}
-    provider_settings = root_cfg.get("provider_settings", {})
-    return provider_settings if isinstance(provider_settings, dict) else {}
+    return _load_provider_settings_umo(context, event.unified_msg_origin)
 
 
 def _get_compress_provider(

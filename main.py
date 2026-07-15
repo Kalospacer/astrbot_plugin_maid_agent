@@ -86,6 +86,8 @@ from .runtime_orchestrator import (
 from .runtime_store import RunMeta, RuntimeStore
 from .session_store import MaidSessionStore
 from .toolset_adapter import (
+    _agent_memory_enabled as _agent_memory_enabled_fn,
+    _load_provider_settings as _load_provider_settings_fn,
     build_child_toolset,
     collect_child_image_urls,
     get_memory_dir,
@@ -800,11 +802,7 @@ class MaidAgent(Star):
         )
 
     def _load_provider_settings(self, umo: str) -> dict:
-        cfg = self.context.get_config(umo=umo)
-        if not isinstance(cfg, dict):
-            return {}
-        ps = cfg.get("provider_settings", {})
-        return ps if isinstance(ps, dict) else {}
+        return _load_provider_settings_fn(self.context, umo)
 
     @staticmethod
     def _safe_int_setting(value, default: int) -> int:
@@ -819,11 +817,9 @@ class MaidAgent(Star):
         return _ensure_provider_max_context_tokens(provider)
 
     def _agent_memory_enabled(self, agent_name: str) -> bool:
-        names = self.maid_mode_config.memory_agent_names
-        if not names:
-            return False
-        target = agent_name.strip().casefold()
-        return any(str(n).strip().casefold() == target for n in names)
+        return _agent_memory_enabled_fn(
+            self.maid_mode_config.memory_agent_names, agent_name
+        )
 
     async def _notify_main_agent(self, notifications) -> NotifierResult:
         """Wake the main agent once for one UMO notification snapshot."""

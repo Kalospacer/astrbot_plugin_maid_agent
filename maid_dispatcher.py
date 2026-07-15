@@ -218,8 +218,6 @@ def _format_assistant_message(message: Message) -> str:
             name = getattr(function, "name", "") or ""
             arguments = getattr(function, "arguments", None)
             if arguments:
-                import json
-
                 try:
                     args_str = json.dumps(json.loads(arguments), ensure_ascii=False, indent=2)
                     tool_lines.append(f"调用工具 {name}: {args_str}")

@@ -7,10 +7,15 @@ from collections.abc import Awaitable, Callable
 
 from astrbot.api import logger
 
+from .constants import (
+    MAID_NOTIFICATION_ID_META_KEY,
+    MAID_NOTIFICATION_IDS_META_KEY,
+)
 from .runtime_store import PendingNotification, RuntimeStore
 
-NOTIFICATION_ID_META_KEY = "_maid_notification_id"
-NOTIFICATION_IDS_META_KEY = "_maid_notification_ids"
+# Backward-compatible aliases (tests import these names directly).
+NOTIFICATION_ID_META_KEY = MAID_NOTIFICATION_ID_META_KEY
+NOTIFICATION_IDS_META_KEY = MAID_NOTIFICATION_IDS_META_KEY
 
 
 class NotifierResult:

@@ -19,6 +19,7 @@ const state = {
   detail: null,
   subscriptionId: "",
   pollTimer: 0,
+  durationTimer: 0,
   refreshInFlight: false,
   refreshQueued: false,
   thinkingOpenState: {},
@@ -68,6 +69,14 @@ function formatDuration(startIso, endIso) {
   const minutes = Math.floor(seconds / 60);
   if (minutes < 60) return `${minutes}m${seconds % 60}s`;
   return `${Math.floor(minutes / 60)}h${minutes % 60}m`;
+}
+
+function updateLiveDurations() {
+  const now = new Date().toISOString();
+  $$('[data-live-duration-start]').forEach((node) => {
+    const duration = formatDuration(node.dataset.liveDurationStart, now);
+    if (duration) node.textContent = duration;
+  });
 }
 
 function toast(message) {
@@ -369,6 +378,12 @@ function startPolling() {
   state.pollTimer = window.setInterval(() => {
     refreshConsole({ silent: true, keepSession: true });
   }, 5000);
+}
+
+function startDurationTicker() {
+  window.clearInterval(state.durationTimer);
+  updateLiveDurations();
+  state.durationTimer = window.setInterval(updateLiveDurations, 1000);
 }
 
 function renderAgentOptions() {
@@ -835,11 +850,19 @@ function renderTracePanel(task, variant, extraHtml = "") {
   }
 
   const toolCount = steps.filter((step) => step.type === "tool").length;
-  const duration = formatDuration(task.created_at, task.completed_at || task.updated_at);
-  const summaryText = [
-    `${toolCount} 次工具调用`,
-    duration,
-    isActive ? "运行中" : task.status,
+  const durationStart = task.started_at || task.created_at;
+  const durationEnd = task.ended_at || task.completed_at || task.updated_at;
+  const duration = formatDuration(
+    durationStart,
+    isActive ? new Date().toISOString() : durationEnd,
+  );
+  const durationHtml = isActive && durationStart
+    ? `<span data-live-duration-start="${escapeHtml(durationStart)}">${escapeHtml(duration)}</span>`
+    : escapeHtml(duration);
+  const summaryHtml = [
+    escapeHtml(`${toolCount} 次工具调用`),
+    durationHtml,
+    escapeHtml(isActive ? "运行中" : task.status),
   ]
     .filter(Boolean)
     .join(" · ");
@@ -848,7 +871,7 @@ function renderTracePanel(task, variant, extraHtml = "") {
     <details class="trace-panel" data-thinking-key="${escapeHtml(getThinkingKey(task))}" ${getThinkingOpenAttribute(task, isActive)}>
       <summary class="trace-summary">
         <span class="trace-caret">▸</span>
-        <span>${escapeHtml(summaryText)}</span>
+        <span>${summaryHtml}</span>
       </summary>
       ${body}
     </details>
@@ -1552,6 +1575,7 @@ function bindEvents() {
       bridge.unsubscribeSSE(state.subscriptionId);
     }
     window.clearInterval(state.pollTimer);
+    window.clearInterval(state.durationTimer);
   });
 }
 
@@ -1567,6 +1591,7 @@ async function boot() {
   await bridge.ready();
   setStreamState("signal-poll", "轮询同步");
   startPolling();
+  startDurationTicker();
   await refreshConsole({ silent: true, keepSession: false });
   await subscribeStream();
 }

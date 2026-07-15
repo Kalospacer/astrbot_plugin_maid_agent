@@ -17,6 +17,7 @@ Claude Code 风格 subagent runtime 重构：foreground-first 调度，稳定 ag
 - **console agent/run 层级**：前端按 agent → run 展示 runtime 状态、foreground/background、interrupted、notification 与 ID，并提供 resume/steer/stop/result；SQLite 继续作为审计记录而非状态真源。
 - **runtime Console 操作**：Agent/Run 行悬停或选中后显示停止、读取结果和删除操作。删除采用二次确认，仅允许无活跃 Run、无待投递通知的终态 Agent，并同步清理 transcript/runs/outputs 与 SQLite 审计记录。
 - **runtime 调用链恢复**：修复 1.3 Agent/Run 在运行中和完成后均只显示“0 次工具调用”的回归。工具开始/结束使用独立 SSE 实时推送，历史与断线刷新从 append-only transcript 按 task 边界恢复；左栏隐藏已有 runtime 对应项的重复 SQLite 审计副本。
+- **Console 实时时长**：活跃 Run 改用浏览器本地时钟每秒更新，终态固定使用 `started_at → ended_at`；不再用仅在状态变化时刷新的 `updated_at` 充当运行计时器，避免持续显示 `0s`。
 - **配置**：新增 `foreground_timeout_seconds`/`memory_agent_names`/`max_active_per_umo`/`max_active_global`/`retention_days`。`dispatch_prompt_template` 改为不依赖 `{maid_full_reply_block}` 的自包含模板。
 - **测试**：覆盖同 runner foreground 迁后台、foreground 容量占用与释放、batch 原子拒绝、UMO/sender 权限、shutdown interrupted、notification 单次 snapshot 合并、JSONL 尾部过滤、child event 隔离、嵌套工具 Schema 和 memory。
 

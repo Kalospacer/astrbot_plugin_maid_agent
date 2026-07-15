@@ -288,25 +288,23 @@ def _get_runtime_computer_tools(
         return {}
 
     tools: dict[str, FunctionTool] = {}
-    if runtime == "sandbox":
-        for class_name in _SANDBOX_TOOL_CLASS_NAMES:
-            cls = getattr(ct, class_name)
+
+    def _add_tools(class_names: tuple[str, ...]) -> None:
+        for class_name in class_names:
+            cls = getattr(ct, class_name, None)
+            if cls is None:
+                continue
             tool = _get(cls)
             if tool is not None:
                 tools[tool.name] = tool
+
+    if runtime == "sandbox":
+        _add_tools(_SANDBOX_TOOL_CLASS_NAMES)
         if booter == "cua":
-            for class_name in _CUA_TOOL_CLASS_NAMES:
-                cls = getattr(ct, class_name)
-                tool = _get(cls)
-                if tool is not None:
-                    tools[tool.name] = tool
+            _add_tools(_CUA_TOOL_CLASS_NAMES)
         return tools
     if runtime == "local":
-        for class_name in _LOCAL_TOOL_CLASS_NAMES:
-            cls = getattr(ct, class_name)
-            tool = _get(cls)
-            if tool is not None:
-                tools[tool.name] = tool
+        _add_tools(_LOCAL_TOOL_CLASS_NAMES)
         return tools
     return {}
 

@@ -752,6 +752,40 @@ def test_batch_capacity_race_has_no_partial_batch(tmp_path, monkeypatch):
     asyncio.run(_batch_capacity_race_has_no_partial_batch(tmp_path, monkeypatch))
 
 
+async def _batch_creation_failure_rolls_back_all_agents(tmp_path, monkeypatch):
+    store = _make_store(tmp_path, monkeypatch)
+    original_create_run = store.create_run
+    create_count = 0
+
+    async def failing_create_run(run):
+        nonlocal create_count
+        create_count += 1
+        if create_count == 2:
+            raise RuntimeError("injected create_run failure")
+        return await original_create_run(run)
+
+    monkeypatch.setattr(store, "create_run", failing_create_run)
+    orch = RuntimeOrchestrator(store, _FakeConfig(), runner_factory=None)
+    try:
+        await orch.dispatch_batch(
+            event=_make_event(),
+            requests=[
+                DispatchRequest("first", "butler", True),
+                DispatchRequest("second", "butler", True),
+            ],
+        )
+    except RuntimeError as exc:
+        assert "injected" in str(exc)
+    else:
+        raise AssertionError("batch creation failure must propagate")
+    assert await store.list_agent_ids() == []
+    assert orch._active_count_global() == 0
+
+
+def test_batch_creation_failure_rolls_back_all_agents(tmp_path, monkeypatch):
+    asyncio.run(_batch_creation_failure_rolls_back_all_agents(tmp_path, monkeypatch))
+
+
 async def _cross_umo_operations_are_denied(tmp_path, monkeypatch):
     store = _make_store(tmp_path, monkeypatch)
     runner = _ScriptedRunner(result="done")

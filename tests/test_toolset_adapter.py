@@ -84,6 +84,23 @@ def test_runtime_computer_tool_roster_matches_current_core_contract():
         assert set(plugin_tools) == set(core_tools)
 
 
+def test_runtime_computer_tool_roster_skips_missing_core_classes(monkeypatch):
+    from astrbot_plugin_maid_agent import toolset_adapter as ta
+
+    class _ToolMgr:
+        @staticmethod
+        def get_builtin_tool(cls):
+            return _tool(cls.__name__)
+
+    monkeypatch.setattr(
+        ta,
+        "_LOCAL_TOOL_CLASS_NAMES",
+        ("MissingToolFromFutureCore", "ExecuteShellTool"),
+    )
+    tools = _get_runtime_computer_tools("local", _ToolMgr(), {})
+    assert set(tools) == {"ExecuteShellTool"}
+
+
 def _memory_dir(tmp_path, monkeypatch, umo="aiocqhttp:GroupMessage:g1", agent="butler"):
     monkeypatch.setattr(
         "astrbot_plugin_maid_agent.toolset_adapter.StarTools.get_data_dir",

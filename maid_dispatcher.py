@@ -22,7 +22,11 @@ from astrbot.core.utils.llm_metadata import LLM_METADATAS
 
 from .config import render_dispatch_prompt
 from .session_store import MaidAgentSession, MaidSessionStore
-from .toolset_adapter import _sanitize_child_toolset
+from .toolset_adapter import (
+    _sanitize_child_toolset,
+    build_child_toolset,
+    collect_child_image_urls,
+)
 
 _provider_config_locks: WeakValueDictionary[int, asyncio.Lock] = WeakValueDictionary()
 
@@ -419,13 +423,14 @@ async def dispatch_to_maid_agent(
     logger.debug("[大小姐模式] 本次调度实际使用子 agent: %s", resolved_agent_name)
 
     runner_event = active_event or event
-    agent_context = AstrAgentContext(context=context, event=runner_event)
-    run_context = AgentContextWrapper(context=agent_context, tool_call_timeout=60)
-
-    toolset = _sanitize_subagent_toolset(
-        FunctionToolExecutor._build_handoff_toolset(run_context, handoff.agent.tools)
+    toolset = build_child_toolset(
+        context,
+        handoff=handoff,
+        umo=runner_event.unified_msg_origin,
+        agent_name=resolved_agent_name,
+        memory_agent_names=getattr(session_store.config, "memory_agent_names", None),
     )
-    image_urls = await FunctionToolExecutor._collect_handoff_image_urls(run_context, image_urls_raw)
+    image_urls = await collect_child_image_urls(runner_event, image_urls_raw)
 
     provider_id = getattr(
         handoff, "provider_id", None

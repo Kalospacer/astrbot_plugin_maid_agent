@@ -279,6 +279,7 @@ class RuntimeOrchestrator:
         umo = event.unified_msg_origin
         sender_id = event.get_sender_id()
         created: list[tuple[AgentMeta, RunMeta, DispatchRequest]] = []
+        created_agent_ids: list[str] = []
         async with self._lock:
             try:
                 self._reserve_capacity_unlocked(umo, len(normalized))
@@ -291,6 +292,7 @@ class RuntimeOrchestrator:
                         agent_name=request.agent_name,
                         sender_id=sender_id,
                     )
+                    created_agent_ids.append(agent.agent_id)
                     mode = MODE_BACKGROUND if request.run_in_background else MODE_FOREGROUND
                     run = await self.store.create_run(
                         RunMeta(
@@ -310,6 +312,16 @@ class RuntimeOrchestrator:
                     await self.store.set_active_task(agent.agent_id, run.task_id, STATUS_STARTING)
                     created.append((agent, run, request))
             except Exception:
+                for agent_id in reversed(created_agent_ids):
+                    try:
+                        await self.store.delete_agent(agent_id)
+                    except Exception as rollback_exc:  # noqa: BLE001
+                        logger.error(
+                            "[大小姐模式] batch 创建失败后回滚 agent 失败: agent_id=%s err=%s",
+                            agent_id,
+                            rollback_exc,
+                            exc_info=True,
+                        )
                 self._release_reservation_unlocked(umo, len(normalized))
                 raise
 

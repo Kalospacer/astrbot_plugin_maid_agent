@@ -6,6 +6,7 @@ import asyncio
 import json
 from types import SimpleNamespace
 
+from astrbot_plugin_maid_agent import main as main_module
 from astrbot_plugin_maid_agent.config import MaidModeConfig
 from astrbot_plugin_maid_agent.main import (
     MaidAgent,
@@ -19,6 +20,8 @@ from astrbot_plugin_maid_agent.runtime_orchestrator import (
     DispatchOutcome,
     RunNotFoundError,
 )
+
+from astrbot.core.agent.message import Message
 
 
 class _Event:
@@ -686,5 +689,164 @@ def test_notification_wake_preserves_send_toolset():
         req = SimpleNamespace(func_tool=sentinel)
         await plugin.sanitize_main_model_request(event, req)
         assert req.func_tool is sentinel
+
+    asyncio.run(scenario())
+
+
+def test_runtime_terminal_upserts_console_task_before_status_event():
+    async def scenario():
+        calls = []
+        plugin = object.__new__(MaidAgent)
+
+        class _ConsoleStore:
+            async def get_task(self, _task_id):
+                calls.append("get_task")
+                return None
+
+        plugin.console_store = _ConsoleStore()
+
+        async def ensure(patch):
+            calls.append(("ensure", patch.status, patch.task_id))
+
+        async def update(task_id, status, **_kwargs):
+            calls.append(("update", task_id, status))
+
+        async def event(**kwargs):
+            calls.append(("event", kwargs["task_id"], kwargs["status"]))
+
+        plugin._console_ensure_task_safe = ensure
+        plugin._console_update_status_safe = update
+        plugin._console_event_safe = event
+
+        async def notify(_umo):
+            calls.append("notify")
+
+        plugin.outbox = SimpleNamespace(queue_delivery=notify)
+        run = SimpleNamespace(
+            task_id="1" * 32,
+            agent_id="a" * 32,
+            unified_msg_origin="umo:a:1",
+            sender_id="owner",
+            agent_name="butler",
+            status="completed",
+            mode="background",
+            background_reason="timeout",
+            request_text="finish",
+            result="done",
+            error="",
+            notification=SimpleNamespace(notification_id="n" * 32),
+        )
+
+        await plugin._on_runtime_terminal(run)
+        assert calls[0] == "get_task"
+        assert calls[1] == ("ensure", "completed", run.task_id)
+        assert calls[2] == ("update", run.task_id, "completed")
+        assert calls[3] == ("event", run.task_id, "completed")
+        assert calls[4] == "notify"
+
+    asyncio.run(scenario())
+
+
+def test_runtime_child_runner_preserves_begin_dialogs_and_compress_provider(monkeypatch):
+    async def scenario():
+        from astrbot_plugin_maid_agent import maid_dispatcher
+
+        captured = {}
+        compress_provider = object()
+        provider = object()
+        handoff = SimpleNamespace(
+            provider_id="provider",
+            agent=SimpleNamespace(
+                instructions="instructions",
+                begin_dialogs=[Message(role="user", content="seed")],
+            ),
+        )
+
+        class _Context:
+            async def get_current_chat_provider_id(self, _umo):
+                return "provider"
+
+            def get_provider_by_id(self, provider_id):
+                return compress_provider if provider_id == "compress" else provider
+
+            def get_config(self, **_kwargs):
+                return {
+                    "provider_settings": {
+                        "llm_compress_provider_id": "compress",
+                        "context_limit_reached_strategy": "llm_compress",
+                    }
+                }
+
+        class _Runner:
+            run_context = SimpleNamespace(messages=[])
+            req = None
+
+            def done(self):
+                return True
+
+            def get_final_llm_resp(self):
+                return SimpleNamespace(completion_text="done")
+
+            def follow_up(self, *, message_text):
+                return SimpleNamespace(seq=1, text=message_text)
+
+            def request_stop(self):
+                return None
+
+        async def build_runner(**kwargs):
+            captured.update(kwargs)
+            return _Runner()
+
+        monkeypatch.setattr(maid_dispatcher, "_build_runner", build_runner)
+        monkeypatch.setattr(
+            main_module,
+            "build_child_toolset",
+            lambda *_args, **_kwargs: None,
+        )
+
+        async def collect_images(_event, _raw):
+            return []
+
+        monkeypatch.setattr(main_module, "collect_child_image_urls", collect_images)
+        plugin = object.__new__(MaidAgent)
+        plugin.context = _Context()
+        plugin.maid_mode_config = MaidModeConfig(
+            dispatch_prompt_template="{maid_request_block}",
+        )
+        plugin._resolve_handoff_for_runtime = lambda _name: (handoff, "butler")
+        plugin._isolate_child_event = lambda _event: SimpleNamespace(
+            get_extra=lambda _key, _default=None: None,
+            set_extra=lambda _key, _value: None,
+            cleanup_temporary_local_files=lambda: None,
+        )
+        plugin._load_provider_settings = lambda _umo: {
+            "context_limit_reached_strategy": "llm_compress",
+            "llm_compress_provider_id": "compress",
+        }
+        plugin._agent_memory_enabled = lambda _name: False
+        plugin._ensure_provider_max_context_tokens = lambda _provider: 0
+        plugin.runtime_store = SimpleNamespace(
+            append_control=lambda *_args, **_kwargs: asyncio.sleep(0),
+            append_message=lambda *_args, **_kwargs: asyncio.sleep(0),
+        )
+        plugin.orchestrator = SimpleNamespace(
+            register_steer_handler=lambda *_args: None,
+            unregister_steer_handler=lambda *_args: None,
+            register_stop_handler=lambda *_args: None,
+        )
+        run = SimpleNamespace(
+            agent_id="a" * 32,
+            task_id="1" * 32,
+            agent_name="butler",
+            unified_msg_origin="umo:a:1",
+            request_text="do it",
+            resume_of="",
+        )
+        event = SimpleNamespace(unified_msg_origin="umo:a:1")
+
+        child_runner = await plugin._make_child_runner(run, event, {})
+        assert await child_runner.run() == "done"
+        assert captured["contexts"] == handoff.agent.begin_dialogs
+        assert captured["llm_compress_provider"] is compress_provider
 
     asyncio.run(scenario())

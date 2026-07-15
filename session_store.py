@@ -5,8 +5,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
-import os
 import re
 import uuid
 from contextlib import asynccontextmanager
@@ -19,6 +17,7 @@ from astrbot.api import logger
 from astrbot.api.star import StarTools
 
 from .constants import ACTIVE_SESSION_INDEX_KEY, PLUGIN_DATA_DIR_NAME
+from .json_io import atomic_write_json, read_json_dict
 from .time_utils import UTC, iso_now, utcnow
 
 if TYPE_CHECKING:
@@ -211,22 +210,11 @@ class MaidSessionStore:
                 index.pop(unified_msg_origin, None)
                 await self._save_active_index(index)
 
-    def _write_json_atomic(self, path: Path, payload: dict[str, Any]) -> None:
-        temp_path = path.with_suffix(f"{path.suffix}.tmp")
-        with temp_path.open("w", encoding="utf-8") as fh:
-            json.dump(payload, fh, ensure_ascii=False, indent=2)
-        os.replace(temp_path, path)
-
-    def _read_json(self, path: Path) -> dict[str, Any] | None:
-        with path.open("r", encoding="utf-8") as fh:
-            data = json.load(fh)
-        return data if isinstance(data, dict) else None
-
     async def save_session(self, session: MaidAgentSession) -> None:
         session.touch()
         try:
             await asyncio.to_thread(
-                self._write_json_atomic,
+                atomic_write_json,
                 self._session_path(session.session_id),
                 session.to_dict(),
             )
@@ -263,7 +251,7 @@ class MaidSessionStore:
         if not await asyncio.to_thread(path.exists):
             return None
         try:
-            data = await asyncio.to_thread(self._read_json, path)
+            data = await asyncio.to_thread(read_json_dict, path)
             if data is None:
                 return None
             return MaidAgentSession.from_dict(data)

@@ -48,6 +48,8 @@ from astrbot.core.utils.history_saver import persist_agent_history
 from .background_registry import MaidBackgroundTaskRegistry, MaidTaskConflictError
 from .batch_registry import MaidBatchRegistry
 from .config import _safe_int, load_maid_mode_config, render_dispatch_prompt
+from .json_io import dump_json
+from .json_io import dump_json
 from .console_store import ConsoleTaskPatch, MaidConsoleEventStore
 from .constants import (
     CALL_MAID_TOOL_NAME,
@@ -2290,10 +2292,7 @@ class MaidAgent(Star):
 
     @staticmethod
     def _dump_json(data) -> str:
-        try:
-            return json.dumps(data, ensure_ascii=False, indent=2, default=str)
-        except Exception:
-            return repr(data)
+        return dump_json(data, indent=2)
 
     @staticmethod
     def _is_provider_request_like(req: object) -> bool:

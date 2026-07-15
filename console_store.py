@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import sqlite3
 import uuid
 from contextlib import suppress
@@ -14,27 +13,13 @@ from typing import Any
 from astrbot.api.star import StarTools
 
 from .constants import PLUGIN_DATA_DIR_NAME
+from .json_io import dump_json as _dump_json
+from .json_io import load_json_value as _load_json
 from .time_utils import iso_now
 
 _TERMINAL_TASK_STATUSES = frozenset(
     {"done", "error", "completed", "failed", "stopped", "interrupted", "partial_done"}
 )
-
-
-def _dump_json(data: Any) -> str:
-    try:
-        return json.dumps(data if data is not None else {}, ensure_ascii=False, default=str)
-    except Exception:
-        return json.dumps({"repr": repr(data)}, ensure_ascii=False)
-
-
-def _load_json(raw: str | None) -> Any:
-    if not raw:
-        return {}
-    try:
-        return json.loads(raw)
-    except Exception:
-        return {"raw": raw}
 
 
 @dataclass(slots=True)

@@ -1,5 +1,70 @@
 # Changelog
 
+## 1.4.0 - 2026-07-16
+
+彻底移除 1.2 遗留引擎与兼容层，Console 前端重构为 Claude Desktop 风格。
+
+### 移除（Breaking）
+
+- **`call_maid` 的 `action` 参数**：1.2 的 `action=dispatch/steer/stop/done` 兼容路径整体删除。请使用 `request_text`/`resume_agent_id`/`run_in_background`/`tasks` 与 `maid_task(status/result/stop/steer)`。
+- **1.2 后台执行引擎**：`background_registry.py`、`batch_registry.py`、`session_store.py` 及 main.py 中全部"回复发送后统一后台执行 + 追答回灌"链路（约 2000 行，自 1.3.0 起已不可达的死代码）。旧 `sessions/*.json` 数据保留在磁盘但不再读写。
+- **弃用配置项**：`session_enabled`、`session_timeout_minutes`、`dispatch_auto_background_enabled`、`dispatch_auto_background_seconds` 不再读取。
+- **`{maid_full_reply_block}` 占位符**：`dispatch_prompt_template` 中出现时按未知占位符处理，整体回退默认模板并告警。
+
+### 变更
+
+- **Console 前端重构（仿 Claude Desktop）**：暖色双主题（跟随 dashboard 亮/暗）、可折叠侧栏、居中对话流、空状态时段问候 + 居中 composer、执行轨迹改为随主题的"思考块"卡片、Inspector 改为按需滑出的详情面板。数据流（bridge SDK + SSE + 轮询）不变。
+- `/maid status`、`/maid stop` 仅面向 1.3+ runtime run。
+
+## 1.3.0 - 2026-07-15
+
+Claude Code 风格 subagent runtime 重构：foreground-first 调度，稳定 agent_id + 独立 task_id，支持 resume/steer/stop/result 与批量并发。
+
+### 新增
+
+- **foreground-first runtime**：`call_maid` 默认在前台同步等待管家执行（最多 `foreground_timeout_seconds=50` 秒），短任务在同一 tool turn 直接返回结果；超时后同一 runner 原地转后台继续执行（不新建 task、不重启 runner），返回 `background_reason=timeout` 的结构化句柄。
+- **稳定 agent_id + 独立 task_id**：新 dispatch 永远创建新 agent；显式 `resume_agent_id` 才恢复。running agent 的 resume 作为 steer（`runner.follow_up`），terminal/interrupted 的 resume 创建新 task_id 始终后台执行。
+- **`maid_task` 工具**：对齐 Claude TaskOutput 语义，支持 `status/result/stop/steer`。`result` 默认阻塞 30 秒（最大 600 秒），成功读终态时认领 pending notification 避免重复唤醒；查询额外返回 `query_status=success|timeout|not_ready`。
+- **批量 dispatch**：`call_maid(tasks=[...])` 最多 5 项，支持每项独立 foreground/background；foreground children 并发等待。原子预留容量，不足时整批拒绝且不创建 agent/task/transcript，结果保持输入顺序。
+- **notification outbox**：completed/failed/stopped 生成稳定 `notification_id`，终态与 pending notification 同一原子 metadata 更新。首次完成立即唤醒，无定时重试；仅在插件重启、新用户消息或 `maid_task(result)` 时重新处理。按 UMO 加锁 + Claude snapshot 语义（开始投递合并当时所有 pending，处理期间新完成进下次）。用公开 `CronMessageEvent`/`build_main_agent`/`persist_agent_history` 重建唤醒链，不调 Core 私有方法。best-effort 去重，不承诺 exactly-once。
+- **runtime 持久化层**：`agents/<agent_id>/{agent.json,transcript.jsonl,runs/<task_id>.json,outputs/<task_id>.txt}`，与旧 `sessions/*.json` 完全隔离。transcript append-only，resume 时过滤损坏尾部与未配对 tool calls。30 天无活动清理（不删 memory 与旧 sessions）。
+- **child toolset adapter**：插件内复现 AstrBot handoff 工具选择规则（不依赖 `_build_handoff_toolset` 私有方法）。child 移除 `call_maid`/`maid_task`/所有 `transfer_to_*` 禁止递归。`memory_agent_names` opt-in 的 agent 自动补 AstrBot 原生 Read/Write/Edit，memory 以 UMO+agent_name 隔离，MEMORY.md 最多内联 200 行/25000 bytes。
+- **并发容量**：每 UMO 最多 5 个 active runs，全局最多 20；无队列，超限立即拒绝。
+- **console agent/run 层级**：前端按 agent → run 展示 runtime 状态、foreground/background、interrupted、notification 与 ID，并提供 resume/steer/stop/result；SQLite 继续作为审计记录而非状态真源。
+- **runtime Console 操作**：Agent/Run 行悬停或选中后显示停止、读取结果和删除操作。删除采用二次确认，仅允许无活跃 Run、无待投递通知的终态 Agent，并同步清理 transcript/runs/outputs 与 SQLite 审计记录。
+- **runtime 调用链恢复**：修复 1.3 Agent/Run 在运行中和完成后均只显示“0 次工具调用”的回归。工具开始/结束使用独立 SSE 实时推送，历史与断线刷新从 append-only transcript 按 task 边界恢复；左栏隐藏已有 runtime 对应项的重复 SQLite 审计副本。
+- **Console 实时时长**：活跃 Run 改用浏览器本地时钟每秒更新，终态固定使用 `started_at → ended_at`；不再用仅在状态变化时刷新的 `updated_at` 充当运行计时器，避免持续显示 `0s`。
+- **配置**：新增 `foreground_timeout_seconds`/`memory_agent_names`/`max_active_per_umo`/`max_active_global`/`retention_days`。`dispatch_prompt_template` 改为不依赖 `{maid_full_reply_block}` 的自包含模板。
+- **测试**：覆盖同 runner foreground 迁后台、foreground 容量占用与释放、batch 原子拒绝、UMO/sender 权限、shutdown interrupted、notification 单次 snapshot 合并、JSONL 尾部过滤、child event 隔离、嵌套工具 Schema 和 memory。
+
+### 变更
+
+- `call_maid` 新接口：`request_text`/`agent_name`/`resume_agent_id`/`run_in_background`/`tasks`/`action`。旧 `action=dispatch/steer/stop/done` 保留兼容转换并输出弃用提示；`done` 变为无状态 no-op。
+- 主模型工具集现在同时暴露 `call_maid` 与 `maid_task`。
+- 重启遗留的 `starting/running` run 静默转为 `interrupted`，不自动重放、不主动通知。
+- 兼容 1.2 用户配置中遗留的 `{maid_full_reply_block}`：1.3 runtime 将其映射为空并记录弃用警告；未知或损坏的模板占位符自动回退默认模板，不再导致 run 立即 failed。
+- runtime 控制操作改为默认拒绝缺少 event/UMO/sender 的调用；Console 仅在三个明确调用点使用 `trusted_internal=True`，不再通过 `source=dashboard` 隐式绕过权限。
+- 已处于任意终态的 run 不再重复 finalize 或重新生成 notification；child computer-tool roster 增加与当前 Core 的契约测试，legacy toolset 过滤不再原地修改输入对象。
+- runtime/outbox 并发测试改用 started/idle 事件和条件等待，移除固定 20–200ms wall-clock 等待及未使用的 factory helper。
+- metadata.yaml / pyproject.toml / `__version__` 升至 1.3.0。
+
+### 不变
+
+- 不修改 AstrBot Core 任何文件。
+- 旧 `sessions/*.json` 与 `background_registry`/`batch_registry` 保留兼容，1.3.0 runtime 与之隔离。
+
+## 1.2.0 - 2026-07-14
+
+- 为 task、batch 与 session 增加 `agent_id` / `parent_message_id` 溯源；后台结果回灌优先使用 agent 锚点定位，文本匹配仅作为历史兼容兜底。
+- 将 chat single、chat batch 与 dashboard dispatch 收敛到统一 launcher，并将 UMO 活跃任务检查与登记改为原子操作，消除并发派发竞态。
+- 新增可配置的慢任务后台提示；达到阈值只发送 `auto_background` 事件与聊天提示，不改变任务状态，`stop/steer` 继续可用。
+- 参考 Claude Code sidechain transcript，在每个完整 agent step 后做 best-effort session checkpoint，异常或重载时尽量保留已完成步骤。
+- 插件启动时自动把失去内存 runner 的 `queued/running/stopping` 控制台任务收敛为 `stopped`，并记录 `interrupted` 审计事件。
+- 管家 toolset 强制移除 `call_maid` 控制面工具，避免 subagent 递归登记无法实际启动的幽灵任务。
+- 群聊中的 `stop/steer/done` 增加任务与 session 所有者校验，避免其他成员控制或结束不属于自己的后台上下文。
+- 将显式 stop 后、runner 未生成最终响应的异常路径统一收敛为 `stopped`，避免误报任务失败。
+- 新增 18 项回归测试，覆盖溯源、Provider 元数据隔离、历史兼容、统一分流、并发占用、慢任务提示、取消收尾、停止异常收敛、群聊所有权、重启恢复与递归工具隔离。
+
 ## 1.1.5 - 2026-07-06
 
 - 修复 AstrBot 插件页 iframe 禁用原生弹窗时，会话列表置顶、重命名、删除按钮点击后无有效反馈的问题。

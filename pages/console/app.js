@@ -1,7 +1,11 @@
 let bridge = window.AstrBotPluginPage || null;
 
-const ACTIVE_STATUSES = new Set(["queued", "running", "stopping"]);
+const ACTIVE_STATUSES = new Set(["queued", "starting", "running", "stopping"]);
 const QUIET_EVENT_TYPES = new Set(["queued", "finished"]);
+
+const POLL_INTERVAL_SSE_MS = 20000;
+const POLL_INTERVAL_FALLBACK_MS = 5000;
+const RUNTIME_REFRESH_EVERY = 3;
 
 const state = {
   tasks: [],
@@ -11,17 +15,30 @@ const state = {
   sessionTasks: [],
   sessionEvents: {},
   agents: [],
+  agentNames: [],
+  dispatchAgent: "",
+  runtimeAgents: [],
+  runtimeRuns: {},
+  selectedAgentId: "",
   settings: null,
   overview: null,
   detail: null,
   subscriptionId: "",
+  streamLive: false,
   pollTimer: 0,
+  pollCount: 0,
+  durationTimer: 0,
   refreshInFlight: false,
   refreshQueued: false,
   thinkingOpenState: {},
+  lastFeedFingerprint: "",
+  lastSessionListFingerprint: "",
   renamingSessionId: "",
   pendingDeleteSessionId: "",
+  pendingDeleteAgentId: "",
   pendingDeleteTimer: 0,
+  pendingDeleteAgentTimer: 0,
+  attachments: [],
 };
 
 const $ = (selector) => document.querySelector(selector);
@@ -34,6 +51,187 @@ function escapeHtml(value) {
     .replaceAll(">", "&gt;")
     .replaceAll('"', "&quot;")
     .replaceAll("'", "&#039;");
+}
+
+/* 轻量 Markdown → HTML（无 vendor）。只输出转义后的安全标签，覆盖 ChatUI 常见结构。 */
+function renderInlineMarkdown(text) {
+  let s = escapeHtml(String(text ?? ""));
+  // images ![alt](url)
+  s = s.replace(/!\[([^\]]*)\]\((https?:\/\/[^)\s]+)\)/g, (_m, alt, url) => {
+    return `<img src="${url}" alt="${alt}" loading="lazy">`;
+  });
+  // links [text](url)
+  s = s.replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g, (_m, label, url) => {
+    return `<a href="${url}" target="_blank" rel="noopener noreferrer">${label}</a>`;
+  });
+  // bold / italic / strike / code（顺序：code 先，再粗体，再斜体）
+  s = s.replace(/`([^`\n]+)`/g, (_m, code) => `<code>${code}</code>`);
+  s = s.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+  s = s.replace(/__([^_]+)__/g, "<strong>$1</strong>");
+  s = s.replace(/(?<!\*)\*([^*\n]+)\*(?!\*)/g, "<em>$1</em>");
+  s = s.replace(/(?<!_)_([^_\n]+)_(?!_)/g, "<em>$1</em>");
+  s = s.replace(/~~([^~]+)~~/g, "<del>$1</del>");
+  // soft line breaks inside paragraphs
+  s = s.replace(/\n/g, "<br>");
+  return s;
+}
+
+function isTableSeparator(line) {
+  return /^\s*\|?[\s:|-]+\|[\s:|-]*\|?\s*$/.test(line) && /\|/.test(line) && /-+/.test(line);
+}
+
+function splitTableRow(line) {
+  const trimmed = line.trim().replace(/^\|/, "").replace(/\|$/, "");
+  return trimmed.split("|").map((cell) => cell.trim());
+}
+
+function renderMarkdown(text) {
+  const raw = String(text ?? "").replace(/\r\n?/g, "\n").trim();
+  if (!raw) return "";
+
+  const lines = raw.split("\n");
+  const html = [];
+  let i = 0;
+  let paragraph = [];
+
+  const flushParagraph = () => {
+    if (!paragraph.length) return;
+    html.push(`<p>${renderInlineMarkdown(paragraph.join("\n"))}</p>`);
+    paragraph = [];
+  };
+
+  while (i < lines.length) {
+    const line = lines[i];
+
+    // fenced code
+    const fence = line.match(/^```([\w-]*)\s*$/);
+    if (fence) {
+      flushParagraph();
+      const lang = fence[1] || "";
+      const body = [];
+      i += 1;
+      while (i < lines.length && !/^```\s*$/.test(lines[i])) {
+        body.push(lines[i]);
+        i += 1;
+      }
+      if (i < lines.length) i += 1; // closing ```
+      const cls = lang ? ` class="language-${escapeHtml(lang)}"` : "";
+      html.push(`<pre><code${cls}>${escapeHtml(body.join("\n"))}</code></pre>`);
+      continue;
+    }
+
+    // horizontal rule
+    if (/^\s*(-{3,}|\*{3,}|_{3,})\s*$/.test(line)) {
+      flushParagraph();
+      html.push("<hr>");
+      i += 1;
+      continue;
+    }
+
+    // heading
+    const heading = line.match(/^(#{1,6})\s+(.+)$/);
+    if (heading) {
+      flushParagraph();
+      const level = heading[1].length;
+      html.push(`<h${level}>${renderInlineMarkdown(heading[2])}</h${level}>`);
+      i += 1;
+      continue;
+    }
+
+    // blockquote
+    if (/^\s*>\s?/.test(line)) {
+      flushParagraph();
+      const quote = [];
+      while (i < lines.length && /^\s*>\s?/.test(lines[i])) {
+        quote.push(lines[i].replace(/^\s*>\s?/, ""));
+        i += 1;
+      }
+      html.push(`<blockquote>${renderMarkdown(quote.join("\n"))}</blockquote>`);
+      continue;
+    }
+
+    // table (GFM-ish)
+    if (
+      line.includes("|") &&
+      i + 1 < lines.length &&
+      isTableSeparator(lines[i + 1])
+    ) {
+      flushParagraph();
+      const header = splitTableRow(line);
+      i += 2; // skip separator
+      const rows = [];
+      while (i < lines.length && lines[i].includes("|") && lines[i].trim()) {
+        rows.push(splitTableRow(lines[i]));
+        i += 1;
+      }
+      const thead = `<thead><tr>${header.map((c) => `<th>${renderInlineMarkdown(c)}</th>`).join("")}</tr></thead>`;
+      const tbody = rows.length
+        ? `<tbody>${rows
+            .map(
+              (row) =>
+                `<tr>${header
+                  .map((_, idx) => `<td>${renderInlineMarkdown(row[idx] || "")}</td>`)
+                  .join("")}</tr>`,
+            )
+            .join("")}</tbody>`
+        : "";
+      html.push(`<table>${thead}${tbody}</table>`);
+      continue;
+    }
+
+    // unordered list
+    if (/^\s*[-*+]\s+/.test(line)) {
+      flushParagraph();
+      const items = [];
+      while (i < lines.length && /^\s*[-*+]\s+/.test(lines[i])) {
+        items.push(lines[i].replace(/^\s*[-*+]\s+/, ""));
+        i += 1;
+      }
+      html.push(`<ul>${items.map((item) => `<li>${renderInlineMarkdown(item)}</li>`).join("")}</ul>`);
+      continue;
+    }
+
+    // ordered list
+    if (/^\s*\d+\.\s+/.test(line)) {
+      flushParagraph();
+      const items = [];
+      while (i < lines.length && /^\s*\d+\.\s+/.test(lines[i])) {
+        items.push(lines[i].replace(/^\s*\d+\.\s+/, ""));
+        i += 1;
+      }
+      html.push(`<ol>${items.map((item) => `<li>${renderInlineMarkdown(item)}</li>`).join("")}</ol>`);
+      continue;
+    }
+
+    // blank line ends paragraph
+    if (!line.trim()) {
+      flushParagraph();
+      i += 1;
+      continue;
+    }
+
+    paragraph.push(line);
+    i += 1;
+  }
+  flushParagraph();
+  return html.join("");
+}
+
+function afterMarkdownSanitize(root) {
+  if (!root) return;
+  root.querySelectorAll?.("a[href]")?.forEach((anchor) => {
+    const href = anchor.getAttribute("href") || "";
+    if (!/^https?:\/\//i.test(href)) {
+      anchor.removeAttribute("href");
+      return;
+    }
+    anchor.setAttribute("target", "_blank");
+    anchor.setAttribute("rel", "noopener noreferrer");
+  });
+  root.querySelectorAll?.("img[src]")?.forEach((img) => {
+    const src = img.getAttribute("src") || "";
+    if (!/^https?:\/\//i.test(src)) img.remove();
+  });
 }
 
 function compactId(value) {
@@ -65,6 +263,14 @@ function formatDuration(startIso, endIso) {
   return `${Math.floor(minutes / 60)}h${minutes % 60}m`;
 }
 
+function updateLiveDurations() {
+  const now = new Date().toISOString();
+  $$('[data-live-duration-start]').forEach((node) => {
+    const duration = formatDuration(node.dataset.liveDurationStart, now);
+    if (duration) node.textContent = duration;
+  });
+}
+
 function toast(message) {
   const node = $("#toast");
   if (!node) return;
@@ -78,7 +284,10 @@ function setStreamState(kind, text) {
   const node = $("#streamState");
   if (!node) return;
   node.textContent = text;
-  node.className = `signal ${kind}`;
+  node.className = `signal ${kind} sidebar-label`;
+  const wasLive = state.streamLive;
+  state.streamLive = kind === "signal-active";
+  if (wasLive !== state.streamLive) startPolling();
 }
 
 function ensureBridge() {
@@ -95,6 +304,129 @@ async function apiGet(endpoint, params) {
 
 async function apiPost(endpoint, body) {
   return ensureBridge().apiPost(endpoint, body);
+}
+
+async function uploadFile(endpoint, file) {
+  const pageBridge = ensureBridge();
+  if (typeof pageBridge.upload !== "function") {
+    throw new Error("当前 AstrBot 页面桥不支持文件上传，请刷新 Dashboard。");
+  }
+  return pageBridge.upload(endpoint, file);
+}
+
+function formatFileSize(bytes) {
+  const size = Number(bytes) || 0;
+  if (size < 1024) return `${size} B`;
+  if (size < 1024 * 1024) return `${Math.round(size / 1024)} KB`;
+  return `${(size / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function renderAttachments() {
+  const strip = $("#attachmentStrip");
+  if (!strip) return;
+  strip.classList.toggle("hidden", state.attachments.length === 0);
+  strip.innerHTML = state.attachments
+    .map((attachment) => {
+      const stateLabel =
+        attachment.status === "uploading"
+          ? "上传中"
+          : attachment.status === "error"
+            ? "上传失败"
+            : formatFileSize(attachment.size);
+      return `
+        <article class="attachment-chip ${escapeHtml(attachment.status)}" title="${escapeHtml(attachment.error || attachment.name)}">
+          <img src="${escapeHtml(attachment.previewUrl)}" alt="">
+          <span class="attachment-meta">
+            <strong>${escapeHtml(attachment.name)}</strong>
+            <small>${escapeHtml(stateLabel)}</small>
+          </span>
+          <button type="button" class="attachment-remove" data-remove-attachment="${escapeHtml(attachment.id)}" aria-label="移除 ${escapeHtml(attachment.name)}">×</button>
+        </article>
+      `;
+    })
+    .join("");
+}
+
+async function uploadAttachment(attachment) {
+  try {
+    const result = await uploadFile("console/upload", attachment.file);
+    if (!result?.path) throw new Error("上传接口没有返回图片路径。");
+    attachment.path = result.path;
+    attachment.size = result.size ?? attachment.size;
+    attachment.status = "ready";
+  } catch (err) {
+    attachment.status = "error";
+    attachment.error = err.message || "图片上传失败";
+  } finally {
+    renderAttachments();
+  }
+  return attachment;
+}
+
+function addImageFiles(fileList) {
+  const allowedTypes = new Set(["image/jpeg", "image/png", "image/webp", "image/gif"]);
+  const files = Array.from(fileList || []);
+  let skipped = 0;
+  for (const file of files) {
+    if (state.attachments.length >= 5) {
+      skipped += 1;
+      continue;
+    }
+    if (!allowedTypes.has(file.type) || file.size <= 0 || file.size > 10 * 1024 * 1024) {
+      skipped += 1;
+      continue;
+    }
+    const attachment = {
+      id: `attachment_${Date.now()}_${Math.random().toString(16).slice(2)}`,
+      file,
+      name: file.name || "image",
+      size: file.size,
+      previewUrl: URL.createObjectURL(file),
+      path: "",
+      status: "uploading",
+      error: "",
+      uploadPromise: null,
+    };
+    state.attachments.push(attachment);
+    attachment.uploadPromise = uploadAttachment(attachment);
+  }
+  renderAttachments();
+  if (skipped) toast("部分图片未添加：仅支持 JPEG/PNG/WEBP/GIF，最多 5 张且每张不超过 10 MB");
+}
+
+function removeAttachment(attachmentId) {
+  const index = state.attachments.findIndex((item) => item.id === attachmentId);
+  if (index < 0) return;
+  const [attachment] = state.attachments.splice(index, 1);
+  if (attachment.previewUrl) URL.revokeObjectURL(attachment.previewUrl);
+  renderAttachments();
+}
+
+function clearAttachments() {
+  for (const attachment of state.attachments) {
+    if (attachment.previewUrl) URL.revokeObjectURL(attachment.previewUrl);
+  }
+  state.attachments = [];
+  renderAttachments();
+  const input = $("#imageInput");
+  if (input) input.value = "";
+}
+
+async function readyAttachmentPaths() {
+  await Promise.all(
+    state.attachments.map((attachment) => attachment.uploadPromise).filter(Boolean),
+  );
+  const failed = state.attachments.find((attachment) => attachment.status === "error");
+  if (failed) throw new Error(`${failed.name}：${failed.error || "上传失败"}`);
+  return state.attachments
+    .filter((attachment) => attachment.status === "ready" && attachment.path)
+    .map((attachment) => attachment.path);
+}
+
+function clearPromptComposer(input) {
+  input.value = "";
+  input.style.height = "auto";
+  clearAttachments();
 }
 
 function isAtBottom(el) {
@@ -180,6 +512,9 @@ function updateKnownUmos() {
   for (const task of state.tasks) {
     if (task.unified_msg_origin) umoSet.add(task.unified_msg_origin);
   }
+  for (const agent of state.runtimeAgents) {
+    if (agent.unified_msg_origin) umoSet.add(agent.unified_msg_origin);
+  }
   if (state.selectedUmo) umoSet.add(state.selectedUmo);
   state.umos = Array.from(umoSet).sort();
   if (!state.selectedUmo && state.umos.length > 0) {
@@ -187,16 +522,38 @@ function updateKnownUmos() {
   }
 }
 
-async function loadOverview() {
+async function loadOverview({ applyForm = true } = {}) {
   state.overview = await apiGet("console/overview");
   state.settings = state.overview.config || state.settings;
-  if (state.settings) fillSettings(state.settings);
+  if (applyForm && state.settings) fillSettings(state.settings);
+  if (!state.dispatchAgent && state.settings?.default_agent_name) {
+    state.dispatchAgent = state.settings.default_agent_name;
+    syncDispatchAgentLabel();
+  }
 }
 
 async function loadAgents() {
   const data = await apiGet("console/subagents");
   state.agents = data.agents || [];
   renderAgentOptions();
+}
+
+async function loadRuntimeAgents({ force = false } = {}) {
+  if (!force && state.pollCount > 0 && state.pollCount % RUNTIME_REFRESH_EVERY !== 0) {
+    return;
+  }
+  const data = await apiGet("console/agents");
+  state.runtimeAgents = data.agents || [];
+  const entries = await Promise.all(
+    state.runtimeAgents.map(async (agent) => {
+      const detail = await apiGet(`console/agents/${encodeURIComponent(agent.agent_id)}/runs`);
+      return [agent.agent_id, detail.runs || []];
+    }),
+  );
+  state.runtimeRuns = Object.fromEntries(entries);
+  updateKnownUmos();
+  renderUmoSwitcher();
+  updateSessionList();
 }
 
 async function loadTasks() {
@@ -207,12 +564,14 @@ async function loadTasks() {
   updateSessionList();
 }
 
-async function loadSession(taskId, { scrollMode = "bottom" } = {}) {
+async function loadSession(taskId, { scrollMode = "bottom", force = false } = {}) {
   if (!taskId) {
+    state.selectedAgentId = "";
     state.selectedSessionId = "";
     state.sessionTasks = [];
     state.sessionEvents = {};
     state.detail = null;
+    state.lastFeedFingerprint = "";
     renderChatFeed();
     renderInspector();
     updateSessionList();
@@ -222,10 +581,25 @@ async function loadSession(taskId, { scrollMode = "bottom" } = {}) {
   const scrollSnapshot = captureFeedScroll();
   const selected = state.tasks.find((task) => task.task_id === taskId);
   const rootId = selected?.parent_task_id || taskId;
-  state.selectedSessionId = rootId;
-  state.sessionTasks = state.tasks
+  const nextSessionTasks = state.tasks
     .filter((task) => task.task_id === rootId || task.parent_task_id === rootId)
     .sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
+
+  if (
+    !force &&
+    state.selectedSessionId === rootId &&
+    !state.selectedAgentId &&
+    sessionTasksUnchanged(state.sessionTasks, nextSessionTasks) &&
+    !nextSessionTasks.some((task) => ACTIVE_STATUSES.has(task.status))
+  ) {
+    state.sessionTasks = nextSessionTasks;
+    updateSessionList();
+    return;
+  }
+
+  state.selectedSessionId = rootId;
+  state.selectedAgentId = "";
+  state.sessionTasks = nextSessionTasks;
 
   state.sessionEvents = {};
   for (const task of state.sessionTasks) {
@@ -244,6 +618,53 @@ async function loadSession(taskId, { scrollMode = "bottom" } = {}) {
   applyFeedScroll(scrollSnapshot, scrollMode);
 }
 
+async function loadRuntimeRun(agentId, taskId, { scrollMode = "bottom" } = {}) {
+  const scrollSnapshot = captureFeedScroll();
+  const run = (state.runtimeRuns[agentId] || []).find((item) => item.task_id === taskId);
+  if (!run) return;
+  let traceData = null;
+  try {
+    traceData = await apiGet(
+      `console/agents/${encodeURIComponent(agentId)}/runs/${encodeURIComponent(taskId)}/trace`,
+    );
+  } catch {
+    // The run list remains usable if a trace disappears during refresh/delete.
+  }
+  if (traceData?.status) run.status = traceData.status;
+  if (traceData?.tool_chain) run.tool_chain = traceData.tool_chain;
+  state.selectedAgentId = agentId;
+  state.selectedSessionId = taskId;
+  const task = {
+    ...run,
+    kind: "run",
+    meta: {
+      agent_id: run.agent_id,
+      run_mode: run.mode,
+      background_reason: run.background_reason,
+      notification: run.notification,
+      output_file: run.output_file,
+      tool_chain: run.tool_chain || {},
+    },
+  };
+  state.sessionTasks = [task];
+  state.sessionEvents = {
+    [taskId]: run.result || run.error
+      ? [
+          {
+            event_type: "agent_result",
+            title: run.status,
+            message: run.result || run.error,
+          },
+        ]
+      : [],
+  };
+  state.detail = { task, actions: [] };
+  renderChatFeed();
+  renderInspector();
+  updateSessionList();
+  applyFeedScroll(scrollSnapshot, scrollMode);
+}
+
 async function refreshConsole({ silent = false, keepSession = true } = {}) {
   if (state.refreshInFlight) {
     state.refreshQueued = true;
@@ -253,15 +674,29 @@ async function refreshConsole({ silent = false, keepSession = true } = {}) {
   state.refreshInFlight = true;
   const selectedBefore = state.selectedSessionId;
   try {
+    state.pollCount += 1;
     await loadTasks();
-    await Promise.allSettled([loadOverview(), loadAgents()]);
+    await Promise.allSettled([
+      loadOverview({ applyForm: !silent }),
+      loadAgents(),
+      loadRuntimeAgents({ force: !silent }),
+    ]);
 
-    if (keepSession && selectedBefore) {
+    if (keepSession && selectedBefore && state.selectedAgentId) {
+      const exists = (state.runtimeRuns[state.selectedAgentId] || []).some(
+        (run) => run.task_id === selectedBefore,
+      );
+      if (exists) {
+        await loadRuntimeRun(state.selectedAgentId, selectedBefore, { scrollMode: "preserve" });
+      } else {
+        await loadSession("");
+      }
+    } else if (keepSession && selectedBefore) {
       const stillExists = state.tasks.some(
         (task) => task.task_id === selectedBefore || task.parent_task_id === selectedBefore,
       );
       if (stillExists) {
-        await loadSession(selectedBefore, { scrollMode: "preserve" });
+        await loadSession(selectedBefore, { scrollMode: "preserve", force: !silent });
       } else {
         await loadSession("");
       }
@@ -285,20 +720,163 @@ async function refreshConsole({ silent = false, keepSession = true } = {}) {
 
 function startPolling() {
   window.clearInterval(state.pollTimer);
+  const interval = state.streamLive ? POLL_INTERVAL_SSE_MS : POLL_INTERVAL_FALLBACK_MS;
   state.pollTimer = window.setInterval(() => {
     refreshConsole({ silent: true, keepSession: true });
-  }, 5000);
+  }, interval);
+}
+
+function startDurationTicker() {
+  window.clearInterval(state.durationTimer);
+  updateLiveDurations();
+  state.durationTimer = window.setInterval(updateLiveDurations, 1000);
+}
+
+function getConfiguredDefaultAgent() {
+  return state.settings?.default_agent_name || state.overview?.config?.default_agent_name || "butler";
+}
+
+function getAgentNames() {
+  const configuredDefault = getConfiguredDefaultAgent();
+  return [...new Set([configuredDefault, ...state.agents.map((agent) => agent.name)].filter(Boolean))];
+}
+
+function syncDispatchAgentLabel() {
+  const label = $("#dispatchAgentLabel");
+  if (label) label.textContent = state.dispatchAgent || getConfiguredDefaultAgent();
 }
 
 function renderAgentOptions() {
-  const select = $("#dispatchAgent");
-  if (!select) return;
-  const configuredDefault =
-    state.settings?.default_agent_name || state.overview?.config?.default_agent_name || "butler";
-  const names = [...new Set([configuredDefault, ...state.agents.map((agent) => agent.name)].filter(Boolean))];
-  select.innerHTML = names
-    .map((name) => `<option value="${escapeHtml(name)}">${escapeHtml(name)}</option>`)
-    .join("");
+  const names = getAgentNames();
+  const namesKey = names.join("\0");
+  const prevKey = state.agentNames.join("\0");
+  state.agentNames = names;
+
+  if (!state.dispatchAgent || !names.includes(state.dispatchAgent)) {
+    state.dispatchAgent = names[0] || getConfiguredDefaultAgent();
+  }
+  syncDispatchAgentLabel();
+
+  // names unchanged and selection still valid — menu will rebuild on open
+  if (namesKey === prevKey) return;
+}
+
+function closeAgentMenu() {
+  const menu = $("#agentMenu");
+  const btn = $("#dispatchAgentBtn");
+  menu?.classList.add("hidden");
+  if (btn) btn.setAttribute("aria-expanded", "false");
+}
+
+function openAgentMenu() {
+  const menu = $("#agentMenu");
+  const btn = $("#dispatchAgentBtn");
+  if (!menu || !btn) return;
+  closeSessionMenu();
+  const names = getAgentNames();
+  if (!names.length) {
+    menu.innerHTML = `<div class="menu-item" disabled>暂无 Agent</div>`;
+  } else {
+    menu.innerHTML = names
+      .map((name) => {
+        const active = name === state.dispatchAgent;
+        return `
+          <button class="menu-item ${active ? "active" : ""}" type="button" role="menuitem"
+            data-agent-name="${escapeHtml(name)}">
+            <span class="check" aria-hidden="true">${active ? "✓" : ""}</span>
+            <span>${escapeHtml(name)}</span>
+          </button>
+        `;
+      })
+      .join("");
+  }
+  menu.classList.remove("hidden");
+  btn.setAttribute("aria-expanded", "true");
+  const rect = btn.getBoundingClientRect();
+  const menuRect = menu.getBoundingClientRect();
+  const top = Math.min(rect.top - menuRect.height - 6, window.innerHeight - menuRect.height - 8);
+  menu.style.top = `${Math.max(8, top)}px`;
+  menu.style.left = `${Math.max(8, Math.min(rect.right - menuRect.width, window.innerWidth - menuRect.width - 8))}px`;
+}
+
+function toggleAgentMenu() {
+  const menu = $("#agentMenu");
+  if (!menu) return;
+  if (menu.classList.contains("hidden")) openAgentMenu();
+  else closeAgentMenu();
+}
+
+function sessionTasksUnchanged(prevTasks, nextTasks) {
+  if (prevTasks.length !== nextTasks.length) return false;
+  for (let i = 0; i < nextTasks.length; i += 1) {
+    const a = prevTasks[i];
+    const b = nextTasks[i];
+    if (!a || !b) return false;
+    if (
+      a.task_id !== b.task_id ||
+      a.status !== b.status ||
+      a.updated_at !== b.updated_at ||
+      a.request_text !== b.request_text ||
+      a.title !== b.title
+    ) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function buildFeedFingerprint() {
+  const taskPart = state.sessionTasks
+    .map((task) => {
+      const events = state.sessionEvents[task.task_id] || [];
+      const last = events[events.length - 1];
+      const chain = taskMeta(task).tool_chain;
+      const chainSig = chain
+        ? `${chain.step_count || 0}:${chain.updated_at || ""}:${(chain.steps || []).length}`
+        : "";
+      return [
+        task.task_id,
+        task.status,
+        task.updated_at,
+        task.request_text || "",
+        events.length,
+        last?.event_id || last?.id || last?.created_at || "",
+        chainSig,
+      ].join("~");
+    })
+    .join("|");
+  const thinkingPart = Object.entries(state.thinkingOpenState)
+    .map(([k, v]) => `${k}:${v ? 1 : 0}`)
+    .join(",");
+  return `${state.selectedSessionId}#${taskPart}#${thinkingPart}`;
+}
+
+function buildSessionListFingerprint() {
+  const runtimePart = state.runtimeAgents
+    .filter((agent) => agent.unified_msg_origin === state.selectedUmo)
+    .map((agent) => {
+      const runs = (state.runtimeRuns[agent.agent_id] || [])
+        .map((run) => `${run.task_id}:${run.status}:${run.updated_at || run.created_at || ""}`)
+        .join(",");
+      return `${agent.agent_id}:${agent.agent_name}:${runs}`;
+    })
+    .join("|");
+  const auditPart = state.tasks
+    .filter((task) => task.unified_msg_origin === state.selectedUmo && !task.parent_task_id)
+    .map(
+      (task) =>
+        `${task.task_id}:${task.status}:${task.updated_at}:${taskTitle(task)}:${isPinned(task) ? 1 : 0}`,
+    )
+    .join("|");
+  return [
+    state.selectedUmo,
+    state.selectedSessionId,
+    state.renamingSessionId,
+    state.pendingDeleteSessionId,
+    state.pendingDeleteAgentId,
+    runtimePart,
+    auditPart,
+  ].join("#");
 }
 
 function renderUmoSwitcher() {
@@ -327,21 +905,72 @@ function updateSessionList() {
   const list = $("#sessionList");
   if (!list) return;
 
+  const fingerprint = buildSessionListFingerprint();
+  if (fingerprint === state.lastSessionListFingerprint && list.childElementCount > 0) {
+    return;
+  }
+  state.lastSessionListFingerprint = fingerprint;
+
+  const runtimeAgents = state.runtimeAgents
+    .filter((agent) => agent.unified_msg_origin === state.selectedUmo)
+    .sort((a, b) => new Date(b.updated_at) - new Date(a.updated_at));
+  const runtimeTaskIds = new Set(
+    Object.values(state.runtimeRuns)
+      .flat()
+      .map((run) => run.task_id),
+  );
   const rootTasks = state.tasks
-    .filter((task) => task.unified_msg_origin === state.selectedUmo && !task.parent_task_id)
+    .filter(
+      (task) =>
+        task.unified_msg_origin === state.selectedUmo &&
+        !task.parent_task_id &&
+        !runtimeTaskIds.has(task.task_id),
+    )
     .sort((a, b) => {
       const pinnedDelta = Number(isPinned(b)) - Number(isPinned(a));
       if (pinnedDelta !== 0) return pinnedDelta;
       return new Date(b.updated_at) - new Date(a.updated_at);
     });
 
-  if (rootTasks.length === 0) {
-    list.innerHTML = `<div class="empty-state">暂无历史对话</div>`;
+  if (runtimeAgents.length === 0 && rootTasks.length === 0) {
+    list.innerHTML = `<div class="empty-state">暂无 Agent / Run</div>`;
     return;
   }
 
+  const MORE_SVG = `<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><circle cx="5" cy="12" r="1.8"/><circle cx="12" cy="12" r="1.8"/><circle cx="19" cy="12" r="1.8"/></svg>`;
+
+  const runtimeHtml = runtimeAgents
+    .map((agent) => {
+      const runs = [...(state.runtimeRuns[agent.agent_id] || [])].sort(
+        (a, b) => new Date(b.created_at) - new Date(a.created_at),
+      );
+      const deletingAgent = agent.agent_id === state.pendingDeleteAgentId;
+      const runsHtml = runs
+        .map(
+          (run) => `
+            <div class="session-item runtime-session-item ${run.task_id === state.selectedSessionId ? "active" : ""} ${deletingAgent ? "delete-armed" : ""}"
+                 data-id="${escapeHtml(run.task_id)}" data-runtime-agent="${escapeHtml(agent.agent_id)}">
+              <div class="session-copy">
+                <div class="session-title">${escapeHtml(run.request_text || compactId(run.task_id))}</div>
+                <small><span class="status-dot status-${escapeHtml(run.status)}"></span>${escapeHtml(run.mode)} · ${escapeHtml(run.status)}${run.notification && !run.notification.delivered ? " · 待通知" : ""}</small>
+              </div>
+              <div class="session-actions">
+                <button class="session-action-btn" type="button" data-menu-kind="runtime" aria-label="更多操作" title="更多操作">${MORE_SVG}</button>
+              </div>
+            </div>
+          `,
+        )
+        .join("");
+      return `
+        <div class="session-group-title">Agent ${escapeHtml(compactId(agent.agent_id))} · ${escapeHtml(agent.agent_name)}</div>
+        ${runsHtml || '<div class="empty-state">暂无 Run</div>'}
+      `;
+    })
+    .join("");
+
   list.innerHTML =
-    `<div class="session-group-title">最近对话</div>` +
+    runtimeHtml +
+    (rootTasks.length ? `<div class="session-group-title">SQLite 审计记录</div>` : "") +
     rootTasks
       .map((task) => {
         const active = task.task_id === state.selectedSessionId ? "active" : "";
@@ -359,15 +988,7 @@ function updateSessionList() {
           <div class="session-item ${active} ${pinned} ${deleting}" data-id="${escapeHtml(task.task_id)}">
             ${titleHtml}
             <div class="session-actions">
-              <button class="session-action-btn pin-btn" type="button" data-session-action="pin" aria-label="置顶" title="${isPinned(task) ? "取消置顶" : "置顶"}">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m15 4 5 5-4 4v5l-2 2-5-5-4 4-1-1 4-4-5-5 2-2h5l4-4Z"></path></svg>
-              </button>
-              <button class="session-action-btn rename-btn" type="button" data-session-action="rename" aria-label="重命名" title="重命名">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9"></path><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"></path></svg>
-              </button>
-              <button class="session-action-btn delete-btn" type="button" data-session-action="delete" aria-label="删除" title="${deleting ? "再次点击确认删除" : "删除"}">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>
-              </button>
+              <button class="session-action-btn" type="button" data-menu-kind="audit" aria-label="更多操作" title="更多操作">${MORE_SVG}</button>
             </div>
           </div>
         `;
@@ -392,24 +1013,34 @@ function getThinkingOpenAttribute(task, defaultOpen) {
   return shouldOpen ? "open" : "";
 }
 
+function renderChatHeader() {
+  const node = $("#chatTitle");
+  if (!node) return;
+  const root = state.sessionTasks[0];
+  node.textContent = state.selectedSessionId && root ? taskTitle(root) : "";
+}
+
 function renderChatFeed() {
   const feed = $("#chatFeed");
   if (!feed) return;
+  $(".pane-center")?.classList.toggle("centered", !state.selectedSessionId);
+  renderChatHeader();
 
   if (!state.selectedSessionId) {
     feed.classList.add("is-empty");
-    feed.innerHTML = `
-      <div class="empty-hero" id="emptyHero">
-        <div class="brand-logo">
-          <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a10 10 0 1 0 10 10H12V2Z"></path><path d="M12 12 2.1 7.1"></path><path d="m12 12 9.9 4.9"></path></svg>
-        </div>
-      </div>
-    `;
+    feed.innerHTML = "";
+    state.lastFeedFingerprint = "";
     $("#promptText")?.focus();
     return;
   }
 
   captureThinkingOpenState();
+  const fingerprint = buildFeedFingerprint();
+  if (fingerprint === state.lastFeedFingerprint && feed.childElementCount > 0) {
+    return;
+  }
+  state.lastFeedFingerprint = fingerprint;
+
   feed.classList.remove("is-empty");
   let html = "";
 
@@ -436,7 +1067,7 @@ function renderChatFeed() {
       }
       // 回复气泡只认最终结果与工具主动发送的消息。
       if (event.event_type === "agent_result" || event.event_type === "tool_direct_message") {
-        if (event.message) responseHtml += `${escapeHtml(event.message)}\n\n`;
+        if (event.message) responseHtml += `${event.message}\n\n`;
         continue;
       }
       if (QUIET_EVENT_TYPES.has(event.event_type) || event.event_type?.startsWith("system")) {
@@ -446,19 +1077,19 @@ function renderChatFeed() {
     }
 
     const traceHtml = renderTracePanel(task, "feed", eventLinesHtml);
-    if (traceHtml || responseHtml || task.status === "error") {
+    if (traceHtml || responseHtml || ["error", "failed", "stopped"].includes(task.status)) {
       html += `
         <div class="chat-message maid">
           <div class="chat-message-inner">
-            <div class="chat-avatar">M</div>
+            <div class="chat-avatar" aria-hidden="true">✦</div>
             <div class="assistant-flow">
       `;
 
       html += traceHtml;
 
       if (responseHtml) {
-        html += `<div class="bubble">${responseHtml.trim()}</div>`;
-      } else if (task.status === "error") {
+        html += `<div class="bubble markdown-body">${renderMarkdown(responseHtml.trim())}</div>`;
+      } else if (["error", "failed", "stopped"].includes(task.status)) {
         html += `<div class="bubble error-text">任务发生异常，已终止。</div>`;
       }
 
@@ -470,7 +1101,12 @@ function renderChatFeed() {
     }
   }
 
+  if (!html) {
+    html = `<div class="empty-state">该会话暂无消息</div>`;
+  }
+
   feed.innerHTML = html;
+  afterMarkdownSanitize(feed);
 }
 
 function stringifyStructuredValue(value) {
@@ -697,11 +1333,19 @@ function renderTracePanel(task, variant, extraHtml = "") {
   }
 
   const toolCount = steps.filter((step) => step.type === "tool").length;
-  const duration = formatDuration(task.created_at, task.completed_at || task.updated_at);
-  const summaryText = [
-    `${toolCount} 次工具调用`,
-    duration,
-    isActive ? "运行中" : task.status,
+  const durationStart = task.started_at || task.created_at;
+  const durationEnd = task.ended_at || task.completed_at || task.updated_at;
+  const duration = formatDuration(
+    durationStart,
+    isActive ? new Date().toISOString() : durationEnd,
+  );
+  const durationHtml = isActive && durationStart
+    ? `<span data-live-duration-start="${escapeHtml(durationStart)}">${escapeHtml(duration)}</span>`
+    : escapeHtml(duration);
+  const summaryHtml = [
+    escapeHtml(`${toolCount} 次工具调用`),
+    durationHtml,
+    escapeHtml(isActive ? "运行中" : task.status),
   ]
     .filter(Boolean)
     .join(" · ");
@@ -710,7 +1354,7 @@ function renderTracePanel(task, variant, extraHtml = "") {
     <details class="trace-panel" data-thinking-key="${escapeHtml(getThinkingKey(task))}" ${getThinkingOpenAttribute(task, isActive)}>
       <summary class="trace-summary">
         <span class="trace-caret">▸</span>
-        <span>${escapeHtml(summaryText)}</span>
+        <span>${summaryHtml}</span>
       </summary>
       ${body}
     </details>
@@ -759,9 +1403,15 @@ function renderInspector() {
     <dt>状态</dt><dd>${escapeHtml(task.status)}</dd>
     <dt>类型</dt><dd>${escapeHtml(task.kind)}</dd>
     <dt>Agent</dt><dd>${escapeHtml(task.agent_name)}</dd>
+    <dt>Agent ID</dt><dd>${escapeHtml(compactId(task.agent_id || taskMeta(task).agent_id))}</dd>
+    <dt>模式</dt><dd>${escapeHtml(task.mode || taskMeta(task).run_mode || "")}</dd>
+    <dt>通知</dt><dd>${escapeHtml(task.notification?.notification_id || taskMeta(task).notification?.notification_id || "-")}</dd>
     <dt>来源 UMO</dt><dd>${escapeHtml(task.unified_msg_origin)}</dd>
     <dt>更新时间</dt><dd>${escapeHtml(formatTime(task.updated_at))}</dd>
   `;
+  if ($("#stopButton")) {
+    $("#stopButton").disabled = !["starting", "running"].includes(task.status);
+  }
 
   $("#actionList").innerHTML = (state.detail.actions || [])
     .map((action) => {
@@ -784,9 +1434,9 @@ function renderInspector() {
 async function submitPrompt() {
   const input = $("#promptText");
   const text = input?.value.trim() || "";
-  if (!text) return;
+  if (!text && state.attachments.length === 0) return;
 
-  const agent = $("#dispatchAgent")?.value || state.settings?.default_agent_name || "butler";
+  const agent = state.dispatchAgent || getConfiguredDefaultAgent();
   const selectedRoot = getSelectedRootTask();
   const umo = selectedRoot?.unified_msg_origin || state.selectedUmo;
   if (!umo) {
@@ -795,37 +1445,74 @@ async function submitPrompt() {
     return;
   }
 
-  input.value = "";
-  input.style.height = "auto";
   const btn = $("#sendBtn");
   if (btn) btn.disabled = true;
 
   try {
+    const imageUrlsRaw = await readyAttachmentPaths();
+    const requestText = text || "请查看并处理附带的图片。";
+    const runtimeRun = state.selectedAgentId
+      ? (state.runtimeRuns[state.selectedAgentId] || []).find(
+          (run) => run.task_id === state.selectedSessionId,
+        )
+      : null;
+    if (runtimeRun && ["starting", "running"].includes(runtimeRun.status)) {
+      if (imageUrlsRaw.length) {
+        throw new Error("运行中的 steer 目前只支持文字；请等待完成后用 Resume 附图。 ");
+      }
+      await apiPost("console/actions/steer", {
+        agent_id: state.selectedAgentId,
+        task_id: runtimeRun.task_id,
+        message_text: requestText,
+      });
+      clearPromptComposer(input);
+      toast("已 steer 当前 Agent");
+      await refreshConsole({ silent: true, keepSession: true });
+      return;
+    }
+    if (runtimeRun && state.selectedAgentId) {
+      const res = await apiPost("console/actions/resume", {
+        agent_id: state.selectedAgentId,
+        request_text: requestText,
+        unified_msg_origin: umo,
+        image_urls_raw: imageUrlsRaw,
+      });
+      if (!res.outcome) throw new Error(res.error || "resume 失败");
+      clearPromptComposer(input);
+      await refreshConsole({ silent: true, keepSession: false });
+      await loadRuntimeRun(res.outcome.agent_id, res.outcome.task_id, { scrollMode: "bottom" });
+      toast("已 Resume Agent");
+      return;
+    }
+
     const activeTask = getActiveTaskInSession();
     let res;
     if (activeTask) {
+      if (imageUrlsRaw.length) {
+        throw new Error("运行中的 steer 目前只支持文字；请等待任务完成后再附图。 ");
+      }
       res = await apiPost("console/actions/steer", {
         task_id: activeTask.task_id,
-        message_text: text,
+        message_text: requestText,
       });
+      clearPromptComposer(input);
       toast("已续接当前任务");
       await refreshConsole({ silent: true, keepSession: true });
       return;
     }
 
-    const parentId = state.selectedSessionId || "";
     res = await apiPost("console/actions/dispatch", {
       unified_msg_origin: umo,
       agent_name: agent,
-      request_text: text,
-      parent_task_id: parentId,
+      request_text: requestText,
+      run_in_background: true,
+      image_urls_raw: imageUrlsRaw,
     });
-    if (!res.task) throw new Error(res.error || "派发失败");
-    mergeTask(res.task);
-    updateKnownUmos();
-    state.selectedUmo = res.task.unified_msg_origin || state.selectedUmo;
-    await loadSession(parentId || res.task.task_id, { scrollMode: "bottom" });
-    toast(parentId ? "已发送到当前会话" : "已创建会话");
+    if (!res.outcome) throw new Error(res.error || "派发失败");
+    clearPromptComposer(input);
+    await refreshConsole({ silent: true, keepSession: false });
+    await loadRuntimeRun(res.outcome.agent_id, res.outcome.task_id, { scrollMode: "bottom" });
+    toast("已创建 Agent Run");
   } catch (err) {
     toast(err.message || "发送失败");
   } finally {
@@ -842,6 +1529,151 @@ async function deleteSession(taskId) {
   } catch (err) {
     toast(err.message || "删除失败");
   }
+}
+
+async function stopRuntimeRun(taskId) {
+  try {
+    await apiPost("console/actions/stop", { task_id: taskId });
+    toast("已请求停止");
+    await refreshConsole({ silent: true, keepSession: true });
+  } catch (err) {
+    toast(err.message || "停止失败");
+  }
+}
+
+async function readRuntimeResult(agentId, taskId) {
+  try {
+    const res = await apiPost("console/actions/result", {
+      agent_id: agentId,
+      task_id: taskId,
+      block: false,
+      timeout_ms: 0,
+    });
+    toast(res.outcome?.query_status || res.outcome?.status || "已查询");
+    await refreshConsole({ silent: true, keepSession: true });
+  } catch (err) {
+    toast(err.message || "读取结果失败");
+  }
+}
+
+async function deleteRuntimeAgent(agentId) {
+  try {
+    await apiPost(`console/agents/${encodeURIComponent(agentId)}/delete`, {
+      confirm_agent_id: agentId,
+    });
+    state.pendingDeleteAgentId = "";
+    if (state.selectedAgentId === agentId) await loadSession("");
+    toast("Agent 及其所有 Run 已删除");
+    await refreshConsole({ silent: true, keepSession: false });
+  } catch (err) {
+    toast(err.message || "删除 Agent 失败");
+  }
+}
+
+function requestDeleteRuntimeAgent(agentId) {
+  const runs = state.runtimeRuns[agentId] || [];
+  if (runs.some((run) => ACTIVE_STATUSES.has(run.status))) {
+    toast("Agent 仍有活跃 Run，请先停止");
+    return;
+  }
+  if (runs.some((run) => run.notification && !run.notification.delivered)) {
+    toast("Agent 仍有待通知结果，请先读取结果");
+    return;
+  }
+  if (state.pendingDeleteAgentId !== agentId) {
+    state.pendingDeleteAgentId = agentId;
+    window.clearTimeout(state.pendingDeleteAgentTimer);
+    state.pendingDeleteAgentTimer = window.setTimeout(() => {
+      if (state.pendingDeleteAgentId === agentId) {
+        state.pendingDeleteAgentId = "";
+        updateSessionList();
+      }
+    }, 3200);
+    updateSessionList();
+    toast("再次点击删除整个 Agent 及其所有 Run");
+    return;
+  }
+  window.clearTimeout(state.pendingDeleteAgentTimer);
+  state.pendingDeleteAgentId = "";
+  deleteRuntimeAgent(agentId);
+}
+
+function buildRuntimeMenuItems(agentId, taskId) {
+  const runs = state.runtimeRuns[agentId] || [];
+  const run = runs.find((item) => item.task_id === taskId);
+  const hasActiveRun = runs.some((item) => ACTIVE_STATUSES.has(item.status));
+  const hasPendingNotification = runs.some(
+    (item) => item.notification && !item.notification.delivered,
+  );
+  const items = [];
+  if (run && ACTIVE_STATUSES.has(run.status)) {
+    items.push({ action: "stop", label: "停止此 Run" });
+  }
+  items.push({ action: "result", label: "读取结果" });
+  items.push({
+    action: "delete-agent",
+    label: state.pendingDeleteAgentId === agentId ? "确认删除 Agent" : "删除 Agent…",
+    danger: true,
+    disabled: hasActiveRun || hasPendingNotification,
+    hint: hasActiveRun
+      ? "Agent 仍在运行"
+      : hasPendingNotification
+        ? "请先读取待通知结果"
+        : "",
+  });
+  return items;
+}
+
+function buildAuditMenuItems(taskId) {
+  const task = state.tasks.find((item) => item.task_id === taskId);
+  return [
+    { action: "pin", label: isPinned(task) ? "取消置顶" : "置顶" },
+    { action: "rename", label: "重命名" },
+    {
+      action: "delete",
+      label: state.pendingDeleteSessionId === taskId ? "确认删除" : "删除…",
+      danger: true,
+    },
+  ];
+}
+
+function closeSessionMenu() {
+  $("#sessionMenu")?.classList.add("hidden");
+  $$(".session-item.menu-open").forEach((item) => item.classList.remove("menu-open"));
+}
+
+function openSessionMenu(anchor, itemEl, context) {
+  const menu = $("#sessionMenu");
+  if (!menu) return;
+  const items =
+    context.kind === "runtime"
+      ? buildRuntimeMenuItems(context.agentId, context.taskId)
+      : buildAuditMenuItems(context.taskId);
+  menu.innerHTML = items
+    .map(
+      (item) => `
+        <button class="menu-item ${item.danger ? "danger" : ""}" type="button"
+          data-action="${escapeHtml(item.action)}" ${item.disabled ? "disabled" : ""}
+          ${item.hint ? `title="${escapeHtml(item.hint)}"` : ""}>
+          ${escapeHtml(item.label)}
+        </button>
+      `,
+    )
+    .join("");
+  menu.dataset.kind = context.kind;
+  menu.dataset.taskId = context.taskId || "";
+  menu.dataset.agentId = context.agentId || "";
+  menu.classList.remove("hidden");
+  itemEl?.classList.add("menu-open");
+  const rect = anchor.getBoundingClientRect();
+  const menuRect = menu.getBoundingClientRect();
+  menu.style.top = `${Math.max(8, Math.min(rect.bottom + 4, window.innerHeight - menuRect.height - 8))}px`;
+  menu.style.left = `${Math.max(8, Math.min(rect.left, window.innerWidth - menuRect.width - 8))}px`;
+}
+
+function closeMobileSidebar() {
+  $("#paneLeft")?.classList.remove("mobile-open");
+  $("#sidebarScrim")?.classList.remove("show");
 }
 
 function requestDeleteSession(taskId) {
@@ -921,17 +1753,20 @@ async function stopCurrentTask() {
   }
 }
 
-async function doneCurrentSession() {
-  const task = state.detail?.task || getSelectedRootTask();
-  const payload = task
-    ? { task_id: task.task_id }
-    : { unified_msg_origin: state.selectedUmo };
+async function readCurrentResult() {
+  const task = state.detail?.task;
+  if (!task) return;
   try {
-    await apiPost("console/actions/done", payload);
-    toast("已结束 Session");
+    const res = await apiPost("console/actions/result", {
+      task_id: task.task_id,
+      agent_id: task.agent_id || taskMeta(task).agent_id || "",
+      block: false,
+      timeout_ms: 0,
+    });
+    toast(res.outcome?.query_status || res.outcome?.status || "已查询");
     await refreshConsole({ silent: true, keepSession: true });
   } catch (err) {
-    toast(err.message || "结束失败");
+    toast(err.message || "读取结果失败");
   }
 }
 
@@ -940,9 +1775,9 @@ async function rerunCurrentTask() {
   if (!task) return;
   try {
     const res = await apiPost("console/actions/rerun", { task_id: task.task_id });
-    if (!res.task) throw new Error(res.error || "重跑失败");
-    mergeTask(res.task);
-    await loadSession(res.task.parent_task_id || res.task.task_id, { scrollMode: "bottom" });
+    if (!res.outcome) throw new Error(res.error || "重跑失败");
+    await refreshConsole({ silent: true, keepSession: false });
+    await loadRuntimeRun(res.outcome.agent_id, res.outcome.task_id, { scrollMode: "bottom" });
     toast("已重新派发");
   } catch (err) {
     toast(err.message || "重跑失败");
@@ -980,6 +1815,34 @@ window.handleSseMessage = async function handleSseMessage(event) {
 
   if (data.type === "reset") {
     await refreshConsole({ silent: true, keepSession: true });
+    return;
+  }
+
+  if (data.type === "runtime_trace" && data.agent_id && data.task_id) {
+    const run = (state.runtimeRuns[data.agent_id] || []).find(
+      (item) => item.task_id === data.task_id,
+    );
+    if (run) {
+      if (data.status) run.status = data.status;
+      run.tool_chain = data.tool_chain || {};
+    }
+    if (
+      state.selectedAgentId === data.agent_id &&
+      state.selectedSessionId === data.task_id
+    ) {
+      const task = state.sessionTasks.find((item) => item.task_id === data.task_id);
+      if (task) {
+        if (data.status) task.status = data.status;
+        task.meta = { ...task.meta, tool_chain: data.tool_chain || {} };
+        if (state.detail?.task?.task_id === data.task_id) state.detail.task = task;
+      }
+      const feed = $("#chatFeed");
+      const autoScroll = isAtBottom(feed);
+      renderChatFeed();
+      if (autoScroll) scrollToBottom(feed);
+      renderInspector();
+      updateSessionList();
+    }
     return;
   }
 
@@ -1069,10 +1932,17 @@ function fillSettings(config) {
     ($("#settingHideTransfer").checked = Boolean(config.hide_transfer_tools));
   $("#settingRawInput") &&
     ($("#settingRawInput").checked = Boolean(config.include_raw_user_input));
-  $("#settingSession") && ($("#settingSession").checked = Boolean(config.session_enabled));
   $("#settingLogRaw") && ($("#settingLogRaw").checked = Boolean(config.log_raw_llm_io));
-  $("#settingTimeout") &&
-    ($("#settingTimeout").value = config.session_timeout_minutes ?? "");
+  $("#settingForegroundTimeout") &&
+    ($("#settingForegroundTimeout").value = config.foreground_timeout_seconds ?? 50);
+  $("#settingMemoryAgents") &&
+    ($("#settingMemoryAgents").value = (config.memory_agent_names || []).join(", "));
+  $("#settingMaxPerUmo") &&
+    ($("#settingMaxPerUmo").value = config.max_active_per_umo ?? 5);
+  $("#settingMaxGlobal") &&
+    ($("#settingMaxGlobal").value = config.max_active_global ?? 20);
+  $("#settingRetention") &&
+    ($("#settingRetention").value = config.retention_days ?? 30);
   $("#settingPrompt") &&
     ($("#settingPrompt").value = config.dispatch_prompt_template || "");
 }
@@ -1093,19 +1963,86 @@ function bindEvents() {
     const item = target.closest(".session-item");
     if (!item) return;
     const taskId = item.dataset.id;
-    const actionButton = target.closest("[data-session-action]");
-    if (!actionButton && target.closest(".session-rename-form")) return;
+    const runtimeAgentId = item.dataset.runtimeAgent;
+    const menuButton = target.closest("[data-menu-kind]");
+    if (!menuButton && target.closest(".session-rename-form")) return;
 
-    if (actionButton) {
+    if (menuButton) {
       event.stopPropagation();
-      const action = actionButton.dataset.sessionAction;
-      if (action === "delete") requestDeleteSession(taskId);
-      if (action === "rename") startRenameSession(taskId);
-      if (action === "pin") await togglePinSession(taskId);
+      const alreadyOpen = !$("#sessionMenu")?.classList.contains("hidden");
+      closeSessionMenu();
+      if (alreadyOpen && item.classList.contains("menu-open")) return;
+      openSessionMenu(menuButton, item, {
+        kind: menuButton.dataset.menuKind,
+        taskId,
+        agentId: runtimeAgentId || "",
+      });
       return;
     }
 
-    await loadSession(taskId);
+    closeSessionMenu();
+    closeMobileSidebar();
+    if (runtimeAgentId) {
+      await loadRuntimeRun(runtimeAgentId, taskId);
+    } else {
+      await loadSession(taskId);
+    }
+  });
+
+  $("#sessionMenu")?.addEventListener("click", async (event) => {
+    const target = event.target instanceof Element ? event.target : null;
+    const button = target?.closest(".menu-item");
+    if (!button || button.disabled) return;
+    const menu = $("#sessionMenu");
+    const action = button.dataset.action;
+    const taskId = menu?.dataset.taskId || "";
+    const agentId = menu?.dataset.agentId || "";
+    closeSessionMenu();
+    if (action === "stop") await stopRuntimeRun(taskId);
+    if (action === "result") await readRuntimeResult(agentId, taskId);
+    if (action === "delete-agent") requestDeleteRuntimeAgent(agentId);
+    if (action === "pin") await togglePinSession(taskId);
+    if (action === "rename") startRenameSession(taskId);
+    if (action === "delete") requestDeleteSession(taskId);
+  });
+
+  document.addEventListener("click", (event) => {
+    if (!(event.target instanceof Element)) return;
+    if (event.target.closest("#sessionMenu") || event.target.closest("[data-menu-kind]")) return;
+    closeSessionMenu();
+    if (
+      event.target.closest("#agentMenu") ||
+      event.target.closest("#dispatchAgentBtn")
+    ) {
+      return;
+    }
+    closeAgentMenu();
+  });
+
+  document.addEventListener("keydown", (event) => {
+    if (event.key !== "Escape") return;
+    closeSessionMenu();
+    closeAgentMenu();
+    const panel = $("#paneRight");
+    if (panel?.classList.contains("open")) {
+      panel.classList.remove("open");
+      panel.setAttribute("aria-hidden", "true");
+    }
+    closeMobileSidebar();
+  });
+
+  $("#dispatchAgentBtn")?.addEventListener("click", (event) => {
+    event.stopPropagation();
+    toggleAgentMenu();
+  });
+
+  $("#agentMenu")?.addEventListener("click", (event) => {
+    const target = event.target instanceof Element ? event.target : null;
+    const item = target?.closest("[data-agent-name]");
+    if (!item || item.disabled) return;
+    state.dispatchAgent = item.dataset.agentName || getConfiguredDefaultAgent();
+    syncDispatchAgentLabel();
+    closeAgentMenu();
   });
 
   sessionList?.addEventListener("submit", async (event) => {
@@ -1166,6 +2103,15 @@ function bindEvents() {
   });
 
   const promptText = $("#promptText");
+  $("#attachButton")?.addEventListener("click", () => $("#imageInput")?.click());
+  $("#imageInput")?.addEventListener("change", (event) => {
+    addImageFiles(event.target.files);
+    event.target.value = "";
+  });
+  $("#attachmentStrip")?.addEventListener("click", (event) => {
+    const button = event.target.closest("[data-remove-attachment]");
+    if (button) removeAttachment(button.dataset.removeAttachment);
+  });
   promptText?.addEventListener("keydown", (event) => {
     if (event.key === "Enter" && !event.shiftKey) {
       event.preventDefault();
@@ -1194,7 +2140,26 @@ function bindEvents() {
   );
 
   $("#toggleRight")?.addEventListener("click", () => {
-    $("#paneRight")?.classList.toggle("collapsed");
+    const panel = $("#paneRight");
+    if (!panel) return;
+    const open = panel.classList.toggle("open");
+    panel.setAttribute("aria-hidden", open ? "false" : "true");
+  });
+
+  $("#closeDetail")?.addEventListener("click", () => {
+    const panel = $("#paneRight");
+    if (!panel) return;
+    panel.classList.remove("open");
+    panel.setAttribute("aria-hidden", "true");
+  });
+
+  $("#collapseSidebar")?.addEventListener("click", () => {
+    const collapsed = $("#paneLeft")?.classList.toggle("collapsed");
+    try {
+      localStorage.setItem("maid_console_sidebar_collapsed", collapsed ? "1" : "");
+    } catch {
+      /* storage unavailable in sandboxed iframe: state is session-only */
+    }
   });
 
   $$(".tab").forEach((button) => {
@@ -1209,7 +2174,7 @@ function bindEvents() {
 
   $("#stopButton")?.addEventListener("click", stopCurrentTask);
   $("#rerunButton")?.addEventListener("click", rerunCurrentTask);
-  $("#doneButton")?.addEventListener("click", doneCurrentSession);
+  $("#resultButton")?.addEventListener("click", readCurrentResult);
   $("#exportButton")?.addEventListener("click", exportHistory);
 
   $$(".close-modal").forEach((button) => {
@@ -1218,13 +2183,26 @@ function bindEvents() {
     });
   });
 
-  $("#settingsBtn")?.addEventListener("click", () => {
+  $("#settingsBtn")?.addEventListener("click", async () => {
+    try {
+      // silent poll 不会写表单 DOM；打开时再从内存/接口回填。
+      if (state.settings) {
+        fillSettings(state.settings);
+      } else {
+        await loadOverview({ applyForm: true });
+      }
+    } catch (err) {
+      toast(err.message || "加载配置失败");
+    }
     $("#settingsModal")?.classList.remove("hidden");
   });
 
   $("#settingsForm")?.addEventListener("submit", async (event) => {
     event.preventDefault();
-    const timeoutValue = Number($("#settingTimeout")?.value || 0);
+    const foregroundTimeout = Number($("#settingForegroundTimeout")?.value || 50);
+    const maxPerUmo = Number($("#settingMaxPerUmo")?.value || 5);
+    const maxGlobal = Number($("#settingMaxGlobal")?.value || 20);
+    const retentionDays = Number($("#settingRetention")?.value || 30);
     const payload = {
       default_agent_name: $("#settingDefaultAgent")?.value.trim() || "",
       allowed_agent_names: ($("#settingAllowedAgents")?.value || "")
@@ -1234,9 +2212,15 @@ function bindEvents() {
       hide_native_tools: Boolean($("#settingHideNative")?.checked),
       hide_transfer_tools: Boolean($("#settingHideTransfer")?.checked),
       include_raw_user_input: Boolean($("#settingRawInput")?.checked),
-      session_enabled: Boolean($("#settingSession")?.checked),
       log_raw_llm_io: Boolean($("#settingLogRaw")?.checked),
-      session_timeout_minutes: timeoutValue > 0 ? timeoutValue : 60,
+      foreground_timeout_seconds: Math.min(55, Math.max(1, foregroundTimeout)),
+      memory_agent_names: ($("#settingMemoryAgents")?.value || "")
+        .split(",")
+        .map((item) => item.trim())
+        .filter(Boolean),
+      max_active_per_umo: Math.max(1, maxPerUmo),
+      max_active_global: Math.max(1, maxGlobal),
+      retention_days: Math.max(1, retentionDays),
       dispatch_prompt_template: $("#settingPrompt")?.value || "",
     };
     try {
@@ -1251,20 +2235,30 @@ function bindEvents() {
   });
 
   $("#toggleLeft")?.addEventListener("click", () => {
-    const pane = $("#paneLeft");
-    if (pane) pane.style.display = pane.style.display === "none" ? "flex" : "none";
+    $("#paneLeft")?.classList.add("mobile-open");
+    $("#sidebarScrim")?.classList.add("show");
   });
+
+  $("#sidebarScrim")?.addEventListener("click", closeMobileSidebar);
 
   window.addEventListener("beforeunload", () => {
     if (state.subscriptionId && bridge?.unsubscribeSSE) {
       bridge.unsubscribeSSE(state.subscriptionId);
     }
     window.clearInterval(state.pollTimer);
+    window.clearInterval(state.durationTimer);
   });
 }
 
 async function boot() {
   bindEvents();
+  try {
+    if (localStorage.getItem("maid_console_sidebar_collapsed") === "1") {
+      $("#paneLeft")?.classList.add("collapsed");
+    }
+  } catch {
+    /* storage unavailable in sandboxed iframe */
+  }
   bridge = window.AstrBotPluginPage || null;
   if (!bridge) {
     setStreamState("signal-error", "桥接缺失");
@@ -1273,9 +2267,14 @@ async function boot() {
   }
 
   await bridge.ready();
+  state.dispatchAgent = getConfiguredDefaultAgent();
+  syncDispatchAgentLabel();
   setStreamState("signal-poll", "轮询同步");
   startPolling();
+  startDurationTicker();
   await refreshConsole({ silent: true, keepSession: false });
+  // silent 刷新不写表单，启动后用已加载的 settings 回填一次。
+  if (state.settings) fillSettings(state.settings);
   await subscribeStream();
 }
 

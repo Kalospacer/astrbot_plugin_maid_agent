@@ -33,10 +33,7 @@ const state = {
   thinkingOpenState: {},
   lastFeedFingerprint: "",
   lastSessionListFingerprint: "",
-  renamingSessionId: "",
-  pendingDeleteSessionId: "",
   pendingDeleteAgentId: "",
-  pendingDeleteTimer: 0,
   pendingDeleteAgentTimer: 0,
   attachments: [],
 };
@@ -237,6 +234,32 @@ function afterMarkdownSanitize(root) {
 function compactId(value) {
   const text = String(value || "");
   return text.length > 12 ? `${text.slice(0, 8)}…${text.slice(-4)}` : text;
+}
+
+// 50 个二次元女角色名（真实动画作品），按 agent_id 稳定映射，避免在 UI 上暴露哈希。
+const ANIME_ALIASES = [
+  "Ganyu", "Mafuyu", "Sakiko", "Hu Tao", "Raiden Shogun", "Yae Miko", "Nahida",
+  "Furina", "Navia", "Arlecchino", "Shenhe", "Yelan", "Nilou", "Kaveh",
+  "Alhaitham", "Eula", "Ayaka", "Yoimiya", "Itto", "Sara",
+  "Miko", "Collei", "Lumine", "Aether", "Paimon",
+  "Makima", "Power", "Kobeni", "Himeno", "Reze",
+  "Yor", "Anya", "Becky", "Fiona", "Sylvia",
+  "Rika", "Touko", "Sayaka", "Kyouko", "Homura",
+  "Madoka", "Mami", "Nagisa", "Hitomi", "Kyoko",
+  "Reina", "Kumiko", "Asuka", "Haruka", "Aoi",
+];
+
+function aliasForAgentId(agentId) {
+  const id = String(agentId || "");
+  if (!id) return "Unknown";
+  // FNV-1a 哈希 → 稳定落到别名表，同一 agent_id 永远同名。
+  let hash = 2166136261;
+  for (let i = 0; i < id.length; i += 1) {
+    hash ^= id.charCodeAt(i);
+    hash = Math.imul(hash, 16777619);
+  }
+  const idx = Math.abs(hash) % ANIME_ALIASES.length;
+  return ANIME_ALIASES[idx];
 }
 
 function formatTime(value) {
@@ -478,10 +501,6 @@ function taskMeta(task) {
   return task?.meta && typeof task.meta === "object" ? task.meta : {};
 }
 
-function isPinned(task) {
-  return Boolean(taskMeta(task).pinned);
-}
-
 function getTaskRootId(task) {
   return task?.parent_task_id || task?.task_id || "";
 }
@@ -675,11 +694,13 @@ async function refreshConsole({ silent = false, keepSession = true } = {}) {
   const selectedBefore = state.selectedSessionId;
   try {
     state.pollCount += 1;
+    // runtime 必须先于 tasks 落库，否则 updateSessionList 在 runtime 还没回来时
+    // 拿不到 runtimeRuns，首帧会空。
+    await loadRuntimeAgents({ force: !silent });
     await loadTasks();
     await Promise.allSettled([
       loadOverview({ applyForm: !silent }),
       loadAgents(),
-      loadRuntimeAgents({ force: !silent }),
     ]);
 
     if (keepSession && selectedBefore && state.selectedAgentId) {
@@ -861,21 +882,11 @@ function buildSessionListFingerprint() {
       return `${agent.agent_id}:${agent.agent_name}:${runs}`;
     })
     .join("|");
-  const auditPart = state.tasks
-    .filter((task) => task.unified_msg_origin === state.selectedUmo && !task.parent_task_id)
-    .map(
-      (task) =>
-        `${task.task_id}:${task.status}:${task.updated_at}:${taskTitle(task)}:${isPinned(task) ? 1 : 0}`,
-    )
-    .join("|");
   return [
     state.selectedUmo,
     state.selectedSessionId,
-    state.renamingSessionId,
-    state.pendingDeleteSessionId,
     state.pendingDeleteAgentId,
     runtimePart,
-    auditPart,
   ].join("#");
 }
 
@@ -914,32 +925,15 @@ function updateSessionList() {
   const runtimeAgents = state.runtimeAgents
     .filter((agent) => agent.unified_msg_origin === state.selectedUmo)
     .sort((a, b) => new Date(b.updated_at) - new Date(a.updated_at));
-  const runtimeTaskIds = new Set(
-    Object.values(state.runtimeRuns)
-      .flat()
-      .map((run) => run.task_id),
-  );
-  const rootTasks = state.tasks
-    .filter(
-      (task) =>
-        task.unified_msg_origin === state.selectedUmo &&
-        !task.parent_task_id &&
-        !runtimeTaskIds.has(task.task_id),
-    )
-    .sort((a, b) => {
-      const pinnedDelta = Number(isPinned(b)) - Number(isPinned(a));
-      if (pinnedDelta !== 0) return pinnedDelta;
-      return new Date(b.updated_at) - new Date(a.updated_at);
-    });
 
-  if (runtimeAgents.length === 0 && rootTasks.length === 0) {
+  if (runtimeAgents.length === 0) {
     list.innerHTML = `<div class="empty-state">暂无 Agent / Run</div>`;
     return;
   }
 
   const MORE_SVG = `<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><circle cx="5" cy="12" r="1.8"/><circle cx="12" cy="12" r="1.8"/><circle cx="19" cy="12" r="1.8"/></svg>`;
 
-  const runtimeHtml = runtimeAgents
+  list.innerHTML = runtimeAgents
     .map((agent) => {
       const runs = [...(state.runtimeRuns[agent.agent_id] || [])].sort(
         (a, b) => new Date(b.created_at) - new Date(a.created_at),
@@ -962,38 +956,11 @@ function updateSessionList() {
         )
         .join("");
       return `
-        <div class="session-group-title">Agent ${escapeHtml(compactId(agent.agent_id))} · ${escapeHtml(agent.agent_name)}</div>
+        <div class="session-group-title">${escapeHtml(aliasForAgentId(agent.agent_id))} · ${escapeHtml(agent.agent_name)}</div>
         ${runsHtml || '<div class="empty-state">暂无 Run</div>'}
       `;
     })
     .join("");
-
-  list.innerHTML =
-    runtimeHtml +
-    (rootTasks.length ? `<div class="session-group-title">SQLite 审计记录</div>` : "") +
-    rootTasks
-      .map((task) => {
-        const active = task.task_id === state.selectedSessionId ? "active" : "";
-        const pinned = isPinned(task) ? "pinned" : "";
-        const deleting = task.task_id === state.pendingDeleteSessionId ? "delete-armed" : "";
-        const isRenaming = task.task_id === state.renamingSessionId;
-        const titleHtml = isRenaming
-          ? `
-            <form class="session-rename-form" data-id="${escapeHtml(task.task_id)}">
-              <input class="session-rename-input" value="${escapeHtml(taskTitle(task))}" maxlength="120" autocomplete="off" />
-            </form>
-          `
-          : `<div class="session-title">${escapeHtml(taskTitle(task))}</div>`;
-        return `
-          <div class="session-item ${active} ${pinned} ${deleting}" data-id="${escapeHtml(task.task_id)}">
-            ${titleHtml}
-            <div class="session-actions">
-              <button class="session-action-btn" type="button" data-menu-kind="audit" aria-label="更多操作" title="更多操作">${MORE_SVG}</button>
-            </div>
-          </div>
-        `;
-      })
-      .join("");
 }
 
 function captureThinkingOpenState() {
@@ -1402,8 +1369,7 @@ function renderInspector() {
   $("#taskFacts").innerHTML = `
     <dt>状态</dt><dd>${escapeHtml(task.status)}</dd>
     <dt>类型</dt><dd>${escapeHtml(task.kind)}</dd>
-    <dt>Agent</dt><dd>${escapeHtml(task.agent_name)}</dd>
-    <dt>Agent ID</dt><dd>${escapeHtml(compactId(task.agent_id || taskMeta(task).agent_id))}</dd>
+    <dt>Agent</dt><dd>${escapeHtml(aliasForAgentId(task.agent_id || taskMeta(task).agent_id))}</dd>
     <dt>模式</dt><dd>${escapeHtml(task.mode || taskMeta(task).run_mode || "")}</dd>
     <dt>通知</dt><dd>${escapeHtml(task.notification?.notification_id || taskMeta(task).notification?.notification_id || "-")}</dd>
     <dt>来源 UMO</dt><dd>${escapeHtml(task.unified_msg_origin)}</dd>
@@ -1520,17 +1486,6 @@ async function submitPrompt() {
   }
 }
 
-async function deleteSession(taskId) {
-  try {
-    await apiPost(`console/tasks/${encodeURIComponent(taskId)}/delete`, {});
-    toast("已删除");
-    await loadSession("");
-    await refreshConsole({ silent: true, keepSession: false });
-  } catch (err) {
-    toast(err.message || "删除失败");
-  }
-}
-
 async function stopRuntimeRun(taskId) {
   try {
     await apiPost("console/actions/stop", { task_id: taskId });
@@ -1624,19 +1579,6 @@ function buildRuntimeMenuItems(agentId, taskId) {
   return items;
 }
 
-function buildAuditMenuItems(taskId) {
-  const task = state.tasks.find((item) => item.task_id === taskId);
-  return [
-    { action: "pin", label: isPinned(task) ? "取消置顶" : "置顶" },
-    { action: "rename", label: "重命名" },
-    {
-      action: "delete",
-      label: state.pendingDeleteSessionId === taskId ? "确认删除" : "删除…",
-      danger: true,
-    },
-  ];
-}
-
 function closeSessionMenu() {
   $("#sessionMenu")?.classList.add("hidden");
   $$(".session-item.menu-open").forEach((item) => item.classList.remove("menu-open"));
@@ -1645,10 +1587,7 @@ function closeSessionMenu() {
 function openSessionMenu(anchor, itemEl, context) {
   const menu = $("#sessionMenu");
   if (!menu) return;
-  const items =
-    context.kind === "runtime"
-      ? buildRuntimeMenuItems(context.agentId, context.taskId)
-      : buildAuditMenuItems(context.taskId);
+  const items = buildRuntimeMenuItems(context.agentId, context.taskId);
   menu.innerHTML = items
     .map(
       (item) => `
@@ -1674,71 +1613,6 @@ function openSessionMenu(anchor, itemEl, context) {
 function closeMobileSidebar() {
   $("#paneLeft")?.classList.remove("mobile-open");
   $("#sidebarScrim")?.classList.remove("show");
-}
-
-function requestDeleteSession(taskId) {
-  if (state.pendingDeleteSessionId !== taskId) {
-    state.pendingDeleteSessionId = taskId;
-    window.clearTimeout(state.pendingDeleteTimer);
-    state.pendingDeleteTimer = window.setTimeout(() => {
-      if (state.pendingDeleteSessionId === taskId) {
-        state.pendingDeleteSessionId = "";
-        updateSessionList();
-      }
-    }, 3200);
-    updateSessionList();
-    toast("再次点击删除此对话");
-    return;
-  }
-  window.clearTimeout(state.pendingDeleteTimer);
-  state.pendingDeleteSessionId = "";
-  deleteSession(taskId);
-}
-
-function startRenameSession(taskId) {
-  state.renamingSessionId = taskId;
-  updateSessionList();
-  window.setTimeout(() => {
-    const input = $(".session-rename-input");
-    if (input) {
-      input.focus();
-      input.select();
-    }
-  }, 0);
-}
-
-async function renameSession(taskId, nextTitle) {
-  const task = state.tasks.find((item) => item.task_id === taskId);
-  const title = String(nextTitle || "").trim();
-  state.renamingSessionId = "";
-  if (!title || title === taskTitle(task)) {
-    updateSessionList();
-    return;
-  }
-  try {
-    const res = await apiPost(`console/tasks/${encodeURIComponent(taskId)}/update`, { title });
-    if (res.task) mergeTask(res.task);
-    updateSessionList();
-    renderInspector();
-    toast("已重命名");
-  } catch (err) {
-    toast(err.message || "重命名失败");
-  }
-}
-
-async function togglePinSession(taskId) {
-  const task = state.tasks.find((item) => item.task_id === taskId);
-  if (!task) return;
-  try {
-    const res = await apiPost(`console/tasks/${encodeURIComponent(taskId)}/update`, {
-      meta: { pinned: !isPinned(task) },
-    });
-    if (res.task) mergeTask(res.task);
-    updateSessionList();
-    toast(isPinned(res.task || task) ? "已置顶" : "已取消置顶");
-  } catch (err) {
-    toast(err.message || "置顶失败");
-  }
 }
 
 async function stopCurrentTask() {
@@ -1965,7 +1839,6 @@ function bindEvents() {
     const taskId = item.dataset.id;
     const runtimeAgentId = item.dataset.runtimeAgent;
     const menuButton = target.closest("[data-menu-kind]");
-    if (!menuButton && target.closest(".session-rename-form")) return;
 
     if (menuButton) {
       event.stopPropagation();
@@ -2001,9 +1874,6 @@ function bindEvents() {
     if (action === "stop") await stopRuntimeRun(taskId);
     if (action === "result") await readRuntimeResult(agentId, taskId);
     if (action === "delete-agent") requestDeleteRuntimeAgent(agentId);
-    if (action === "pin") await togglePinSession(taskId);
-    if (action === "rename") startRenameSession(taskId);
-    if (action === "delete") requestDeleteSession(taskId);
   });
 
   document.addEventListener("click", (event) => {
@@ -2043,32 +1913,6 @@ function bindEvents() {
     state.dispatchAgent = item.dataset.agentName || getConfiguredDefaultAgent();
     syncDispatchAgentLabel();
     closeAgentMenu();
-  });
-
-  sessionList?.addEventListener("submit", async (event) => {
-    const form = event.target instanceof Element ? event.target.closest(".session-rename-form") : null;
-    if (!form) return;
-    event.preventDefault();
-    const input = form.querySelector(".session-rename-input");
-    await renameSession(form.dataset.id, input?.value || "");
-  });
-
-  sessionList?.addEventListener("focusout", async (event) => {
-    const input = event.target instanceof Element ? event.target.closest(".session-rename-input") : null;
-    if (!input) return;
-    const form = input.closest(".session-rename-form");
-    if (!form || state.renamingSessionId !== form.dataset.id) return;
-    await renameSession(form.dataset.id, input.value);
-  });
-
-  sessionList?.addEventListener("keydown", (event) => {
-    const input = event.target instanceof Element ? event.target.closest(".session-rename-input") : null;
-    if (!input) return;
-    if (event.key === "Escape") {
-      event.preventDefault();
-      state.renamingSessionId = "";
-      updateSessionList();
-    }
   });
 
   $("#umoSwitcher")?.addEventListener("click", () => {

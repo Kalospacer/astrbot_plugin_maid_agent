@@ -3,6 +3,16 @@ let bridge = window.AstrBotPluginPage || null;
 const ACTIVE_STATUSES = new Set(["queued", "starting", "running", "stopping"]);
 const QUIET_EVENT_TYPES = new Set(["queued", "finished"]);
 
+const STAR_SVG = `<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 2c.6 4.9 1.6 6.9 3.3 8.2 1.3 1 3.2 1.5 6.7 1.8-4.9.6-6.9 1.6-8.2 3.3-1 1.3-1.5 3.2-1.8 6.7-.6-4.9-1.6-6.9-3.3-8.2C7.4 12.8 5.5 12.3 2 12c4.9-.6 6.9-1.6 8.2-3.3 1-1.3 1.5-3.2 1.8-6.7Z"/></svg>`;
+const HERO_STAR_SVG = STAR_SVG.replace('width="14" height="14"', 'width="40" height="40"');
+
+function greetingByHour() {
+  const hour = new Date().getHours();
+  if (hour >= 5 && hour < 11) return "早上好";
+  if (hour >= 11 && hour < 18) return "下午好";
+  return "晚上好";
+}
+
 const state = {
   tasks: [],
   umos: [],
@@ -573,14 +583,12 @@ function updateSessionList() {
     return;
   }
 
+  const MORE_SVG = `<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><circle cx="5" cy="12" r="1.8"/><circle cx="12" cy="12" r="1.8"/><circle cx="19" cy="12" r="1.8"/></svg>`;
+
   const runtimeHtml = runtimeAgents
     .map((agent) => {
       const runs = [...(state.runtimeRuns[agent.agent_id] || [])].sort(
         (a, b) => new Date(b.created_at) - new Date(a.created_at),
-      );
-      const hasActiveRun = runs.some((run) => ACTIVE_STATUSES.has(run.status));
-      const hasPendingNotification = runs.some(
-        (run) => run.notification && !run.notification.delivered,
       );
       const deletingAgent = agent.agent_id === state.pendingDeleteAgentId;
       const runsHtml = runs
@@ -589,21 +597,11 @@ function updateSessionList() {
             <div class="session-item runtime-session-item ${run.task_id === state.selectedSessionId ? "active" : ""} ${deletingAgent ? "delete-armed" : ""}"
                  data-id="${escapeHtml(run.task_id)}" data-runtime-agent="${escapeHtml(agent.agent_id)}">
               <div class="session-copy">
-                <div class="session-title">↳ ${escapeHtml(run.request_text || compactId(run.task_id))}</div>
-                <small>${escapeHtml(run.mode)} · ${escapeHtml(run.status)}${run.notification && !run.notification.delivered ? " · 待通知" : ""}</small>
+                <div class="session-title">${escapeHtml(run.request_text || compactId(run.task_id))}</div>
+                <small><span class="status-dot status-${escapeHtml(run.status)}"></span>${escapeHtml(run.mode)} · ${escapeHtml(run.status)}${run.notification && !run.notification.delivered ? " · 待通知" : ""}</small>
               </div>
               <div class="session-actions">
-                ${ACTIVE_STATUSES.has(run.status) ? `
-                  <button class="session-action-btn" type="button" data-runtime-action="stop" aria-label="停止" title="停止此 Run">
-                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="6" y="6" width="12" height="12" rx="1"></rect></svg>
-                  </button>
-                ` : ""}
-                <button class="session-action-btn" type="button" data-runtime-action="result" aria-label="读取结果" title="读取此 Run 的结果">
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 4h16v16H4z"></path><path d="M8 9h8M8 13h6M8 17h4"></path></svg>
-                </button>
-                <button class="session-action-btn delete-btn" type="button" data-runtime-action="delete-agent" aria-label="删除 Agent" title="${hasActiveRun ? "Agent 仍在运行，无法删除" : hasPendingNotification ? "请先读取待通知结果" : deletingAgent ? "再次点击确认删除整个 Agent" : "删除整个 Agent（含所有 Run）"}" ${hasActiveRun || hasPendingNotification ? "disabled" : ""}>
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>
-                </button>
+                <button class="session-action-btn" type="button" data-menu-kind="runtime" aria-label="更多操作" title="更多操作">${MORE_SVG}</button>
               </div>
             </div>
           `,
@@ -636,15 +634,7 @@ function updateSessionList() {
           <div class="session-item ${active} ${pinned} ${deleting}" data-id="${escapeHtml(task.task_id)}">
             ${titleHtml}
             <div class="session-actions">
-              <button class="session-action-btn pin-btn" type="button" data-session-action="pin" aria-label="置顶" title="${isPinned(task) ? "取消置顶" : "置顶"}">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m15 4 5 5-4 4v5l-2 2-5-5-4 4-1-1 4-4-5-5 2-2h5l4-4Z"></path></svg>
-              </button>
-              <button class="session-action-btn rename-btn" type="button" data-session-action="rename" aria-label="重命名" title="重命名">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9"></path><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"></path></svg>
-              </button>
-              <button class="session-action-btn delete-btn" type="button" data-session-action="delete" aria-label="删除" title="${deleting ? "再次点击确认删除" : "删除"}">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>
-              </button>
+              <button class="session-action-btn" type="button" data-menu-kind="audit" aria-label="更多操作" title="更多操作">${MORE_SVG}</button>
             </div>
           </div>
         `;
@@ -669,17 +659,25 @@ function getThinkingOpenAttribute(task, defaultOpen) {
   return shouldOpen ? "open" : "";
 }
 
+function renderChatHeader() {
+  const node = $("#chatTitle");
+  if (!node) return;
+  const root = state.sessionTasks[0];
+  node.textContent = state.selectedSessionId && root ? taskTitle(root) : "";
+}
+
 function renderChatFeed() {
   const feed = $("#chatFeed");
   if (!feed) return;
+  $(".pane-center")?.classList.toggle("centered", !state.selectedSessionId);
+  renderChatHeader();
 
   if (!state.selectedSessionId) {
     feed.classList.add("is-empty");
     feed.innerHTML = `
       <div class="empty-hero" id="emptyHero">
-        <div class="brand-logo">
-          <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a10 10 0 1 0 10 10H12V2Z"></path><path d="M12 12 2.1 7.1"></path><path d="m12 12 9.9 4.9"></path></svg>
-        </div>
+        <div class="brand-logo">${HERO_STAR_SVG}</div>
+        <h1 class="hero-greeting">${escapeHtml(greetingByHour())}</h1>
       </div>
     `;
     $("#promptText")?.focus();
@@ -727,7 +725,7 @@ function renderChatFeed() {
       html += `
         <div class="chat-message maid">
           <div class="chat-message-inner">
-            <div class="chat-avatar">M</div>
+            <div class="chat-avatar">${STAR_SVG}</div>
             <div class="assistant-flow">
       `;
 
@@ -1239,6 +1237,84 @@ function requestDeleteRuntimeAgent(agentId) {
   deleteRuntimeAgent(agentId);
 }
 
+function buildRuntimeMenuItems(agentId, taskId) {
+  const runs = state.runtimeRuns[agentId] || [];
+  const run = runs.find((item) => item.task_id === taskId);
+  const hasActiveRun = runs.some((item) => ACTIVE_STATUSES.has(item.status));
+  const hasPendingNotification = runs.some(
+    (item) => item.notification && !item.notification.delivered,
+  );
+  const items = [];
+  if (run && ACTIVE_STATUSES.has(run.status)) {
+    items.push({ action: "stop", label: "停止此 Run" });
+  }
+  items.push({ action: "result", label: "读取结果" });
+  items.push({
+    action: "delete-agent",
+    label: state.pendingDeleteAgentId === agentId ? "确认删除 Agent" : "删除 Agent…",
+    danger: true,
+    disabled: hasActiveRun || hasPendingNotification,
+    hint: hasActiveRun
+      ? "Agent 仍在运行"
+      : hasPendingNotification
+        ? "请先读取待通知结果"
+        : "",
+  });
+  return items;
+}
+
+function buildAuditMenuItems(taskId) {
+  const task = state.tasks.find((item) => item.task_id === taskId);
+  return [
+    { action: "pin", label: isPinned(task) ? "取消置顶" : "置顶" },
+    { action: "rename", label: "重命名" },
+    {
+      action: "delete",
+      label: state.pendingDeleteSessionId === taskId ? "确认删除" : "删除…",
+      danger: true,
+    },
+  ];
+}
+
+function closeSessionMenu() {
+  $("#sessionMenu")?.classList.add("hidden");
+  $$(".session-item.menu-open").forEach((item) => item.classList.remove("menu-open"));
+}
+
+function openSessionMenu(anchor, itemEl, context) {
+  const menu = $("#sessionMenu");
+  if (!menu) return;
+  const items =
+    context.kind === "runtime"
+      ? buildRuntimeMenuItems(context.agentId, context.taskId)
+      : buildAuditMenuItems(context.taskId);
+  menu.innerHTML = items
+    .map(
+      (item) => `
+        <button class="menu-item ${item.danger ? "danger" : ""}" type="button"
+          data-action="${escapeHtml(item.action)}" ${item.disabled ? "disabled" : ""}
+          ${item.hint ? `title="${escapeHtml(item.hint)}"` : ""}>
+          ${escapeHtml(item.label)}
+        </button>
+      `,
+    )
+    .join("");
+  menu.dataset.kind = context.kind;
+  menu.dataset.taskId = context.taskId || "";
+  menu.dataset.agentId = context.agentId || "";
+  menu.classList.remove("hidden");
+  itemEl?.classList.add("menu-open");
+  const rect = anchor.getBoundingClientRect();
+  const menuRect = menu.getBoundingClientRect();
+  menu.style.top = `${Math.max(8, Math.min(rect.bottom + 4, window.innerHeight - menuRect.height - 8))}px`;
+  menu.style.left = `${Math.max(8, Math.min(rect.left, window.innerWidth - menuRect.width - 8))}px`;
+}
+
+function closeMobileSidebar() {
+  $("#paneLeft")?.classList.remove("mobile-open");
+  $("#sidebarScrim")?.classList.remove("show");
+}
+
 function requestDeleteSession(taskId) {
   if (state.pendingDeleteSessionId !== taskId) {
     state.pendingDeleteSessionId = taskId;
@@ -1527,27 +1603,63 @@ function bindEvents() {
     if (!item) return;
     const taskId = item.dataset.id;
     const runtimeAgentId = item.dataset.runtimeAgent;
-    const actionButton = target.closest("[data-session-action], [data-runtime-action]");
-    if (!actionButton && target.closest(".session-rename-form")) return;
+    const menuButton = target.closest("[data-menu-kind]");
+    if (!menuButton && target.closest(".session-rename-form")) return;
 
-    if (actionButton) {
+    if (menuButton) {
       event.stopPropagation();
-      const sessionAction = actionButton.dataset.sessionAction;
-      const runtimeAction = actionButton.dataset.runtimeAction;
-      if (sessionAction === "delete") requestDeleteSession(taskId);
-      if (sessionAction === "rename") startRenameSession(taskId);
-      if (sessionAction === "pin") await togglePinSession(taskId);
-      if (runtimeAction === "stop") await stopRuntimeRun(taskId);
-      if (runtimeAction === "result") await readRuntimeResult(runtimeAgentId, taskId);
-      if (runtimeAction === "delete-agent") requestDeleteRuntimeAgent(runtimeAgentId);
+      const alreadyOpen = !$("#sessionMenu")?.classList.contains("hidden");
+      closeSessionMenu();
+      if (alreadyOpen && item.classList.contains("menu-open")) return;
+      openSessionMenu(menuButton, item, {
+        kind: menuButton.dataset.menuKind,
+        taskId,
+        agentId: runtimeAgentId || "",
+      });
       return;
     }
 
+    closeSessionMenu();
+    closeMobileSidebar();
     if (runtimeAgentId) {
       await loadRuntimeRun(runtimeAgentId, taskId);
     } else {
       await loadSession(taskId);
     }
+  });
+
+  $("#sessionMenu")?.addEventListener("click", async (event) => {
+    const target = event.target instanceof Element ? event.target : null;
+    const button = target?.closest(".menu-item");
+    if (!button || button.disabled) return;
+    const menu = $("#sessionMenu");
+    const action = button.dataset.action;
+    const taskId = menu?.dataset.taskId || "";
+    const agentId = menu?.dataset.agentId || "";
+    closeSessionMenu();
+    if (action === "stop") await stopRuntimeRun(taskId);
+    if (action === "result") await readRuntimeResult(agentId, taskId);
+    if (action === "delete-agent") requestDeleteRuntimeAgent(agentId);
+    if (action === "pin") await togglePinSession(taskId);
+    if (action === "rename") startRenameSession(taskId);
+    if (action === "delete") requestDeleteSession(taskId);
+  });
+
+  document.addEventListener("click", (event) => {
+    if (!(event.target instanceof Element)) return;
+    if (event.target.closest("#sessionMenu") || event.target.closest("[data-menu-kind]")) return;
+    closeSessionMenu();
+  });
+
+  document.addEventListener("keydown", (event) => {
+    if (event.key !== "Escape") return;
+    closeSessionMenu();
+    const panel = $("#paneRight");
+    if (panel?.classList.contains("open")) {
+      panel.classList.remove("open");
+      panel.setAttribute("aria-hidden", "true");
+    }
+    closeMobileSidebar();
   });
 
   sessionList?.addEventListener("submit", async (event) => {
@@ -1645,7 +1757,26 @@ function bindEvents() {
   );
 
   $("#toggleRight")?.addEventListener("click", () => {
-    $("#paneRight")?.classList.toggle("collapsed");
+    const panel = $("#paneRight");
+    if (!panel) return;
+    const open = panel.classList.toggle("open");
+    panel.setAttribute("aria-hidden", open ? "false" : "true");
+  });
+
+  $("#closeDetail")?.addEventListener("click", () => {
+    const panel = $("#paneRight");
+    if (!panel) return;
+    panel.classList.remove("open");
+    panel.setAttribute("aria-hidden", "true");
+  });
+
+  $("#collapseSidebar")?.addEventListener("click", () => {
+    const collapsed = $("#paneLeft")?.classList.toggle("collapsed");
+    try {
+      localStorage.setItem("maid_console_sidebar_collapsed", collapsed ? "1" : "");
+    } catch {
+      /* storage unavailable in sandboxed iframe: state is session-only */
+    }
   });
 
   $$(".tab").forEach((button) => {
@@ -1711,9 +1842,11 @@ function bindEvents() {
   });
 
   $("#toggleLeft")?.addEventListener("click", () => {
-    const pane = $("#paneLeft");
-    if (pane) pane.style.display = pane.style.display === "none" ? "flex" : "none";
+    $("#paneLeft")?.classList.add("mobile-open");
+    $("#sidebarScrim")?.classList.add("show");
   });
+
+  $("#sidebarScrim")?.addEventListener("click", closeMobileSidebar);
 
   window.addEventListener("beforeunload", () => {
     if (state.subscriptionId && bridge?.unsubscribeSSE) {
@@ -1726,6 +1859,13 @@ function bindEvents() {
 
 async function boot() {
   bindEvents();
+  try {
+    if (localStorage.getItem("maid_console_sidebar_collapsed") === "1") {
+      $("#paneLeft")?.classList.add("collapsed");
+    }
+  } catch {
+    /* storage unavailable in sandboxed iframe */
+  }
   bridge = window.AstrBotPluginPage || null;
   if (!bridge) {
     setStreamState("signal-error", "桥接缺失");

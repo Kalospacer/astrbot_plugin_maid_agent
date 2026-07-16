@@ -1,5 +1,21 @@
 # Changelog
 
+## 1.4.0 - 2026-07-16
+
+彻底移除 1.2 遗留引擎与兼容层，Console 前端重构为 Claude Desktop 风格。
+
+### 移除（Breaking）
+
+- **`call_maid` 的 `action` 参数**：1.2 的 `action=dispatch/steer/stop/done` 兼容路径整体删除。请使用 `request_text`/`resume_agent_id`/`run_in_background`/`tasks` 与 `maid_task(status/result/stop/steer)`。
+- **1.2 后台执行引擎**：`background_registry.py`、`batch_registry.py`、`session_store.py` 及 main.py 中全部"回复发送后统一后台执行 + 追答回灌"链路（约 2000 行，自 1.3.0 起已不可达的死代码）。旧 `sessions/*.json` 数据保留在磁盘但不再读写。
+- **弃用配置项**：`session_enabled`、`session_timeout_minutes`、`dispatch_auto_background_enabled`、`dispatch_auto_background_seconds` 不再读取。
+- **`{maid_full_reply_block}` 占位符**：`dispatch_prompt_template` 中出现时按未知占位符处理，整体回退默认模板并告警。
+
+### 变更
+
+- **Console 前端重构（仿 Claude Desktop）**：暖色双主题（跟随 dashboard 亮/暗）、可折叠侧栏、居中对话流、空状态时段问候 + 居中 composer、执行轨迹改为随主题的"思考块"卡片、Inspector 改为按需滑出的详情面板。数据流（bridge SDK + SSE + 轮询）不变。
+- `/maid status`、`/maid stop` 仅面向 1.3+ runtime run。
+
 ## 1.3.0 - 2026-07-15
 
 Claude Code 风格 subagent runtime 重构：foreground-first 调度，稳定 agent_id + 独立 task_id，支持 resume/steer/stop/result 与批量并发。

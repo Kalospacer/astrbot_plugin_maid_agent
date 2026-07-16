@@ -18,56 +18,37 @@ from dataclasses import asdict
 from inspect import isawaitable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
-from weakref import WeakValueDictionary
 
 from quart import Response as QuartResponse
 from quart import jsonify, make_response, request
 
-import astrbot.api.message_components as Comp
 from astrbot.api import logger
 from astrbot.api.event import MessageChain, filter
 from astrbot.api.star import Star
 from astrbot.core.agent.hooks import BaseAgentRunHooks
-from astrbot.core.agent.message import (
-    AssistantMessageSegment,
-    TextPart,
-    ThinkPart,
-    ToolCall,
-    ToolCallMessageSegment,
-)
 from astrbot.core.agent.tool import ToolSet
 from astrbot.core.platform.astr_message_event import AstrMessageEvent as CoreAstrMessageEvent
 from astrbot.core.platform.astrbot_message import AstrBotMessage, MessageMember
 from astrbot.core.platform.message_session import MessageSession
 from astrbot.core.platform.platform_metadata import PlatformMetadata
-from astrbot.core.provider.entities import ToolCallsResult
-from astrbot.core.utils.active_event_registry import active_event_registry
 from astrbot.core.utils.astrbot_path import get_astrbot_temp_path
 from astrbot.core.utils.history_saver import persist_agent_history
 
-from .background_registry import MaidBackgroundTaskRegistry, MaidTaskConflictError
-from .batch_registry import MaidBatchRegistry
 from .config import _safe_int, load_maid_mode_config, render_dispatch_prompt
-from .json_io import dump_json
-from .json_io import dump_json
 from .console_store import ConsoleTaskPatch, MaidConsoleEventStore
 from .constants import (
     CALL_MAID_TOOL_NAME,
-    MAID_AGENT_ID_META_KEY,
     MAID_NOTIFICATION_ID_META_KEY,
     MAID_NOTIFICATION_IDS_META_KEY,
     MAID_TASK_TOOL_NAME,
-    PENDING_MAID_DISPATCHES_EXTRA_KEY,
-    PENDING_MAID_FOLLOW_UP_EXTRA_KEY,
-    PENDING_MAID_TOOL_HISTORY_EXTRA_KEY,
     PLUGIN_DATA_DIR_NAME,
     RAW_INPUT_EXTRA_KEY,
     TRUE_USER_INPUT_EXTRA_KEY,
 )
+from .json_io import dump_json
 from .maid_dispatcher import (
     _get_compress_provider,
     _normalize_begin_dialogs,
-    dispatch_to_maid_agent,
 )
 from .notification_outbox import (
     NotificationOutbox,
@@ -86,7 +67,6 @@ from .runtime_orchestrator import (
     RuntimeOrchestrator,
 )
 from .runtime_store import RunMeta, RuntimeStore
-from .session_store import MaidSessionStore
 from .toolset_adapter import (
     _agent_memory_enabled as _agent_memory_enabled_fn,
 )
@@ -190,7 +170,12 @@ class _DashboardMaidEvent(CoreAstrMessageEvent):
 class _IsolatedMaidEvent(CoreAstrMessageEvent):
     """Child event with copied identity and independent mutable event state."""
 
-    def __init__(self, original: AstrMessageEvent) -> None:
+    def __init__(
+        self,
+        original: AstrMessageEvent,
+        *,
+        send_target: CoreAstrMessageEvent | None = None,
+    ) -> None:
         message_obj = copy.copy(original.message_obj)
         message_obj.message = list(getattr(original.message_obj, "message", []) or [])
         message_obj.sender = copy.copy(getattr(original.message_obj, "sender", None))
@@ -207,6 +192,7 @@ class _IsolatedMaidEvent(CoreAstrMessageEvent):
         plugins_name = getattr(original, "plugins_name", None)
         self.plugins_name = list(plugins_name) if isinstance(plugins_name, list) else plugins_name
         self.sent_messages: list[str] = []
+        self._send_target = send_target
 
     async def send(self, message: MessageChain) -> None:
         try:
@@ -214,6 +200,8 @@ class _IsolatedMaidEvent(CoreAstrMessageEvent):
         except Exception:
             text = str(message)
         self.sent_messages.append(text)
+        if self._send_target is not None:
+            await self._send_target.send(message)
 
 
 class _ChildRunner:
@@ -323,18 +311,8 @@ class MaidAgent(Star):
         super().__init__(context)
         self.config = config if config is not None else {}
         self.maid_mode_config = load_maid_mode_config(self.config)
-        self.session_store: MaidSessionStore | None = None
         self.console_store = MaidConsoleEventStore()
-        self.background_tasks = MaidBackgroundTaskRegistry()
-        self.batch_registry = MaidBatchRegistry()
         self._active_asyncio_tasks: set[asyncio.Task] = set()
-        self._background_runners_by_umo: dict[str, object] = {}
-        self._background_runner_events_by_runner_id: dict[int, AstrMessageEvent] = {}
-        self._batch_runners_by_batch_id: dict[str, dict[int, object]] = {}
-        self._stop_requested_batch_ids: set[str] = set()
-        self._conversation_history_locks: WeakValueDictionary[str, asyncio.Lock] = (
-            WeakValueDictionary()
-        )
         # 1.3.0 runtime: foreground-first subagent orchestration.
         self.runtime_store = RuntimeStore(self.maid_mode_config)
         self.orchestrator = RuntimeOrchestrator(
@@ -346,11 +324,9 @@ class MaidAgent(Star):
         self.outbox.set_notifier(self._notify_main_agent)
         self.outbox.set_history_scanner(self._scan_history_for_dedupe)
         self.orchestrator.set_terminal_callback(self._on_runtime_terminal)
-        self._child_runner_steer_handlers: dict[str, object] = {}
 
     async def initialize(self) -> None:
         """插件初始化"""
-        self.session_store = MaidSessionStore(self, self.maid_mode_config)
         await self.console_store.initialize()
         reconciled_task_ids = await self.console_store.reconcile_incomplete_tasks()
         if reconciled_task_ids:
@@ -368,7 +344,7 @@ class MaidAgent(Star):
         self._schedule_retention_cleanup()
         self._register_console_web_apis()
         logger.info(
-            "[MaidAgent] 已加载 (1.3.0) | default_agent=%s | allowed_agents=%s | hide_native_tools=%s | hide_transfer_tools=%s | include_raw_user_input=%s | log_raw_llm_io=%s | fg_timeout=%ss | memory_agents=%s | capacity=%s/%s | retention=%dd",
+            "[MaidAgent] 已加载 (1.4.0) | default_agent=%s | allowed_agents=%s | hide_native_tools=%s | hide_transfer_tools=%s | include_raw_user_input=%s | log_raw_llm_io=%s | fg_timeout=%ss | memory_agents=%s | capacity=%s/%s | retention=%dd",
             self.maid_mode_config.default_agent_name,
             ",".join(self.maid_mode_config.allowed_agent_names or []),
             self.maid_mode_config.hide_native_tools,
@@ -386,18 +362,6 @@ class MaidAgent(Star):
         """插件停用/重载时停止后台 runner 并取消未完成任务。"""
         await self.orchestrator.shutdown()
         await self.outbox.shutdown()
-        runners = list(self._background_runners_by_umo.values())
-        for runner_map in self._batch_runners_by_batch_id.values():
-            runners.extend(runner_map.values())
-
-        for runner in runners:
-            runner_event = self._background_runner_events_by_runner_id.get(id(runner))
-            if runner_event is not None:
-                runner_event.set_extra("agent_stop_requested", True)
-            try:
-                runner.request_stop()
-            except Exception as exc:
-                logger.warning("[大小姐模式] terminate 阶段停止 runner 失败: %s", exc)
 
         tasks = [task for task in self._active_asyncio_tasks if not task.done()]
         for task in tasks:
@@ -406,10 +370,6 @@ class MaidAgent(Star):
             await asyncio.gather(*tasks, return_exceptions=True)
 
         self._active_asyncio_tasks.clear()
-        self._background_runners_by_umo.clear()
-        self._background_runner_events_by_runner_id.clear()
-        self._batch_runners_by_batch_id.clear()
-        self._stop_requested_batch_ids.clear()
         await self.console_store.close()
 
     async def _on_runtime_terminal(self, run: RunMeta) -> None:
@@ -500,11 +460,6 @@ class MaidAgent(Star):
                             "required": ["request_text"],
                         },
                     },
-                    "action": {
-                        "type": "string",
-                        "enum": ["", "dispatch", "steer", "stop", "done"],
-                        "description": "Deprecated 1.2 compatibility field.",
-                    },
                 },
             }
         task_tool = manager.get_func(MAID_TASK_TOOL_NAME) if manager else None
@@ -587,7 +542,9 @@ class MaidAgent(Star):
         child_event = self._isolate_child_event(event)
 
         # Resolve provider + provider settings for the handoff.
-        provider_id = getattr(handoff, "provider_id", None) or await context.get_current_chat_provider_id(umo)
+        provider_id = getattr(
+            handoff, "provider_id", None
+        ) or await context.get_current_chat_provider_id(umo)
         provider = context.get_provider_by_id(provider_id)
         if provider is None:
             raise RuntimeError(f"未找到子 agent provider: {provider_id}")
@@ -626,12 +583,8 @@ class MaidAgent(Star):
         true_user_input = str(payload.get("true_user_input") or "")
         image_urls_raw = payload.get("image_urls_raw")
         provider_settings = self._load_provider_settings(umo)
-        tool_call_timeout = _safe_int(
-            provider_settings.get("tool_call_timeout", 60), 60
-        )
-        agent_max_step = _safe_int(
-            provider_settings.get("max_agent_step", 30), 30
-        )
+        tool_call_timeout = _safe_int(provider_settings.get("tool_call_timeout", 60), 60)
+        agent_max_step = _safe_int(provider_settings.get("max_agent_step", 30), 30)
         image_urls = await collect_child_image_urls(event, image_urls_raw)
         user_input_block = f"【对方原话】\n{true_user_input}\n\n" if true_user_input.strip() else ""
         maid_request_block = f"【大小姐请求】\n{request_text}\n\n"
@@ -639,7 +592,6 @@ class MaidAgent(Star):
             self.maid_mode_config.dispatch_prompt_template,
             user_input_block=user_input_block,
             maid_request_block=maid_request_block,
-            maid_full_reply_block="",
         )
         trace_hooks = _RuntimeTraceHooks(
             run,
@@ -672,17 +624,15 @@ class MaidAgent(Star):
                 contexts=initial_contexts,
                 stream=bool(provider_settings.get("streaming_response", False)),
                 tool_call_timeout=tool_call_timeout,
-                llm_compress_instruction=str(provider_settings.get("llm_compress_instruction", "") or ""),
+                llm_compress_instruction=str(
+                    provider_settings.get("llm_compress_instruction", "") or ""
+                ),
                 llm_compress_keep_recent=_safe_int(
                     provider_settings.get("llm_compress_keep_recent", 4), 4
                 ),
                 llm_compress_provider=_get_compress_provider(context, provider_settings),
-                truncate_turns=_safe_int(
-                    provider_settings.get("dequeue_context_length", 1), 1
-                ),
-                enforce_max_turns=_safe_int(
-                    provider_settings.get("max_context_length", -1), -1
-                ),
+                truncate_turns=_safe_int(provider_settings.get("dequeue_context_length", 1), 1),
+                enforce_max_turns=_safe_int(provider_settings.get("max_context_length", -1), -1),
                 tool_schema_mode=str(provider_settings.get("tool_schema_mode", "full") or "full"),
                 max_context_tokens=self._ensure_provider_max_context_tokens(provider),
                 session_id=run.task_id,
@@ -793,10 +743,18 @@ class MaidAgent(Star):
                 exc,
             )
 
-    def _isolate_child_event(self, event: AstrMessageEvent):
+    def _isolate_child_event(
+        self,
+        event: AstrMessageEvent,
+        *,
+        forward_sends: bool = False,
+    ):
         """Return a child event sharing UMO/sender/role/group/platform but with
         isolated extras/result/stop/tempfile state."""
-        return _IsolatedMaidEvent(event)
+        return _IsolatedMaidEvent(
+            event,
+            send_target=event if forward_sends else None,
+        )
 
     def _resolve_handoff_for_runtime(self, agent_name: str):
         from .maid_dispatcher import _resolve_handoff
@@ -816,9 +774,7 @@ class MaidAgent(Star):
         return _ensure_provider_max_context_tokens(provider)
 
     def _agent_memory_enabled(self, agent_name: str) -> bool:
-        return _agent_memory_enabled_fn(
-            self.maid_mode_config.memory_agent_names, agent_name
-        )
+        return _agent_memory_enabled_fn(self.maid_mode_config.memory_agent_names, agent_name)
 
     async def _notify_main_agent(self, notifications) -> NotifierResult:
         """Wake the main agent once for one UMO notification snapshot."""
@@ -1182,15 +1138,7 @@ class MaidAgent(Star):
 
     @staticmethod
     def _config_payload(config) -> dict[str, Any]:
-        payload = asdict(config)
-        for key in (
-            "session_enabled",
-            "session_timeout_minutes",
-            "dispatch_auto_background_enabled",
-            "dispatch_auto_background_seconds",
-        ):
-            payload.pop(key, None)
-        return payload
+        return asdict(config)
 
     def _build_task_patch(
         self,
@@ -1419,8 +1367,7 @@ class MaidAgent(Star):
     ) -> dict[str, Any]:
         messages = [record for record in records if not record.get("_control")]
         has_tool_controls = any(
-            record.get("_control") and record.get("kind") == "tool_start"
-            for record in records
+            record.get("_control") and record.get("kind") == "tool_start" for record in records
         )
         if not has_tool_controls:
             return cls._build_tool_chain_payload(messages)
@@ -1471,62 +1418,6 @@ class MaidAgent(Star):
             "message_count": len(messages),
         }
 
-    async def _console_tool_chain_snapshot_safe(
-        self,
-        task_id: str,
-        messages: list[dict[str, Any]],
-        *,
-        meta: dict[str, Any] | None = None,
-    ) -> None:
-        if not task_id:
-            return
-        try:
-            payload = self._build_tool_chain_payload(messages)
-            if meta:
-                payload.update(meta)
-            await self.console_store.update_task_meta(
-                task_id,
-                meta_update={"tool_chain": payload},
-            )
-        except Exception as exc:
-            logger.warning("[大小姐模式] 控制台工具调用链记录失败: %s", exc)
-
-    async def _update_single_assistant_output(
-        self,
-        task_id: str,
-        output: str,
-    ):
-        task_info = await self.background_tasks.update_assistant_output(task_id, output)
-        if task_info is not None:
-            await self._console_event_safe(
-                task_id=task_id,
-                event_type="agent_output",
-                title="管家输出更新",
-                message=output,
-                source="agent",
-                status=task_info.status,
-            )
-        return task_info
-
-    async def _update_batch_item_assistant_output(
-        self,
-        batch_id: str,
-        item_id: str,
-        output: str,
-    ):
-        item = await self.batch_registry.update_item_assistant_output(batch_id, item_id, output)
-        if item is not None:
-            await self._console_event_safe(
-                task_id=item_id,
-                event_type="agent_output",
-                title="批量子任务输出更新",
-                message=output,
-                source="agent",
-                status=item.status,
-                payload={"batch_id": batch_id},
-            )
-        return item
-
     def _create_dashboard_event(
         self,
         *,
@@ -1540,40 +1431,9 @@ class MaidAgent(Star):
             message_text=message_text,
         )
 
-    @staticmethod
-    def _active_task_payload(task_info) -> dict[str, Any]:
-        return asdict(task_info)
-
-    @staticmethod
-    def _batch_payload(batch) -> dict[str, Any]:
-        data = asdict(batch)
-        data["item_statuses"] = {
-            "queued": sum(item["status"] == "queued" for item in data["items"]),
-            "running": sum(item["status"] == "running" for item in data["items"]),
-            "done": sum(item["status"] == "done" for item in data["items"]),
-            "error": sum(item["status"] == "error" for item in data["items"]),
-            "stopped": sum(item["status"] == "stopped" for item in data["items"]),
-        }
-        return data
-
     async def console_overview(self):
         overview = await self.console_store.get_overview()
-        active_tasks = await self.background_tasks.list_active()
-        active_payload = [self._active_task_payload(task) for task in active_tasks]
-        batches = []
-        for task in active_tasks:
-            if task.kind != "batch":
-                continue
-            batch = await self.batch_registry.get_batch(task.task_id)
-            if batch is not None:
-                batches.append(self._batch_payload(batch))
-        overview.update(
-            {
-                "active_tasks": active_payload,
-                "active_batches": batches,
-                "config": self._config_payload(self.maid_mode_config),
-            }
-        )
+        overview["config"] = self._config_payload(self.maid_mode_config)
         return self._console_ok(overview)
 
     async def console_tasks(self):
@@ -1589,16 +1449,11 @@ class MaidAgent(Star):
             return self._console_error("任务不存在。", status_code=404)
         events = await self.console_store.get_task_events(task_id)
         actions = await self.console_store.get_task_actions(task_id)
-        batch = None
-        if task.get("kind") == "batch":
-            batch_info = await self.batch_registry.get_batch(task_id)
-            batch = self._batch_payload(batch_info) if batch_info is not None else None
         return self._console_ok(
             {
                 "task": task,
                 "events": events,
                 "actions": actions,
-                "batch": batch,
             }
         )
 
@@ -1672,69 +1527,6 @@ class MaidAgent(Star):
                     close_result = uploaded.close()
                     if isawaitable(close_result):
                         await close_result
-
-    async def _start_dashboard_dispatch_task(
-        self,
-        *,
-        unified_msg_origin: str,
-        agent_name: str,
-        request_text: str,
-        maid_full_reply: str = "",
-        true_user_input: str = "",
-        rerun_of: str = "",
-        parent_task_id: str = "",
-    ) -> dict[str, Any]:
-        unified_msg_origin = self._validate_dashboard_umo(unified_msg_origin)
-        if not request_text.strip():
-            raise ValueError("任务要求不能为空。")
-        current = await self.background_tasks.get_active_by_umo(unified_msg_origin)
-        if current is not None:
-            raise ValueError(f"该会话已有活跃后台任务: {current.task_id}")
-
-        resolved_agent_name = self._resolve_allowed_agent_name(
-            self.maid_mode_config.allowed_agent_names,
-            self.maid_mode_config.default_agent_name,
-            agent_name,
-        )
-        event = self._create_dashboard_event(
-            unified_msg_origin=unified_msg_origin,
-            message_text=request_text,
-        )
-        pending = {
-            "agent_name": resolved_agent_name,
-            "maid_request": request_text,
-            "maid_full_reply": maid_full_reply or "Dashboard 手动派发任务。",
-            "true_user_input": true_user_input or request_text,
-            "parent_message_id": str(event.message_obj.message_id or ""),
-            "parent_task_id": parent_task_id,
-            "meta": {"rerun_of": rerun_of} if rerun_of else {},
-        }
-        task_id = await self._launch_maid_dispatch(
-            source="dashboard",
-            event=event,
-            req=None,
-            pending=pending,
-            kind="single",
-        )
-        await self.console_store.record_action(
-            task_id=task_id,
-            action="dispatch",
-            source="dashboard",
-            payload={
-                "unified_msg_origin": unified_msg_origin,
-                "agent_name": resolved_agent_name,
-                "request_text": request_text,
-                "rerun_of": rerun_of,
-            },
-            result_text="已从 dashboard 派发后台任务。",
-        )
-        task = await self.console_store.get_task(task_id)
-        if task is None:
-            active_task = await self.background_tasks.get_active_by_umo(unified_msg_origin)
-            if active_task is not None and active_task.task_id == task_id:
-                return self._active_task_payload(active_task)
-            raise RuntimeError(f"Dashboard 任务启动后无法读取状态: {task_id}")
-        return task
 
     async def console_dispatch(self):
         try:
@@ -1918,8 +1710,6 @@ class MaidAgent(Star):
         self.maid_mode_config = loaded
         self.orchestrator.config = loaded
         self.runtime_store.config = loaded
-        if self.session_store:
-            self.session_store.config = loaded
         await self._console_action_safe(
             task_id="__settings__",
             action="settings_save",
@@ -2002,10 +1792,13 @@ class MaidAgent(Star):
         return self._console_ok({"agents": agents})
 
     async def console_agent_runs(self, agent_id: str):
-        meta = await self.runtime_store.load_agent(agent_id)
-        if meta is None:
-            return self._console_error("agent 不存在。", status_code=404)
-        runs = [run.to_dict() for run in await self.runtime_store.list_runs(agent_id)]
+        try:
+            meta = await self.runtime_store.load_agent(agent_id)
+            if meta is None:
+                return self._console_error("agent 不存在。", status_code=404)
+            runs = [run.to_dict() for run in await self.runtime_store.list_runs(agent_id)]
+        except ValueError as exc:
+            return self._console_error(str(exc), status_code=400)
         return self._console_ok({"agent": meta.to_dict(), "runs": runs})
 
     async def console_agent_run_trace(self, agent_id: str, task_id: str):
@@ -2103,7 +1896,9 @@ class MaidAgent(Star):
                 return self._console_error("需要 agent_id 或 task_id。")
             target_agent = agent_id or await self._resolve_agent_id_from_task(task_id)
             if not target_agent:
-                return self._console_error(f"未找到 task_id={task_id} 对应的 agent。", status_code=404)
+                return self._console_error(
+                    f"未找到 task_id={task_id} 对应的 agent。", status_code=404
+                )
             outcome = await self.orchestrator.get_result(
                 agent_id=target_agent,
                 task_id=task_id,
@@ -2119,229 +1914,6 @@ class MaidAgent(Star):
         except Exception as exc:
             return self._console_error(str(exc))
 
-    async def _run_dashboard_dispatch_background_task(self, pending: dict[str, Any]) -> None:
-        task_id = str(pending.get("task_id") or "")
-        unified_msg_origin = str(pending.get("unified_msg_origin") or "")
-        agent_name = str(pending.get("agent_name") or self.maid_mode_config.default_agent_name)
-        maid_request = str(pending.get("maid_request") or "")
-        maid_full_reply = str(pending.get("maid_full_reply") or "")
-        true_user_input = str(pending.get("true_user_input") or "")
-        agent_id = str(pending.get("agent_id") or task_id)
-        parent_message_id = str(pending.get("parent_message_id") or "")
-        event = self._create_dashboard_event(
-            unified_msg_origin=unified_msg_origin,
-            message_text=maid_request,
-        )
-        final_status = "done"
-        dispatch_error = ""
-        agent_result = ""
-        resolved_agent_name = agent_name
-        watchdog: asyncio.Task | None = None
-
-        try:
-            await self.background_tasks.mark_running(
-                task_id,
-                progress=f"Dashboard 管家任务开始执行: {maid_request[:80]}",
-            )
-            await self._console_update_status_safe(task_id, "running")
-            await self._console_event_safe(
-                task_id=task_id,
-                event_type="running",
-                title="管家开始执行",
-                message=maid_request,
-                source="dashboard",
-                status="running",
-                payload={"agent_name": agent_name},
-            )
-            watchdog = self._start_dispatch_watchdog(
-                task_id=task_id,
-                source="dashboard",
-                event=event,
-            )
-            if self.session_store is None:
-                raise RuntimeError("session_store 尚未初始化")
-            agent_result, resolved_agent_name = await dispatch_to_maid_agent(
-                context=self.context,
-                event=event,
-                session_store=self.session_store,
-                agent_name=agent_name,
-                maid_full_reply=maid_full_reply,
-                maid_request=maid_request,
-                true_user_input=true_user_input,
-                image_urls_raw=None,
-                on_runner_registered=self._register_background_runner,
-                on_runner_unregistered=self._unregister_background_runner,
-                on_assistant_output_updated=(
-                    lambda output: self._update_single_assistant_output(task_id, output)
-                ),
-                on_tool_chain_updated=(
-                    lambda messages: self._console_tool_chain_snapshot_safe(task_id, messages)
-                ),
-                agent_id=agent_id,
-                parent_message_id=parent_message_id,
-            )
-            if event.get_extra("agent_stop_requested"):
-                final_status = "stopped"
-            await self._console_event_safe(
-                task_id=task_id,
-                event_type="agent_result",
-                title="管家返回结果",
-                message=agent_result,
-                source="agent",
-                status=final_status,
-                payload={"agent_name": resolved_agent_name},
-            )
-            for sent_text in event.sent_messages:
-                await self._console_event_safe(
-                    task_id=task_id,
-                    event_type="tool_direct_message",
-                    title="工具请求发送消息",
-                    message=sent_text,
-                    source="tool",
-                    status=final_status,
-                )
-        except asyncio.CancelledError:
-            dispatch_error = "Dashboard 管家任务已取消。"
-            final_status = "stopped"
-            raise
-        except Exception as exc:
-            if event.get_extra("agent_stop_requested"):
-                dispatch_error = "Dashboard 管家任务已停止。"
-                final_status = "stopped"
-                logger.info(
-                    "[大小姐模式] Dashboard 管家任务已按请求停止: task_id=%s",
-                    task_id,
-                )
-            else:
-                dispatch_error = str(exc)
-                final_status = "error"
-                logger.error("[大小姐模式] Dashboard 管家任务失败: %s", exc, exc_info=True)
-        finally:
-            await self._cancel_dispatch_watchdog(watchdog)
-            if self.session_store and final_status in {"stopped", "error"}:
-                await self.session_store.close_active_session(
-                    unified_msg_origin,
-                    status=final_status,
-                )
-            await self.background_tasks.finish(
-                task_id,
-                status=final_status,
-                result=agent_result,
-                error=dispatch_error,
-            )
-            await self._console_ensure_task_safe(
-                self._build_task_patch(
-                    task_id=task_id,
-                    kind="single",
-                    source="dashboard",
-                    unified_msg_origin=unified_msg_origin,
-                    sender_id="dashboard",
-                    agent_name=resolved_agent_name,
-                    status=final_status,
-                    request_text=maid_request,
-                    title=f"手动派发: {maid_request[:60]}",
-                    meta={"result": agent_result, "error": dispatch_error},
-                )
-            )
-            await self._console_event_safe(
-                task_id=task_id,
-                event_type=(
-                    "error"
-                    if final_status == "error"
-                    else ("stopped" if final_status == "stopped" else "finished")
-                ),
-                title=(
-                    "Dashboard 任务失败"
-                    if final_status == "error"
-                    else (
-                        "Dashboard 任务已停止"
-                        if final_status == "stopped"
-                        else "Dashboard 任务完成"
-                    )
-                ),
-                message=dispatch_error or agent_result,
-                source="system",
-                status=final_status,
-                payload={"agent_name": resolved_agent_name},
-            )
-
-    def _rewrite_response_text(self, resp: LLMResponse, text: str) -> None:
-        """以兼容 AstrBot 的方式回写响应文本。"""
-        resp.result_chain = MessageChain(chain=[Comp.Plain(text)])
-        resp.completion_text = text
-        resp.tools_call_name = []
-        resp.tools_call_args = []
-        resp.tools_call_ids = []
-        resp.tools_call_extra_content = {}
-
-    async def _deliver_follow_up_reply(
-        self,
-        *,
-        event: AstrMessageEvent,
-        req: ProviderRequest,
-        follow_up_resp: LLMResponse,
-        agent_id: str,
-        history_request_text: str,
-        history_agent_name: str,
-        history_tool_result: str,
-        console_task_id: str = "",
-        console_sent_title: str = "大小姐追答已发送",
-        console_sent_status: str = "running",
-    ) -> tuple[str, str]:
-        """Strip/rewrite/send/persist a follow-up reply.
-
-        Returns ``(sanitized, raw_completion)`` so callers can compose the same
-        ``sanitized or raw`` / ``sanitized or fallback`` expressions as before.
-        """
-        follow_up_completion_text = follow_up_resp.completion_text or ""
-        sanitized_follow_up = follow_up_completion_text.strip()
-        if sanitized_follow_up != follow_up_completion_text and sanitized_follow_up:
-            self._rewrite_response_text(follow_up_resp, sanitized_follow_up)
-
-        if follow_up_resp.result_chain is not None or sanitized_follow_up.strip():
-            chain = follow_up_resp.result_chain or MessageChain(
-                chain=[Comp.Plain(sanitized_follow_up)]
-            )
-            await event.send(chain)
-            await self._persist_assistant_reply(
-                event,
-                req,
-                sanitized_follow_up or follow_up_completion_text,
-                agent_id=agent_id,
-            )
-            await self._persist_call_maid_tool_history(
-                event,
-                req,
-                [
-                    {
-                        "action": "dispatch",
-                        "request_text": history_request_text,
-                        "agent_name": history_agent_name,
-                        "tool_result": history_tool_result,
-                    }
-                ],
-                agent_id=agent_id,
-            )
-            if console_task_id:
-                await self._console_event_safe(
-                    task_id=console_task_id,
-                    event_type="follow_up_sent",
-                    title=console_sent_title,
-                    message=sanitized_follow_up or follow_up_completion_text,
-                    source="chat",
-                    status=console_sent_status,
-                )
-        return sanitized_follow_up, follow_up_completion_text
-
-    @staticmethod
-    def _clear_response(resp: LLMResponse) -> None:
-        resp.result_chain = None
-        resp.completion_text = ""
-        resp.tools_call_name = []
-        resp.tools_call_args = []
-        resp.tools_call_ids = []
-        resp.tools_call_extra_content = {}
-
     @staticmethod
     def _contains_agent_name(agent_names: list[str] | None, agent_name: str) -> bool:
         if not agent_names:
@@ -2352,34 +1924,6 @@ class MaidAgent(Star):
     @staticmethod
     def _dump_json(data) -> str:
         return dump_json(data, indent=2)
-
-    @staticmethod
-    def _is_provider_request_like(req: object) -> bool:
-        return all(
-            hasattr(req, attr)
-            for attr in (
-                "prompt",
-                "image_urls",
-                "contexts",
-                "system_prompt",
-                "model",
-                "extra_user_content_parts",
-            )
-        )
-
-    @staticmethod
-    def _clear_pending_follow_up(event: AstrMessageEvent) -> None:
-        event.set_extra(PENDING_MAID_FOLLOW_UP_EXTRA_KEY, None)
-
-    @staticmethod
-    def _extract_latest_assistant_text(event: AstrMessageEvent) -> str:
-        result = event.get_result()
-        if result is None:
-            return ""
-        try:
-            return (result.get_plain_text() or "").strip()
-        except Exception:
-            return ""
 
     def _get_visible_tools_from_request(self, req: ProviderRequest) -> ToolSet:
         tool_set = ToolSet()
@@ -2415,305 +1959,6 @@ class MaidAgent(Star):
             tool_set.add_tool(tool)
         return tool_set
 
-    @staticmethod
-    def _append_pending_dispatch(
-        event: AstrMessageEvent,
-        *,
-        agent_name: str,
-        maid_request: str,
-        parent_message_id: str = "",
-    ) -> int:
-        pending = event.get_extra(PENDING_MAID_DISPATCHES_EXTRA_KEY)
-        items: list[dict[str, str]] = list(pending) if isinstance(pending, list) else []
-        items.append(
-            {
-                "agent_name": agent_name,
-                "maid_request": maid_request,
-                "parent_message_id": parent_message_id,
-            }
-        )
-        event.set_extra(PENDING_MAID_DISPATCHES_EXTRA_KEY, items)
-        return len(items)
-
-    @staticmethod
-    def _consume_pending_dispatches(event: AstrMessageEvent) -> list[dict[str, str]]:
-        pending = event.get_extra(PENDING_MAID_DISPATCHES_EXTRA_KEY)
-        event.set_extra(PENDING_MAID_DISPATCHES_EXTRA_KEY, None)
-        if not isinstance(pending, list):
-            return []
-        return [
-            {
-                "agent_name": str(item.get("agent_name") or ""),
-                "maid_request": str(item.get("maid_request") or ""),
-                "parent_message_id": str(item.get("parent_message_id") or ""),
-            }
-            for item in pending
-            if isinstance(item, dict) and str(item.get("maid_request") or "").strip()
-        ]
-
-    @staticmethod
-    def _queue_call_maid_tool_history(
-        event: AstrMessageEvent,
-        *,
-        action: str,
-        request_text: str,
-        agent_name: str,
-        tool_result: str,
-    ) -> None:
-        pending = event.get_extra(PENDING_MAID_TOOL_HISTORY_EXTRA_KEY)
-        items = list(pending) if isinstance(pending, list) else []
-        items.append(
-            {
-                "action": action,
-                "request_text": request_text,
-                "agent_name": agent_name,
-                "tool_result": tool_result,
-            }
-        )
-        event.set_extra(PENDING_MAID_TOOL_HISTORY_EXTRA_KEY, items)
-
-    @staticmethod
-    def _consume_call_maid_tool_history(event: AstrMessageEvent) -> list[dict[str, str]]:
-        pending = event.get_extra(PENDING_MAID_TOOL_HISTORY_EXTRA_KEY)
-        event.set_extra(PENDING_MAID_TOOL_HISTORY_EXTRA_KEY, None)
-        if not isinstance(pending, list):
-            return []
-        return [
-            {
-                "action": str(item.get("action") or ""),
-                "request_text": str(item.get("request_text") or ""),
-                "agent_name": str(item.get("agent_name") or ""),
-                "tool_result": str(item.get("tool_result") or ""),
-            }
-            for item in pending
-            if isinstance(item, dict)
-        ]
-
-    @staticmethod
-    def _history_message_plain_text(message: dict) -> str:
-        content = message.get("content")
-        if isinstance(content, str):
-            return content
-        if isinstance(content, list):
-            return "\n".join(
-                str(part.get("text") or "").strip()
-                for part in content
-                if isinstance(part, dict) and part.get("type") == "text"
-            ).strip()
-        return ""
-
-    @staticmethod
-    def _build_call_maid_arguments(
-        *,
-        action: str,
-        request_text: str,
-        agent_name: str,
-    ) -> dict[str, str]:
-        arguments = {"action": action}
-        if request_text.strip():
-            arguments["request_text"] = request_text
-        if agent_name.strip():
-            arguments["agent_name"] = agent_name
-        return arguments
-
-    @classmethod
-    def _build_call_maid_tool_result(
-        cls,
-        *,
-        action: str,
-        request_text: str,
-        agent_name: str,
-        tool_result: str,
-        assistant_text: str = "",
-        reasoning_content: str = "",
-        reasoning_signature: str | None = None,
-        tool_call_id: str | None = None,
-    ) -> ToolCallsResult:
-        actual_tool_call_id = tool_call_id or f"maid_hist_{uuid.uuid4().hex}"
-        assistant_parts = [
-            ThinkPart(
-                think=reasoning_content or _EMPTY_REASONING_PLACEHOLDER,
-                encrypted=reasoning_signature,
-            )
-        ]
-        if assistant_text.strip():
-            assistant_parts.append(TextPart(text=assistant_text))
-        return ToolCallsResult(
-            tool_calls_info=AssistantMessageSegment(
-                content=assistant_parts,
-                tool_calls=[
-                    ToolCall(
-                        id=actual_tool_call_id,
-                        function=ToolCall.FunctionBody(
-                            name=CALL_MAID_TOOL_NAME,
-                            arguments=json.dumps(
-                                cls._build_call_maid_arguments(
-                                    action=action,
-                                    request_text=request_text,
-                                    agent_name=agent_name,
-                                ),
-                                ensure_ascii=False,
-                            ),
-                        ),
-                    )
-                ],
-            ),
-            tool_calls_result=[
-                ToolCallMessageSegment(
-                    tool_call_id=actual_tool_call_id,
-                    content=tool_result,
-                )
-            ],
-        )
-
-    async def _load_latest_conversation_history(
-        self,
-        event: AstrMessageEvent,
-        req: ProviderRequest,
-        *,
-        purpose: str,
-    ) -> list[dict] | None:
-        snapshot: list[dict] | None = None
-        try:
-            parsed = json.loads(req.conversation.history or "[]")
-            if isinstance(parsed, list):
-                snapshot = parsed
-        except Exception as exc:
-            logger.warning(
-                "[大小姐模式] 读取主对话历史快照失败，将从 conversation_manager 重新拉取 (%s): %s",
-                purpose,
-                exc,
-            )
-
-        try:
-            curr_conv = await self.context.conversation_manager.get_conversation(
-                event.unified_msg_origin,
-                req.conversation.cid,
-            )
-            if curr_conv is not None:
-                latest = json.loads(curr_conv.history or "[]")
-                if isinstance(latest, list):
-                    return latest
-        except Exception as exc:
-            logger.warning(
-                "[大小姐模式] 读取最新主对话历史失败，尝试使用请求快照 (%s): %s",
-                purpose,
-                exc,
-            )
-
-        if snapshot is not None:
-            return snapshot
-        logger.error("[大小姐模式] 无可用主对话历史，跳过回写: %s", purpose)
-        return None
-
-    async def _persist_assistant_reply(
-        self,
-        event: AstrMessageEvent,
-        req: ProviderRequest,
-        reply_text: str,
-        *,
-        agent_id: str = "",
-    ) -> None:
-        if not req or not getattr(req, "conversation", None) or not reply_text.strip():
-            return
-
-        lock = self._conversation_history_locks.setdefault(
-            event.unified_msg_origin,
-            asyncio.Lock(),
-        )
-        async with lock:
-            latest_history = await self._load_latest_conversation_history(
-                event,
-                req,
-                purpose="写入后台回灌消息",
-            )
-            if latest_history is None:
-                return
-            assistant_message = {"role": "assistant", "content": reply_text}
-            if agent_id:
-                assistant_message[MAID_AGENT_ID_META_KEY] = agent_id
-            latest_history.append(assistant_message)
-            await self.context.conversation_manager.update_conversation(
-                event.unified_msg_origin,
-                req.conversation.cid,
-                history=latest_history,
-            )
-
-    async def _persist_call_maid_tool_history(
-        self,
-        event: AstrMessageEvent,
-        req: ProviderRequest,
-        records: list[dict[str, str]],
-        *,
-        agent_id: str = "",
-    ) -> None:
-        if not req or not getattr(req, "conversation", None) or not records:
-            return
-
-        lock = self._conversation_history_locks.setdefault(
-            event.unified_msg_origin,
-            asyncio.Lock(),
-        )
-        async with lock:
-            latest_history = await self._load_latest_conversation_history(
-                event,
-                req,
-                purpose="写入 call_maid 工具记录",
-            )
-            if latest_history is None:
-                return
-
-            insertion_index = len(latest_history)
-            anchor_found = False
-            if agent_id:
-                for idx in range(len(latest_history) - 1, -1, -1):
-                    message = latest_history[idx]
-                    if (
-                        isinstance(message, dict)
-                        and message.get("role") == "assistant"
-                        and message.get(MAID_AGENT_ID_META_KEY) == agent_id
-                    ):
-                        insertion_index = idx
-                        anchor_found = True
-                        break
-                if not anchor_found:
-                    logger.warning(
-                        "[大小姐模式] 未找到 agent_id 回灌锚点，将退回文本匹配: agent_id=%s",
-                        agent_id,
-                    )
-
-            if not anchor_found:
-                latest_assistant_text = self._extract_latest_assistant_text(event)
-                if latest_assistant_text:
-                    for idx in range(len(latest_history) - 1, -1, -1):
-                        message = latest_history[idx]
-                        if (
-                            isinstance(message, dict)
-                            and message.get("role") == "assistant"
-                            and self._history_message_plain_text(message).strip()
-                            == latest_assistant_text
-                        ):
-                            insertion_index = idx
-                            break
-
-            tool_history_messages: list[dict] = []
-            for record in records:
-                tool_history_messages.extend(
-                    self._build_call_maid_tool_result(
-                        action=str(record.get("action") or "").strip(),
-                        request_text=str(record.get("request_text") or ""),
-                        agent_name=str(record.get("agent_name") or ""),
-                        tool_result=str(record.get("tool_result") or ""),
-                    ).to_openai_messages()
-                )
-
-            latest_history[insertion_index:insertion_index] = tool_history_messages
-            await self.context.conversation_manager.update_conversation(
-                event.unified_msg_origin,
-                req.conversation.cid,
-                history=latest_history,
-            )
-
     def _track_background_task(self, task: asyncio.Task) -> None:
         self._active_asyncio_tasks.add(task)
 
@@ -2728,186 +1973,6 @@ class MaidAgent(Star):
 
         task.add_done_callback(_on_done)
 
-    def _start_dispatch_watchdog(
-        self,
-        *,
-        task_id: str,
-        source: str,
-        event: AstrMessageEvent,
-    ) -> asyncio.Task | None:
-        if not self.maid_mode_config.dispatch_auto_background_enabled:
-            return None
-        timeout_seconds = self.maid_mode_config.dispatch_auto_background_seconds
-        if timeout_seconds <= 0:
-            return None
-
-        async def watch() -> None:
-            await asyncio.sleep(timeout_seconds)
-            current = await self.background_tasks.get_active_by_umo(event.unified_msg_origin)
-            if current is None or current.task_id != task_id:
-                return
-            await self._console_event_safe(
-                task_id=task_id,
-                event_type="auto_background",
-                title="管家执行时间较长，仍在后台运行",
-                message=f"任务已运行超过 {timeout_seconds} 秒，仍可使用 stop/steer 控制。",
-                source="system",
-                status=current.status,
-                payload={"timeout_seconds": timeout_seconds},
-            )
-            if source == "chat":
-                try:
-                    await event.send(
-                        MessageChain(chain=[Comp.Plain("管家还在忙哦，我先让它继续在后台处理～")])
-                    )
-                except Exception as exc:
-                    logger.warning(
-                        "[大小姐模式] 发送慢任务后台提示失败: task_id=%s error=%s",
-                        task_id,
-                        exc,
-                    )
-
-        return asyncio.create_task(watch(), name=f"maid-watchdog-{task_id[:8]}")
-
-    @staticmethod
-    async def _cancel_dispatch_watchdog(watchdog: asyncio.Task | None) -> None:
-        if watchdog is None or watchdog.done():
-            return
-        watchdog.cancel()
-        with suppress(asyncio.CancelledError):
-            await watchdog
-
-    async def _launch_maid_dispatch(
-        self,
-        *,
-        source: str,
-        event: AstrMessageEvent,
-        req: ProviderRequest | None,
-        pending: dict[str, Any],
-        kind: str,
-    ) -> str:
-        if source not in {"chat", "dashboard"}:
-            raise ValueError(f"不支持的 dispatch source: {source}")
-        if kind not in {"single", "batch"}:
-            raise ValueError(f"不支持的 dispatch kind: {kind}")
-        if source == "dashboard" and kind != "single":
-            raise ValueError("Dashboard 暂不支持批量 dispatch。")
-        if source == "chat" and req is None:
-            raise ValueError("聊天 dispatch 缺少 ProviderRequest。")
-
-        if kind == "batch":
-            items = pending.get("items")
-            if not isinstance(items, list) or not items:
-                raise ValueError("批量 dispatch 缺少任务条目。")
-            agent_name = "batch"
-            maid_request = self._summarize_batch_request(items)
-            requested_task_id = str(pending.get("batch_id") or uuid.uuid4().hex)
-            title = f"批量任务: {len(items)} 项"
-            meta = {"item_count": len(items)}
-        else:
-            agent_name = str(pending.get("agent_name") or self.maid_mode_config.default_agent_name)
-            maid_request = str(pending.get("maid_request") or "")
-            requested_task_id = str(pending.get("task_id") or "") or None
-            title_prefix = "手动派发" if source == "dashboard" else "管家任务"
-            title = f"{title_prefix}: {maid_request[:60]}"
-            meta = dict(pending.get("meta") or {})
-
-        parent_message_id = str(
-            pending.get("parent_message_id")
-            or getattr(getattr(event, "message_obj", None), "message_id", "")
-            or ""
-        )
-        sender_id = "dashboard" if source == "dashboard" else event.get_sender_id()
-        task_info = await self.background_tasks.create_task(
-            unified_msg_origin=event.unified_msg_origin,
-            sender_id=sender_id,
-            agent_name=agent_name,
-            maid_request=maid_request,
-            kind=kind,
-            task_id=requested_task_id,
-        )
-
-        pending["agent_id"] = task_info.task_id
-        pending["parent_message_id"] = parent_message_id
-        pending["source"] = source
-        pending["unified_msg_origin"] = event.unified_msg_origin
-        if kind == "batch":
-            pending["batch_id"] = task_info.task_id
-        else:
-            pending["task_id"] = task_info.task_id
-
-        await self._console_ensure_task_safe(
-            self._build_task_patch(
-                task_id=task_info.task_id,
-                kind=task_info.kind,
-                source=source,
-                unified_msg_origin=task_info.unified_msg_origin,
-                sender_id=task_info.sender_id,
-                agent_name=task_info.agent_name,
-                status=task_info.status,
-                request_text=task_info.maid_request,
-                title=title,
-                parent_task_id=str(pending.get("parent_task_id") or ""),
-                meta={
-                    **meta,
-                    "agent_id": task_info.task_id,
-                    "parent_message_id": parent_message_id,
-                },
-            )
-        )
-        await self._console_event_safe(
-            task_id=task_info.task_id,
-            event_type="queued",
-            title=("批量任务已排队" if kind == "batch" else "管家任务已排队"),
-            message=task_info.maid_request,
-            source=source,
-            status=task_info.status,
-            payload={
-                "agent_name": task_info.agent_name,
-                "agent_id": task_info.task_id,
-                "parent_message_id": parent_message_id,
-                **meta,
-            },
-        )
-
-        if source == "dashboard":
-            coroutine = self._run_dashboard_dispatch_background_task(pending)
-        elif kind == "batch":
-            coroutine = self._run_maid_batch_background_task(event=event, req=req, pending=pending)
-        else:
-            coroutine = self._run_maid_follow_up_background_task(
-                event=event,
-                req=req,
-                pending=pending,
-            )
-        runner_task = asyncio.create_task(
-            coroutine,
-            name=f"maid-{source}-{kind}-{task_info.task_id[:8]}",
-        )
-        self._track_background_task(runner_task)
-        return task_info.task_id
-
-    @staticmethod
-    def _is_batch_pending(pending: object) -> bool:
-        return isinstance(pending, dict) and pending.get("mode") == "batch"
-
-    @staticmethod
-    def _summarize_batch_request(items: list[dict]) -> str:
-        return " | ".join(
-            f"{str(item.get('agent_name') or '')}:{str(item.get('maid_request') or '')[:40]}"
-            for item in items[:5]
-        )
-
-    @staticmethod
-    def _join_batch_steer_text(items: list[dict]) -> str:
-        parts: list[str] = []
-        for index, item in enumerate(items, start=1):
-            request = str(item.get("maid_request") or "").strip()
-            agent_name = str(item.get("agent_name") or "").strip()
-            if request:
-                parts.append(f"{index}. {agent_name}: {request}")
-        return "\n".join(parts).strip()
-
     @staticmethod
     def _resolve_allowed_agent_name(
         allowed_agent_names: list[str] | None,
@@ -2921,24 +1986,6 @@ class MaidAgent(Star):
             logger.warning("[大小姐模式] call_maid 请求的目标 agent 不在白名单中: %s", agent_name)
             return default_agent_name
         return agent_name
-
-    @staticmethod
-    def _build_batch_follow_up_result(batch) -> str:
-        lines = ["【批量管家结果汇总】"]
-        success_count = 0
-        failure_count = 0
-        for index, item in enumerate(batch.items, start=1):
-            if item.status == "done" and item.result.strip():
-                success_count += 1
-                lines.append(f"{index}. agent={item.agent_name}")
-                lines.append(f"结果: {item.result.strip()}")
-            elif item.status in {"error", "stopped"}:
-                failure_count += 1
-        if success_count == 0:
-            lines.append("所有批量管家任务都未成功完成。")
-        if failure_count > 0:
-            lines.append(f"失败或停止的任务数: {failure_count}")
-        return "\n".join(lines).strip()
 
     @filter.on_llm_request()
     async def sanitize_main_model_request(
@@ -2999,8 +2046,7 @@ class MaidAgent(Star):
         agent_name: str = "",
         resume_agent_id: str = "",
         run_in_background: bool = False,
-        tasks: list = None,
-        action: str = "",
+        tasks: list | None = None,
     ) -> str:
         """调度管家 subagent 执行任务，Claude Code 风格 foreground-first runtime。
 
@@ -3010,14 +2056,7 @@ class MaidAgent(Star):
             resume_agent_id(string): 恢复已有 agent。填入则恢复该 agent；running 时作为 steer，终态时新建 task 后台执行。
             run_in_background(boolean): 默认 false 前台同步等待最多 foreground_timeout_seconds 秒；true 立即转后台。
             tasks(array): 批量任务列表，每项 {request_text, agent_name?, run_in_background?}，最多 5 项。仅新建 agent，不允许 resume。
-            action(string): 1.2.0 旧接口兼容，可选 dispatch/steer/stop/done。使用新字段时留空。
         """
-        # 1.2.0 legacy action compatibility.
-        if action:
-            return await self._call_maid_legacy_action(
-                event, action, request_text, agent_name
-            )
-
         true_user_input = str(event.get_extra(TRUE_USER_INPUT_EXTRA_KEY, "") or "")
         image_urls_raw = getattr(getattr(event, "message_obj", None), "image_urls", None)
         runner_payload = {
@@ -3029,7 +2068,10 @@ class MaidAgent(Star):
         if tasks is not None:
             if resume_agent_id:
                 return self._json_outcome(
-                    {"status": "error", "error": "batch 仅允许创建新 agent，不能使用 resume_agent_id。"}
+                    {
+                        "status": "error",
+                        "error": "batch 仅允许创建新 agent，不能使用 resume_agent_id。",
+                    }
                 )
             return await self._call_maid_batch(event, tasks, runner_payload)
 
@@ -3070,9 +2112,7 @@ class MaidAgent(Star):
         audit_status = current_run.status if current_run is not None else outcome.status
         audit_mode = current_run.mode if current_run is not None else outcome.mode
         audit_reason = (
-            current_run.background_reason
-            if current_run is not None
-            else outcome.background_reason
+            current_run.background_reason if current_run is not None else outcome.background_reason
         )
         notification_id = (
             current_run.notification.notification_id
@@ -3118,9 +2158,7 @@ class MaidAgent(Star):
 
     async def _call_maid_batch(self, event: AstrMessageEvent, tasks, runner_payload) -> str:
         if not isinstance(tasks, list) or not tasks:
-            return self._json_outcome(
-                {"status": "error", "error": "tasks 必须是非空列表。"}
-            )
+            return self._json_outcome({"status": "error", "error": "tasks 必须是非空列表。"})
         if len(tasks) > 5:
             return self._json_outcome(
                 {"status": "error", "error": f"batch 最多 5 项，收到 {len(tasks)}。"}
@@ -3128,9 +2166,7 @@ class MaidAgent(Star):
         requests: list[DispatchRequest] = []
         for item in tasks:
             if not isinstance(item, dict):
-                return self._json_outcome(
-                    {"status": "error", "error": "batch 每项必须是对象。"}
-                )
+                return self._json_outcome({"status": "error", "error": "batch 每项必须是对象。"})
             if "resume_agent_id" in item:
                 return self._json_outcome(
                     {"status": "error", "error": "batch 项不允许 resume_agent_id。"}
@@ -3202,76 +2238,6 @@ class MaidAgent(Star):
                 await self.outbox.note_result_claimed(outcome.agent_id, outcome.task_id)
         return self._json_outcome(batch_outcome.to_dict())
 
-    async def _call_maid_legacy_action(
-        self,
-        event: AstrMessageEvent,
-        action: str,
-        request_text: str,
-        agent_name: str,
-    ) -> str:
-        """1.2.0 旧 action 兼容路径。1.3.x 保留转换 + 弃用提示，1.4 移除。"""
-        normalized = (action or "").strip().casefold()
-        logger.warning(
-            "[大小姐模式] call_maid 旧 action=%s 已弃用，请改用新接口（request_text/agent_name/resume_agent_id/run_in_background/tasks）。",
-            normalized,
-        )
-        if normalized not in {"dispatch", "steer", "stop", "done"}:
-            return "call_maid 的 action 非法（已弃用），请使用新接口。"
-        if normalized == "stop":
-            active = await self.orchestrator.list_active_runs(
-                event.unified_msg_origin,
-                event.get_sender_id(),
-            )
-            if active:
-                outcomes = [
-                    await self.orchestrator.stop(
-                        task_id=run.task_id,
-                        event=event,
-                    )
-                    for run in active
-                ]
-                return self._json_outcome(
-                    {
-                        "status": "deprecated",
-                        "warning": "action=stop 已弃用，请改用 maid_task(stop, task_id)。",
-                        "items": [item.to_dict() for item in outcomes],
-                    }
-                )
-            return await self._request_stop_background_tasks(event)
-        if normalized == "done":
-            return "done 已弃用，1.3.0 runtime 无需显式结束 session。"
-        if not request_text.strip():
-            return "call_maid 需要提供非空的 request_text。"
-        if normalized == "steer":
-            active = await self.orchestrator.list_active_runs(
-                event.unified_msg_origin,
-                event.get_sender_id(),
-            )
-            if len(active) == 1:
-                ticket = await self.orchestrator.steer(
-                    agent_id=active[0].agent_id,
-                    message_text=request_text,
-                    event=event,
-                )
-                return self._json_outcome(
-                    {
-                        "status": "deprecated",
-                        "warning": "action=steer 已弃用，请改用 maid_task(steer, agent_id)。",
-                        "agent_id": active[0].agent_id,
-                        "task_id": active[0].task_id,
-                        "ticket": ticket,
-                    }
-                )
-            if len(active) > 1:
-                return "当前会话有多个活跃 agent；旧 action=steer 无法消歧，请使用 maid_task + agent_id。"
-            return await self._steer_background_task(event, request_text)
-        # dispatch via legacy: route to new single-dispatch (foreground).
-        return await self.call_maid(
-            event=event,
-            request_text=request_text,
-            agent_name=agent_name,
-        )
-
     @filter.llm_tool(name=MAID_TASK_TOOL_NAME)
     async def maid_task(
         self,
@@ -3311,14 +2277,10 @@ class MaidAgent(Star):
                 return self._json_outcome({"status": "error", "error": str(exc)})
             except PermissionError as exc:
                 return self._json_outcome({"status": "error", "error": str(exc)})
-            return self._json_outcome(
-                {"agent_id": agent_id, "status": "steered", "ticket": ticket}
-            )
+            return self._json_outcome({"agent_id": agent_id, "status": "steered", "ticket": ticket})
         if normalized == "stop":
             if not task_id:
-                return self._json_outcome(
-                    {"status": "error", "error": "stop 需要 task_id。"}
-                )
+                return self._json_outcome({"status": "error", "error": "stop 需要 task_id。"})
             try:
                 outcome = await self.orchestrator.stop(
                     task_id=task_id,
@@ -3352,9 +2314,7 @@ class MaidAgent(Star):
             if outcome.status in {STATUS_COMPLETED, STATUS_FAILED, STATUS_STOPPED}:
                 await self.outbox.note_result_claimed(outcome.agent_id, task_id)
             return self._json_outcome(outcome.to_dict())
-        return self._json_outcome(
-            {"status": "error", "error": f"maid_task action 非法: {action}"}
-        )
+        return self._json_outcome({"status": "error", "error": f"maid_task action 非法: {action}"})
 
     async def _resolve_agent_id_from_task(self, task_id: str) -> str:
         """Reverse-lookup an agent_id from a task_id by scanning runtime store."""
@@ -3362,912 +2322,6 @@ class MaidAgent(Star):
             return ""
         found = await self.runtime_store.find_run(task_id)
         return found[0].agent_id if found is not None else ""
-
-
-    async def _request_maid_follow_up(
-        self,
-        event: AstrMessageEvent,
-        req: ProviderRequest,
-        maid_visible_text: str,
-        agent_name: str,
-        maid_request: str,
-        agent_result: str,
-        reasoning_content: str = "",
-        reasoning_signature: str | None = None,
-    ) -> LLMResponse:
-        _ = reasoning_signature
-        provider_id = await self.context.get_current_chat_provider_id(event.unified_msg_origin)
-        provider = self.context.get_provider_by_id(provider_id)
-        if provider is None:
-            raise RuntimeError(f"未找到用于大小姐追答的 provider: {provider_id}")
-
-        new_contexts = list(req.contexts)
-
-        # Format assistant's previous message as pure text
-        assistant_content = maid_visible_text or "雪雪去帮你查啦，等一下下哦～"
-        if reasoning_content:
-            assistant_content = f"<think>{reasoning_content}</think>\n{assistant_content}"
-
-        new_contexts.append({"role": "assistant", "content": assistant_content})
-
-        follow_up_prompt = f"[管家后台执行完成]\n执行管家: {agent_name}\n执行请求: {maid_request}\n执行结果:\n{agent_result}\n\n请向用户总结或汇报以上执行结果（请保持你原有的人设和说话风格）。"
-
-        return await provider.text_chat(
-            prompt=follow_up_prompt,
-            image_urls=req.image_urls,
-            func_tool=None,
-            contexts=new_contexts,
-            system_prompt=req.system_prompt,
-            tool_calls_result=None,
-            model=req.model,
-            extra_user_content_parts=req.extra_user_content_parts,
-        )
-
-    async def _run_maid_follow_up_background_task(
-        self,
-        event: AstrMessageEvent,
-        req: ProviderRequest,
-        pending: dict,
-    ) -> None:
-        """执行单任务后台追答，并在停止/失败时主动收尾 active session。"""
-        task_id = str(pending.get("task_id") or "")
-        agent_name = pending.get("agent_name") or self.maid_mode_config.default_agent_name
-        maid_full_reply = pending.get("maid_full_reply") or ""
-        maid_request = pending.get("maid_request") or ""
-        true_user_input = pending.get("true_user_input")
-        image_urls_raw = pending.get("image_urls_raw")
-        session_done_requested = bool(pending.get("session_done_requested", False))
-        reasoning_content = str(pending.get("reasoning_content", "") or "")
-        reasoning_signature = pending.get("reasoning_signature")
-        agent_id = str(pending.get("agent_id") or task_id)
-        parent_message_id = str(pending.get("parent_message_id") or "")
-        source = str(pending.get("source") or "chat")
-        dispatch_error: str | None = None
-        final_status = "done"
-        watchdog: asyncio.Task | None = None
-
-        try:
-            if task_id:
-                await self.background_tasks.mark_running(
-                    task_id,
-                    progress=f"管家开始执行任务: {maid_request[:80]}",
-                )
-                await self._console_update_status_safe(task_id, "running")
-                await self._console_event_safe(
-                    task_id=task_id,
-                    event_type="running",
-                    title="管家开始执行",
-                    message=maid_request,
-                    source="runner",
-                    status="running",
-                    payload={"agent_name": agent_name},
-                )
-                watchdog = self._start_dispatch_watchdog(
-                    task_id=task_id,
-                    source=source,
-                    event=event,
-                )
-            try:
-                if self.session_store is None:
-                    raise RuntimeError("session_store 尚未初始化")
-                agent_result, resolved_agent_name = await dispatch_to_maid_agent(
-                    context=self.context,
-                    event=event,
-                    session_store=self.session_store,
-                    agent_name=agent_name,
-                    maid_full_reply=maid_full_reply,
-                    maid_request=maid_request,
-                    true_user_input=true_user_input if isinstance(true_user_input, str) else None,
-                    image_urls_raw=image_urls_raw,
-                    on_runner_registered=self._register_background_runner,
-                    on_runner_unregistered=self._unregister_background_runner,
-                    on_assistant_output_updated=(
-                        (lambda output: self._update_single_assistant_output(task_id, output))
-                        if task_id
-                        else None
-                    ),
-                    on_tool_chain_updated=(
-                        (
-                            lambda messages: self._console_tool_chain_snapshot_safe(
-                                task_id,
-                                messages,
-                            )
-                        )
-                        if task_id
-                        else None
-                    ),
-                    agent_id=agent_id,
-                    parent_message_id=parent_message_id,
-                )
-                if task_id:
-                    await self.background_tasks.update_progress(
-                        task_id,
-                        f"管家已完成执行，等待大小姐整理结果: {resolved_agent_name}",
-                    )
-                    await self._console_event_safe(
-                        task_id=task_id,
-                        event_type="agent_result",
-                        title="管家返回结果",
-                        message=agent_result,
-                        source="agent",
-                        status="running",
-                        payload={"agent_name": resolved_agent_name},
-                    )
-            except Exception as exc:
-                resolved_agent_name = agent_name
-                if event.get_extra("agent_stop_requested"):
-                    agent_result = "管家任务已按请求停止。"
-                    logger.info(
-                        "[大小姐模式] 子 agent 已按请求停止: task_id=%s",
-                        task_id,
-                    )
-                else:
-                    logger.error("[大小姐模式] 子 agent 调度失败: %s", exc, exc_info=True)
-                    agent_result = f"执行过程中出现问题：{exc!s}"
-                    dispatch_error = str(exc)
-                    if task_id:
-                        await self._console_event_safe(
-                            task_id=task_id,
-                            event_type="agent_error",
-                            title="管家执行出错",
-                            message=dispatch_error,
-                            source="agent",
-                            status="error",
-                            payload={"agent_name": resolved_agent_name},
-                        )
-
-            maid_visible_text = maid_full_reply.strip()
-            if task_id:
-                await self._console_event_safe(
-                    task_id=task_id,
-                    event_type="follow_up_request",
-                    title="请求大小姐整理结果",
-                    message=agent_result,
-                    source="system",
-                    status="running",
-                    payload={"agent_name": resolved_agent_name},
-                )
-            follow_up_resp = await self._request_maid_follow_up(
-                event=event,
-                req=req,
-                maid_visible_text=maid_visible_text,
-                agent_name=resolved_agent_name,
-                maid_request=maid_request,
-                agent_result=agent_result,
-                reasoning_content=reasoning_content,
-                reasoning_signature=(
-                    str(reasoning_signature) if reasoning_signature is not None else None
-                ),
-            )
-            sanitized_follow_up, follow_up_completion_text = await self._deliver_follow_up_reply(
-                event=event,
-                req=req,
-                follow_up_resp=follow_up_resp,
-                agent_id=agent_id,
-                history_request_text=maid_request,
-                history_agent_name=resolved_agent_name,
-                history_tool_result=agent_result,
-                console_task_id=task_id,
-            )
-
-            final_status = (
-                "stopped"
-                if event.get_extra("agent_stop_requested")
-                else ("error" if dispatch_error else "done")
-            )
-            if self.session_store and (
-                session_done_requested or final_status in {"stopped", "error"}
-            ):
-                await self.session_store.close_active_session(
-                    event.unified_msg_origin,
-                    status=("done" if session_done_requested else final_status),
-                )
-            if task_id:
-                await self.background_tasks.finish(
-                    task_id,
-                    status=final_status,
-                    result=sanitized_follow_up or agent_result,
-                    error=dispatch_error or "",
-                )
-                await self._console_update_status_safe(
-                    task_id,
-                    final_status,
-                    meta={
-                        "agent_name": resolved_agent_name,
-                        "agent_result": agent_result,
-                        "follow_up": sanitized_follow_up or follow_up_completion_text,
-                        "error": dispatch_error or "",
-                    },
-                )
-                await self._console_event_safe(
-                    task_id=task_id,
-                    event_type=("error" if final_status == "error" else "finished"),
-                    title=("后台任务失败" if final_status == "error" else "后台任务完成"),
-                    message=dispatch_error or sanitized_follow_up or agent_result,
-                    source="system",
-                    status=final_status,
-                    payload={"agent_name": resolved_agent_name},
-                )
-        except asyncio.CancelledError:
-            final_status = "stopped"
-            if self.session_store:
-                await self.session_store.close_active_session(
-                    event.unified_msg_origin,
-                    status=final_status,
-                )
-            if task_id:
-                await self.background_tasks.finish(
-                    task_id,
-                    status=final_status,
-                    error="后台追答任务已取消。",
-                )
-                await self._console_update_status_safe(
-                    task_id,
-                    final_status,
-                    meta={"error": "后台追答任务已取消。"},
-                )
-            raise
-        except Exception as exc:
-            final_status = "stopped" if event.get_extra("agent_stop_requested") else "error"
-            if self.session_store:
-                await self.session_store.close_active_session(
-                    event.unified_msg_origin,
-                    status=final_status,
-                )
-            if task_id:
-                await self.background_tasks.finish(
-                    task_id,
-                    status=final_status,
-                    error=str(exc),
-                )
-                await self._console_update_status_safe(
-                    task_id,
-                    final_status,
-                    meta={"error": str(exc)},
-                )
-                await self._console_event_safe(
-                    task_id=task_id,
-                    event_type=("stopped" if final_status == "stopped" else "error"),
-                    title=(
-                        "后台追答任务已停止" if final_status == "stopped" else "后台追答任务失败"
-                    ),
-                    message=str(exc),
-                    source="system",
-                    status=final_status,
-                )
-            if final_status == "stopped":
-                logger.info("[大小姐模式] 后台追答任务已按请求停止: task_id=%s", task_id)
-            else:
-                logger.error("[大小姐模式] 后台追答任务失败: %s", exc, exc_info=True)
-        finally:
-            await self._cancel_dispatch_watchdog(watchdog)
-
-    async def _run_maid_batch_item_background_task(
-        self,
-        *,
-        event: AstrMessageEvent,
-        batch_id: str,
-        item_id: str,
-        session_id: str,
-        maid_full_reply: str,
-        agent_name: str,
-        maid_request: str,
-        true_user_input: str | None,
-        image_urls_raw: object,
-        parent_message_id: str,
-    ) -> None:
-        """执行 batch 子任务；批量停止依赖 batch_registry 与 runner.request_stop。"""
-        dispatch_error: str | None = None
-        resolved_agent_name = agent_name
-        result_text = ""
-        final_status = "done"
-
-        batch = await self.batch_registry.get_batch(batch_id)
-        if batch is None:
-            return
-        if batch.stop_requested or event.get_extra("agent_stop_requested"):
-            final_status = "stopped"
-            await self.batch_registry.finish_item(
-                batch_id,
-                item_id,
-                status=final_status,
-                error="已请求停止",
-                agent_name=resolved_agent_name,
-            )
-            await self._console_update_status_safe(item_id, final_status)
-            await self._console_event_safe(
-                task_id=item_id,
-                event_type="stopped",
-                title="批量子任务已停止",
-                message="已请求停止",
-                source="system",
-                status=final_status,
-                payload={"batch_id": batch_id, "agent_name": resolved_agent_name},
-            )
-            if self.session_store:
-                await self.session_store.close_session(session_id, status=final_status)
-            return
-
-        await self.batch_registry.update_item_running(batch_id, item_id)
-        await self._console_update_status_safe(item_id, "running")
-        await self._console_event_safe(
-            task_id=item_id,
-            event_type="running",
-            title="批量子任务开始执行",
-            message=maid_request,
-            source="runner",
-            status="running",
-            payload={"batch_id": batch_id, "agent_name": agent_name},
-        )
-        try:
-            if self.session_store is None:
-                raise RuntimeError("session_store 尚未初始化")
-            result_text, resolved_agent_name = await dispatch_to_maid_agent(
-                context=self.context,
-                event=event,
-                session_store=self.session_store,
-                agent_name=agent_name,
-                maid_full_reply=maid_full_reply,
-                maid_request=maid_request,
-                true_user_input=true_user_input,
-                image_urls_raw=image_urls_raw,
-                explicit_session_id=session_id,
-                on_runner_registered=(
-                    lambda _umo, runner: self._register_batch_runner(batch_id, runner)
-                ),
-                on_runner_unregistered=(
-                    lambda _umo, runner: self._unregister_batch_runner(batch_id, runner)
-                ),
-                on_assistant_output_updated=(
-                    lambda output: self._update_batch_item_assistant_output(
-                        batch_id, item_id, output
-                    )
-                ),
-                on_tool_chain_updated=(
-                    lambda messages: self._console_tool_chain_snapshot_safe(
-                        item_id,
-                        messages,
-                        meta={"batch_id": batch_id},
-                    )
-                ),
-                agent_id=item_id,
-                parent_message_id=parent_message_id,
-            )
-            refreshed_batch = await self.batch_registry.get_batch(batch_id)
-            if refreshed_batch is not None and (
-                refreshed_batch.stop_requested or event.get_extra("agent_stop_requested")
-            ):
-                final_status = "stopped"
-            await self.batch_registry.finish_item(
-                batch_id,
-                item_id,
-                status=final_status,
-                result=result_text,
-                agent_name=resolved_agent_name,
-            )
-            await self._console_update_status_safe(
-                item_id,
-                final_status,
-                meta={
-                    "batch_id": batch_id,
-                    "agent_name": resolved_agent_name,
-                    "agent_result": result_text,
-                },
-            )
-            await self._console_event_safe(
-                task_id=item_id,
-                event_type=("stopped" if final_status == "stopped" else "finished"),
-                title=("批量子任务已停止" if final_status == "stopped" else "批量子任务完成"),
-                message=result_text,
-                source="agent",
-                status=final_status,
-                payload={"batch_id": batch_id, "agent_name": resolved_agent_name},
-            )
-        except asyncio.CancelledError:
-            final_status = "stopped"
-            await self.batch_registry.finish_item(
-                batch_id,
-                item_id,
-                status=final_status,
-                error="批量子任务已取消。",
-                agent_name=resolved_agent_name,
-            )
-            await self._console_update_status_safe(item_id, final_status)
-            raise
-        except Exception as exc:
-            refreshed_batch = await self.batch_registry.get_batch(batch_id)
-            stop_requested = bool(event.get_extra("agent_stop_requested")) or bool(
-                refreshed_batch and refreshed_batch.stop_requested
-            )
-            if stop_requested:
-                dispatch_error = "批量子任务已按请求停止。"
-                final_status = "stopped"
-                logger.info(
-                    "[大小姐模式] 批量子任务已按请求停止: batch_id=%s item_id=%s",
-                    batch_id,
-                    item_id,
-                )
-            else:
-                dispatch_error = str(exc)
-                final_status = "error"
-                logger.error(
-                    "[大小姐模式] 批量子任务执行失败: batch_id=%s item_id=%s error=%s",
-                    batch_id,
-                    item_id,
-                    exc,
-                    exc_info=True,
-                )
-            await self.batch_registry.finish_item(
-                batch_id,
-                item_id,
-                status=final_status,
-                error=dispatch_error,
-                agent_name=resolved_agent_name,
-            )
-            await self._console_update_status_safe(
-                item_id,
-                final_status,
-                meta={
-                    "batch_id": batch_id,
-                    "agent_name": resolved_agent_name,
-                    "error": dispatch_error,
-                },
-            )
-            await self._console_event_safe(
-                task_id=item_id,
-                event_type=("stopped" if final_status == "stopped" else "error"),
-                title=("批量子任务已停止" if final_status == "stopped" else "批量子任务失败"),
-                message=dispatch_error,
-                source="agent",
-                status=final_status,
-                payload={"batch_id": batch_id, "agent_name": resolved_agent_name},
-            )
-        finally:
-            if self.session_store:
-                await self.session_store.close_session(session_id, status=final_status)
-
-    async def _run_maid_batch_background_task(
-        self,
-        event: AstrMessageEvent,
-        req: ProviderRequest,
-        pending: dict,
-    ) -> None:
-        batch_id = str(pending.get("batch_id") or uuid.uuid4().hex)
-        items = pending.get("items") or []
-        maid_full_reply = str(pending.get("maid_full_reply") or "")
-        true_user_input = pending.get("true_user_input")
-        image_urls_raw = pending.get("image_urls_raw")
-        session_done_requested = bool(pending.get("session_done_requested", False))
-        reasoning_content = str(pending.get("reasoning_content", "") or "")
-        reasoning_signature = pending.get("reasoning_signature")
-        agent_id = str(pending.get("agent_id") or batch_id)
-        parent_message_id = str(pending.get("parent_message_id") or "")
-        source = str(pending.get("source") or "chat")
-        watchdog: asyncio.Task | None = None
-
-        if not isinstance(items, list) or not items:
-            await self.background_tasks.finish(
-                batch_id,
-                status="error",
-                error="批量任务缺少可执行条目",
-            )
-            await self._console_update_status_safe(
-                batch_id,
-                "error",
-                meta={"error": "批量任务缺少可执行条目"},
-            )
-            await self._console_event_safe(
-                task_id=batch_id,
-                event_type="error",
-                title="批量任务缺少可执行条目",
-                source="system",
-                status="error",
-            )
-            return
-
-        try:
-            batch = await self.batch_registry.create_batch(
-                batch_id=batch_id,
-                unified_msg_origin=event.unified_msg_origin,
-                sender_id=event.get_sender_id(),
-                maid_full_reply=maid_full_reply,
-                true_user_input=(true_user_input if isinstance(true_user_input, str) else None),
-                image_urls_raw=image_urls_raw,
-                session_done_requested=session_done_requested,
-                reasoning_content=reasoning_content,
-                reasoning_signature=(
-                    str(reasoning_signature) if reasoning_signature is not None else None
-                ),
-                items=items,
-            )
-            await self.batch_registry.mark_batch_running(batch_id)
-            await self.background_tasks.mark_running(
-                batch_id,
-                progress=f"批量管家任务开始执行，共 {len(batch.items)} 项",
-            )
-            await self._console_update_status_safe(batch_id, "running")
-            await self._console_event_safe(
-                task_id=batch_id,
-                event_type="running",
-                title="批量管家任务开始执行",
-                message=f"共 {len(batch.items)} 项",
-                source="runner",
-                status="running",
-            )
-            watchdog = self._start_dispatch_watchdog(
-                task_id=batch_id,
-                source=source,
-                event=event,
-            )
-            for item in batch.items:
-                await self._console_ensure_task_safe(
-                    self._build_task_patch(
-                        task_id=item.item_id,
-                        kind="batch_item",
-                        source="chat",
-                        unified_msg_origin=batch.unified_msg_origin,
-                        sender_id=batch.sender_id,
-                        agent_name=item.agent_name,
-                        status=item.status,
-                        request_text=item.maid_request,
-                        parent_task_id=batch.batch_id,
-                        title=f"批量子任务: {item.agent_name}",
-                        meta={
-                            "batch_id": batch.batch_id,
-                            "session_id": item.session_id,
-                            "agent_id": item.item_id,
-                            "parent_agent_id": batch.batch_id,
-                            "parent_message_id": parent_message_id,
-                        },
-                    )
-                )
-                await self._console_event_safe(
-                    task_id=item.item_id,
-                    event_type="queued",
-                    title="批量子任务已排队",
-                    message=item.maid_request,
-                    source="chat",
-                    status=item.status,
-                    payload={
-                        "batch_id": batch.batch_id,
-                        "agent_name": item.agent_name,
-                        "agent_id": item.item_id,
-                        "parent_agent_id": batch.batch_id,
-                        "parent_message_id": parent_message_id,
-                    },
-                )
-
-            item_tasks = [
-                asyncio.create_task(
-                    self._run_maid_batch_item_background_task(
-                        event=event,
-                        batch_id=batch.batch_id,
-                        item_id=item.item_id,
-                        session_id=item.session_id,
-                        maid_full_reply=batch.maid_full_reply,
-                        agent_name=item.agent_name,
-                        maid_request=item.maid_request,
-                        true_user_input=batch.true_user_input,
-                        image_urls_raw=batch.image_urls_raw,
-                        parent_message_id=parent_message_id,
-                    )
-                )
-                for item in batch.items
-            ]
-            if item_tasks:
-                await asyncio.gather(*item_tasks, return_exceptions=True)
-
-            batch = await self.batch_registry.get_batch(batch_id)
-            if batch is None:
-                raise RuntimeError(f"批量任务记录不存在: {batch_id}")
-
-            batch_result = self._build_batch_follow_up_result(batch)
-            maid_visible_text = batch.maid_full_reply.strip()
-            await self._console_event_safe(
-                task_id=batch_id,
-                event_type="follow_up_request",
-                title="请求大小姐整理批量结果",
-                message=batch_result,
-                source="system",
-                status=batch.status,
-            )
-            follow_up_resp = await self._request_maid_follow_up(
-                event=event,
-                req=req,
-                maid_visible_text=maid_visible_text,
-                agent_name="batch",
-                maid_request="批量管家结果汇总",
-                agent_result=batch_result,
-                reasoning_content=batch.reasoning_content,
-                reasoning_signature=batch.reasoning_signature,
-            )
-            sanitized_follow_up, follow_up_completion_text = await self._deliver_follow_up_reply(
-                event=event,
-                req=req,
-                follow_up_resp=follow_up_resp,
-                agent_id=agent_id,
-                history_request_text="批量管家结果汇总",
-                history_agent_name="batch",
-                history_tool_result=batch_result,
-                console_task_id=batch_id,
-                console_sent_title="批量结果追答已发送",
-                console_sent_status=batch.status,
-            )
-
-            await self.background_tasks.finish(
-                batch_id,
-                status=batch.status,
-                result=sanitized_follow_up or batch_result,
-            )
-            await self._console_update_status_safe(
-                batch_id,
-                batch.status,
-                meta={
-                    "batch_result": batch_result,
-                    "follow_up": sanitized_follow_up or follow_up_completion_text,
-                },
-            )
-            await self._console_event_safe(
-                task_id=batch_id,
-                event_type=("error" if batch.status == "error" else "finished"),
-                title="批量管家任务完成",
-                message=sanitized_follow_up or batch_result,
-                source="system",
-                status=batch.status,
-            )
-        except asyncio.CancelledError:
-            await self.background_tasks.finish(
-                batch_id,
-                status="stopped",
-                error="批量后台任务已取消。",
-            )
-            await self._console_update_status_safe(
-                batch_id,
-                "stopped",
-                meta={"error": "批量后台任务已取消。"},
-            )
-            raise
-        except Exception as exc:
-            await self.background_tasks.finish(
-                batch_id,
-                status="error",
-                error=str(exc),
-            )
-            await self._console_update_status_safe(
-                batch_id,
-                "error",
-                meta={"error": str(exc)},
-            )
-            await self._console_event_safe(
-                task_id=batch_id,
-                event_type="error",
-                title="批量后台追答任务失败",
-                message=str(exc),
-                source="system",
-                status="error",
-            )
-            logger.error("[大小姐模式] 批量后台追答任务失败: %s", exc, exc_info=True)
-        finally:
-            await self._cancel_dispatch_watchdog(watchdog)
-            await self.batch_registry.discard_batch(batch_id)
-            self._batch_runners_by_batch_id.pop(batch_id, None)
-            self._stop_requested_batch_ids.discard(batch_id)
-
-    async def _build_background_status_text(self, event: AstrMessageEvent) -> str:
-        current = await self.background_tasks.get_active_by_umo(event.unified_msg_origin)
-        active = await self.background_tasks.list_active()
-        lines = [f"当前后台管家任务数: {len(active)}"]
-        if current is None:
-            lines.append("当前会话没有运行中的管家任务。")
-            return "\n".join(lines)
-
-        lines.append(f"当前任务ID: {current.task_id}")
-        lines.append(f"状态: {current.status}")
-        lines.append(f"类型: {current.kind}")
-        if current.kind == "batch":
-            batch = await self.batch_registry.get_batch(current.task_id)
-            if batch is None:
-                lines.append("批量任务详情暂不可用。")
-                return "\n".join(lines)
-            lines.append(f"Batch ID: {batch.batch_id}")
-            lines.append(f"Batch 状态: {batch.status}")
-            lines.append(f"子任务总数: {len(batch.items)}")
-            lines.append(
-                "运行中/完成/失败/停止: "
-                f"{sum(item.status == 'running' for item in batch.items)}/"
-                f"{sum(item.status == 'done' for item in batch.items)}/"
-                f"{sum(item.status == 'error' for item in batch.items)}/"
-                f"{sum(item.status == 'stopped' for item in batch.items)}"
-            )
-            for item in batch.items:
-                lines.append(
-                    f"- item={item.item_id[:8]} agent={item.agent_name} status={item.status} session={item.session_id[:8]}"
-                )
-                if item.status == "running" and item.last_assistant_output:
-                    lines.append(f"  最新 assistant 输出: {item.last_assistant_output[:50]}")
-                elif item.result:
-                    lines.append(f"  最新结果: {item.result[:120]}")
-                elif item.error:
-                    lines.append(f"  错误: {item.error[:120]}")
-                else:
-                    lines.append(f"  请求: {item.maid_request[:120]}")
-            return "\n".join(lines)
-
-        lines.append(f"Agent: {current.agent_name}")
-        if current.status == "running" and current.last_assistant_output:
-            lines.append(f"最新 assistant 输出: {current.last_assistant_output[:50]}")
-        elif current.last_progress:
-            lines.append(f"进度: {current.last_progress}")
-        elif current.last_assistant_output:
-            lines.append(f"最新 assistant 输出: {current.last_assistant_output[:50]}")
-        elif current.last_agent_result:
-            lines.append(f"最新结果: {current.last_agent_result[:120]}")
-        elif current.error:
-            lines.append(f"错误: {current.error[:120]}")
-        else:
-            lines.append(f"请求: {current.maid_request[:120]}")
-        return "\n".join(lines)
-
-    async def _request_stop_background_tasks(
-        self,
-        event: AstrMessageEvent,
-        *,
-        source: str = "chat",
-    ) -> str:
-        current = await self.background_tasks.get_active_by_umo(event.unified_msg_origin)
-        if current is None:
-            return "当前会话没有运行中的管家任务。"
-        if source == "chat" and event.get_sender_id() != current.sender_id:
-            return "当前后台管家任务不属于本次发言的对方，无法停止。"
-
-        if current.kind == "batch":
-            await self.batch_registry.request_stop(current.task_id)
-            self._stop_requested_batch_ids.add(current.task_id)
-            batch_runners = list(
-                (self._batch_runners_by_batch_id.get(current.task_id) or {}).values()
-            )
-            for runner in batch_runners:
-                try:
-                    runner.request_stop()
-                except Exception as exc:
-                    logger.warning(
-                        "[大小姐模式] 批量 runner 停止请求失败: batch_id=%s error=%s",
-                        current.task_id,
-                        exc,
-                    )
-            await self.background_tasks.update_progress(
-                current.task_id,
-                "已收到批量任务停止请求，等待当前步骤结束后中断。",
-            )
-            await self._console_update_status_safe(current.task_id, "stopping")
-            await self._console_event_safe(
-                task_id=current.task_id,
-                event_type="stop_requested",
-                title="请求停止批量任务",
-                message="已收到批量任务停止请求，等待当前步骤结束后中断。",
-                source=source,
-                status="stopping",
-            )
-            lines = [f"已请求停止当前会话的批量管家任务。batch_id={current.task_id}"]
-            lines.append(f"命中的批量执行器数: {len(batch_runners)}")
-            lines.append("批量任务中的所有仍在运行的子任务都会在当前步骤结束后尝试停止。")
-            return "\n".join(lines)
-
-        stopped = 0
-        runner = self._background_runners_by_umo.get(event.unified_msg_origin)
-        if runner is not None:
-            runner_event = self._background_runner_events_by_runner_id.get(id(runner))
-            if runner_event is not None:
-                runner_event.set_extra("agent_stop_requested", True)
-                stopped += 1
-            try:
-                runner.request_stop()
-            except Exception as exc:
-                logger.warning(
-                    "[大小姐模式] 单任务 runner 停止请求失败: task_id=%s error=%s",
-                    current.task_id,
-                    exc,
-                )
-        if stopped == 0:
-            stopped += active_event_registry.request_agent_stop_all(
-                event.unified_msg_origin,
-                exclude=event,
-            )
-        await self.background_tasks.update_progress(
-            current.task_id,
-            "已收到停止请求，等待当前步骤结束后中断。",
-        )
-        await self._console_update_status_safe(current.task_id, "stopping")
-        await self._console_event_safe(
-            task_id=current.task_id,
-            event_type="stop_requested",
-            title="请求停止后台任务",
-            message="已收到停止请求，等待当前步骤结束后中断。",
-            source=source,
-            status="stopping",
-        )
-        lines = [f"已请求停止当前会话的后台管家任务。task_id={current.task_id}"]
-        lines.append(f"命中的活跃事件数: {stopped}")
-        lines.append("如果子 agent 正在等待工具或网络返回，通常会在当前步骤结束后停止。")
-        return "\n".join(lines)
-
-    async def _steer_background_task(
-        self,
-        event: AstrMessageEvent,
-        message_text: str,
-        *,
-        source: str = "chat",
-    ) -> str:
-        current = await self.background_tasks.get_active_by_umo(event.unified_msg_origin)
-        if current is None:
-            return "当前会话没有运行中的管家任务，无法补充要求。"
-        if current.kind == "batch":
-            return "当前任务为批量管家任务，暂不支持补充要求，请等待完成或使用 /maid stop 停止整批任务。"
-
-        runner = self._background_runners_by_umo.get(event.unified_msg_origin)
-        if runner is None:
-            return "当前没有可引导的活跃管家执行器，请稍后再试。"
-
-        runner_event = self._background_runner_events_by_runner_id.get(id(runner))
-        active_sender_id = runner_event.get_sender_id() if runner_event is not None else None
-        sender_id = event.get_sender_id()
-        if source == "chat" and sender_id != current.sender_id:
-            return "当前后台管家任务不属于本次发言的对方，无法补充要求。"
-        if source != "chat" and sender_id != active_sender_id and current.sender_id != "dashboard":
-            return "当前后台管家任务不属于本次操作来源，无法补充要求。"
-
-        ticket = runner.follow_up(message_text=message_text)
-        if ticket is None:
-            return "当前后台管家任务暂时无法接收补充要求。"
-
-        await self.background_tasks.update_progress(
-            current.task_id,
-            f"已收到新的补充要求: {message_text[:120]}",
-        )
-        await self._console_event_safe(
-            task_id=current.task_id,
-            event_type="steer",
-            title="补充要求",
-            message=message_text,
-            source=source,
-            status=current.status,
-        )
-        return (
-            f"已将补充要求转交给后台管家。task_id={current.task_id}\n补充内容: {message_text[:120]}"
-        )
-
-    def _register_background_runner(self, umo: str, runner: object) -> None:
-        self._background_runners_by_umo[umo] = runner
-        runner_context = getattr(runner, "run_context", None)
-        wrapped_context = getattr(runner_context, "context", None)
-        runner_event = getattr(wrapped_context, "event", None)
-        if runner_event is not None:
-            self._background_runner_events_by_runner_id[id(runner)] = runner_event
-
-    def _unregister_background_runner(self, umo: str, runner: object) -> None:
-        self._background_runner_events_by_runner_id.pop(id(runner), None)
-        if self._background_runners_by_umo.get(umo) is runner:
-            self._background_runners_by_umo.pop(umo, None)
-
-    def _register_batch_runner(self, batch_id: str, runner: object) -> None:
-        self._batch_runners_by_batch_id.setdefault(batch_id, {})[id(runner)] = runner
-        if batch_id in self._stop_requested_batch_ids:
-            try:
-                runner.request_stop()
-            except Exception as exc:
-                logger.warning(
-                    "[大小姐模式] 延迟注册的批量 runner 停止请求失败: batch_id=%s error=%s",
-                    batch_id,
-                    exc,
-                )
-
-    def _unregister_batch_runner(self, batch_id: str, runner: object) -> None:
-        runners = self._batch_runners_by_batch_id.get(batch_id)
-        if runners is None:
-            return
-        runners.pop(id(runner), None)
-        if not runners:
-            self._batch_runners_by_batch_id.pop(batch_id, None)
 
     @filter.on_llm_response()
     async def sanitize_llm_response(
@@ -4292,114 +2346,12 @@ class MaidAgent(Star):
 
     @filter.after_message_sent()
     async def continue_maid_follow_up_after_send(self, event: AstrMessageEvent) -> None:
+        """消息发送后触发 notification outbox 的机会主义投递。"""
         try:
-            logger.debug("[大小姐模式] after_message_sent 进入后续处理")
             if event.get_platform_name() not in {"cron", "dashboard"}:
                 await self.outbox.note_user_message(event.unified_msg_origin)
-            req = event.get_extra("provider_request")
-            if not self._is_provider_request_like(req):
-                return
-
-            tool_history_records = self._consume_call_maid_tool_history(event)
-            if tool_history_records:
-                await self._persist_call_maid_tool_history(event, req, tool_history_records)
-
-            pending_items = self._consume_pending_dispatches(event)
-            if not pending_items:
-                return
-
-            maid_full_reply = self._extract_latest_assistant_text(event)
-            true_user_input = event.get_extra(TRUE_USER_INPUT_EXTRA_KEY, "") or ""
-            image_urls_raw = getattr(getattr(event, "message_obj", None), "image_urls", None)
-
-            current_task = await self.background_tasks.get_active_by_umo(event.unified_msg_origin)
-            if current_task is not None:
-                logger.warning(
-                    "[大小姐模式] 当前会话已有后台任务运行，将新的 call_maid(dispatch) 降级为补充要求: current_task_id=%s",
-                    current_task.task_id,
-                )
-                maid_request = (
-                    self._join_batch_steer_text(pending_items)
-                    if len(pending_items) > 1
-                    else pending_items[0]["maid_request"]
-                )
-                steer_text = await self._steer_background_task(event, maid_request)
-                await self._console_event_safe(
-                    task_id=current_task.task_id,
-                    event_type="steer",
-                    title="新 dispatch 降级为补充要求",
-                    message=maid_request,
-                    source="chat",
-                    status=current_task.status,
-                )
-                if steer_text.strip():
-                    await event.send(MessageChain(chain=[Comp.Plain(steer_text)]))
-                return
-
-            if len(pending_items) > 1:
-                pending = {
-                    "mode": "batch",
-                    "items": pending_items,
-                    "maid_full_reply": maid_full_reply,
-                    "true_user_input": (
-                        true_user_input if self.maid_mode_config.include_raw_user_input else None
-                    ),
-                    "image_urls_raw": image_urls_raw,
-                    "session_done_requested": False,
-                    "parent_message_id": pending_items[0].get("parent_message_id", ""),
-                }
-                kind = "batch"
-            else:
-                pending = {
-                    "agent_name": pending_items[0]["agent_name"],
-                    "maid_full_reply": maid_full_reply,
-                    "maid_request": pending_items[0]["maid_request"],
-                    "true_user_input": (
-                        true_user_input if self.maid_mode_config.include_raw_user_input else None
-                    ),
-                    "image_urls_raw": image_urls_raw,
-                    "session_done_requested": False,
-                    "parent_message_id": pending_items[0].get("parent_message_id", ""),
-                }
-                kind = "single"
-
-            try:
-                task_id = await self._launch_maid_dispatch(
-                    source="chat",
-                    event=event,
-                    req=req,
-                    pending=pending,
-                    kind=kind,
-                )
-            except MaidTaskConflictError as conflict:
-                maid_request = (
-                    self._join_batch_steer_text(pending_items)
-                    if len(pending_items) > 1
-                    else pending_items[0]["maid_request"]
-                )
-                steer_text = await self._steer_background_task(event, maid_request)
-                await self._console_event_safe(
-                    task_id=conflict.active_task.task_id,
-                    event_type="steer",
-                    title="并发 dispatch 降级为补充要求",
-                    message=maid_request,
-                    source="chat",
-                    status=conflict.active_task.status,
-                )
-                if steer_text.strip():
-                    await event.send(MessageChain(chain=[Comp.Plain(steer_text)]))
-                return
-
-            logger.debug(
-                "[大小姐模式] 已投递后台管家任务，kind=%s task_id=%s，主链路不再等待执行完成",
-                kind,
-                task_id,
-            )
-
         except Exception as exc:
-            logger.error("[大小姐模式] after_message_sent 后续追答失败: %s", exc, exc_info=True)
-        finally:
-            self._clear_pending_follow_up(event)
+            logger.error("[大小姐模式] after_message_sent 后续处理失败: %s", exc, exc_info=True)
 
     @filter.command_group("maid")
     def maid(self):
@@ -4420,7 +2372,7 @@ class MaidAgent(Star):
             )
             yield event.plain_result("\n".join(lines))
             return
-        yield event.plain_result(await self._build_background_status_text(event))
+        yield event.plain_result("当前会话没有运行中的管家任务。")
 
     @maid.command("stop")
     async def maid_stop(self, event: AstrMessageEvent):
@@ -4436,14 +2388,14 @@ class MaidAgent(Star):
                 )
             yield event.plain_result(f"已请求停止 {len(active)} 个活跃 run。")
             return
-        yield event.plain_result(await self._request_stop_background_tasks(event))
+        yield event.plain_result("当前会话没有运行中的管家任务。")
 
     @filter.on_decorating_result()
     async def decorate_result(self, event: AstrMessageEvent) -> None:
-        """
-        结果装饰阶段。
+        """结果装饰阶段。
 
-        当前仅用于日志记录。
+        流式响应场景下 after_message_sent 钩子先于流结束触发，这里包装
+        async_stream，在流真正结束后补一次 outbox 投递触发。
         """
         raw_input = event.get_extra(RAW_INPUT_EXTRA_KEY)
         if raw_input:
@@ -4458,7 +2410,7 @@ class MaidAgent(Star):
                     async for chunk in original_stream:
                         yield chunk
                 finally:
-                    logger.debug("[大小姐模式] 流式输出已结束，开始触发后台后续处理")
+                    logger.debug("[大小姐模式] 流式输出已结束，触发 outbox 投递")
                     task = asyncio.create_task(self.continue_maid_follow_up_after_send(event))
                     self._track_background_task(task)
 

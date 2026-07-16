@@ -694,10 +694,12 @@ async function refreshConsole({ silent = false, keepSession = true } = {}) {
   const selectedBefore = state.selectedSessionId;
   try {
     state.pollCount += 1;
-    // runtime 必须先于 tasks 落库，否则 updateSessionList 在 runtime 还没回来时
-    // 拿不到 runtimeRuns，首帧会空。
-    await loadRuntimeAgents({ force: !silent });
-    await loadTasks();
+    // runtime / tasks 并行：审计记录分组已移除，updateSessionList 不再依赖
+    // runtimeRuns 去重，两者顺序无关，并行可省掉串行 waterfall。
+    await Promise.all([
+      loadRuntimeAgents({ force: !silent }),
+      loadTasks(),
+    ]);
     await Promise.allSettled([
       loadOverview({ applyForm: !silent }),
       loadAgents(),
@@ -1369,7 +1371,7 @@ function renderInspector() {
   $("#taskFacts").innerHTML = `
     <dt>状态</dt><dd>${escapeHtml(task.status)}</dd>
     <dt>类型</dt><dd>${escapeHtml(task.kind)}</dd>
-    <dt>Agent</dt><dd>${escapeHtml(aliasForAgentId(task.agent_id || taskMeta(task).agent_id))}</dd>
+    <dt>Agent</dt><dd>${escapeHtml(aliasForAgentId(task.agent_id || taskMeta(task).agent_id))} · ${escapeHtml(task.agent_name)}</dd>
     <dt>模式</dt><dd>${escapeHtml(task.mode || taskMeta(task).run_mode || "")}</dd>
     <dt>通知</dt><dd>${escapeHtml(task.notification?.notification_id || taskMeta(task).notification?.notification_id || "-")}</dd>
     <dt>来源 UMO</dt><dd>${escapeHtml(task.unified_msg_origin)}</dd>

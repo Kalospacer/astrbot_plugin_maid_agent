@@ -212,32 +212,11 @@ textarea { resize: none; }
   font-weight: 500;
 }
 .session-item.delete-armed { background: var(--err-soft); }
-.session-item.pinned .session-title::before {
-  content: "";
-  display: inline-block;
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--accent);
-  margin-right: 7px;
-  vertical-align: 1px;
-}
 .session-title {
   flex: 1;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-.session-rename-form { flex: 1; min-width: 0; }
-.session-rename-input {
-  width: 100%;
-  background: var(--bg-raised);
-  border: 1px solid var(--accent);
-  border-radius: 6px;
-  color: var(--text-main);
-  font-size: 13px;
-  line-height: 1.3;
-  padding: 4px 6px;
 }
 .session-actions {
   display: none;
@@ -1063,13 +1042,6 @@ textarea { resize: none; }
 .action-grid button.danger { color: var(--err); }
 .action-grid button.danger:hover { border-color: var(--err); }
 .action-grid button:last-child { grid-column: 1 / -1; }
-.audit-header h3 {
-  font-size: 11px;
-  letter-spacing: 0.08em;
-  color: var(--text-muted);
-  text-transform: uppercase;
-  margin: 0 0 12px;
-}
 .tab-panel h3 {
   font-size: 11px;
   letter-spacing: 0.08em;

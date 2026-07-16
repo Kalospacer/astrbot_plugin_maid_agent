@@ -17,12 +17,11 @@ def _capture_warnings(monkeypatch):
         "logger",
         SimpleNamespace(warning=lambda *args: warnings.append(args)),
     )
-    config_module._warned_deprecated_prompt_templates.clear()
     config_module._warned_invalid_prompt_templates.clear()
     return warnings
 
 
-def test_legacy_full_reply_placeholder_is_empty_in_runtime(monkeypatch) -> None:
+def test_removed_full_reply_placeholder_falls_back_to_default(monkeypatch) -> None:
     warnings = _capture_warnings(monkeypatch)
     template = (
         "{user_input_block}{maid_full_reply_block}{maid_request_block}执行以上任务"
@@ -33,10 +32,16 @@ def test_legacy_full_reply_placeholder_is_empty_in_runtime(monkeypatch) -> None:
         user_input_block="USER\n",
         maid_request_block="REQUEST\n",
     )
+    expected = DEFAULT_DISPATCH_PROMPT_TEMPLATE.format_map(
+        {
+            "user_input_block": "USER\n",
+            "maid_request_block": "REQUEST\n",
+        }
+    ).strip()
 
-    assert rendered == "USER\nREQUEST\n执行以上任务"
+    assert rendered == expected
     assert len(warnings) == 1
-    assert "maid_full_reply_block" in warnings[0][0]
+    assert "maid_full_reply_block" in str(warnings[0])
 
 
 def test_current_dispatch_prompt_template_renders_normally(monkeypatch) -> None:

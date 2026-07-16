@@ -21,6 +21,8 @@ from astrbot_plugin_maid_agent.runtime_orchestrator import (
     RunNotFoundError,
 )
 
+import astrbot.api.message_components as Comp
+from astrbot.api.event import MessageChain
 from astrbot.core.agent.message import Message
 
 
@@ -340,41 +342,6 @@ def test_batch_empty_and_resume_are_rejected():
     asyncio.run(scenario())
 
 
-async def _legacy_action_dispatch_routes_to_new():
-    plugin = _make_plugin()
-    plugin.orchestrator.set_single(_outcome(status="completed", mode="foreground", result="ok"))
-    res = await plugin.call_maid(_Event(), action="dispatch", request_text="legacy")
-    payload = _parse(res)
-    assert payload["status"] == "completed"
-    assert payload["result"] == "ok"
-
-
-def test_legacy_action_dispatch_routes_to_new():
-    asyncio.run(_legacy_action_dispatch_routes_to_new())
-
-
-async def _legacy_action_done_is_stateless_noop():
-    plugin = _make_plugin()
-    # intruder event; no active task, no session -> still allowed (no-op), but
-    # when an active task belongs to another sender it must be refused.
-    from astrbot_plugin_maid_agent.background_registry import MaidBackgroundTaskRegistry
-
-    plugin.background_tasks = MaidBackgroundTaskRegistry()
-    await plugin.background_tasks.create_task(
-        unified_msg_origin="aiocqhttp:GroupMessage:g1",
-        sender_id="owner",
-        agent_name="butler",
-        maid_request="x",
-    )
-    intruder = _Event(sender_id="intruder")
-    res = await plugin.call_maid(intruder, action="done")
-    assert "无需显式结束" in res
-
-
-def test_legacy_action_done_is_stateless_noop():
-    asyncio.run(_legacy_action_done_is_stateless_noop())
-
-
 async def _maid_task_result_claims_notification():
     plugin = _make_plugin()
     plugin.orchestrator.set_result(
@@ -518,6 +485,23 @@ def test_child_event_copies_identity_without_sharing_state():
     assert child.get_extra("parent") is None
     child.set_extra("child", True)
     assert original.get_extra("child") is None
+
+
+def test_child_event_can_forward_messages_without_sharing_state():
+    original = _DashboardMaidEvent(
+        unified_msg_origin="platform:GroupMessage:group",
+        sender_id="owner",
+        message_text="hello",
+    )
+    plugin = object.__new__(MaidAgent)
+
+    child = plugin._isolate_child_event(original, forward_sends=True)
+    child.set_extra("child", True)
+
+    asyncio.run(child.send(MessageChain(chain=[Comp.Plain("forwarded")])))
+
+    assert original.get_extra("child") is None
+    assert original.sent_messages == ["forwarded"]
 
 
 def test_persist_runner_step_appends_only_new_messages():

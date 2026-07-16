@@ -202,6 +202,20 @@ def test_console_rerun_keeps_dashboard_admin_identity() -> None:
     assert call["event"].get_sender_id() == "original-owner"
 
 
+def test_console_agent_runs_rejects_invalid_agent_id() -> None:
+    plugin, _ = _make_console_plugin({})
+
+    async def load_agent(_agent_id):
+        raise ValueError("非法 agent_id")
+
+    plugin.runtime_store = SimpleNamespace(load_agent=load_agent)
+
+    response = asyncio.run(plugin.console_agent_runs("not-an-agent-id"))
+
+    assert response["status_code"] == 400
+    assert "非法 agent_id" in response["error"]
+
+
 def test_console_resume_keeps_admin_and_forwards_images(monkeypatch, tmp_path: Path) -> None:
     upload_dir = _patch_upload_root(monkeypatch, tmp_path)
     upload_dir.mkdir(parents=True)

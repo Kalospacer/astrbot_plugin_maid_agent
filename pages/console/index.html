@@ -2,68 +2,82 @@
 <html lang="zh-CN">
   <head>
     <meta charset="utf-8" />
-    <title>MAID AGENT 控制台</title>
+    <title>代理女仆 Console</title>
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <link rel="stylesheet" href="style.css" />
   </head>
   <body>
     <main class="shell chat-layout">
-      <!-- 侧边栏: Agent -> Run 层级 -->
+      <!-- 侧栏：品牌 / 新任务 / 会话列表 / 用户 -->
       <aside id="paneLeft" class="pane pane-left" aria-label="侧边栏">
-        <div class="sidebar-header">
-          <span id="streamState" class="signal signal-idle">连接中</span>
-          <button id="refreshButton" class="icon-btn small" aria-label="刷新" title="刷新">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 0 1-15.5 6.3L3 16"></path><path d="M3 21v-5h5"></path><path d="M3 12a9 9 0 0 1 15.5-6.3L21 8"></path><path d="M21 3v5h-5"></path></svg>
+        <div class="sidebar-top">
+          <div class="sidebar-brand">
+            <span class="brand-mark" aria-hidden="true">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2c.6 4.9 1.6 6.9 3.3 8.2 1.3 1 3.2 1.5 6.7 1.8-4.9.6-6.9 1.6-8.2 3.3-1 1.3-1.5 3.2-1.8 6.7-.6-4.9-1.6-6.9-3.3-8.2C7.4 12.8 5.5 12.3 2 12c4.9-.6 6.9-1.6 8.2-3.3 1-1.3 1.5-3.2 1.8-6.7Z"/></svg>
+            </span>
+            <span class="brand-name sidebar-label">代理女仆</span>
+          </div>
+          <button id="collapseSidebar" class="icon-btn small collapse-btn" aria-label="折叠侧栏" title="折叠/展开侧栏">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"></rect><line x1="9" y1="3" x2="9" y2="21"></line></svg>
           </button>
         </div>
-        <div class="pane-content sidebar-layout">
-          <div class="sidebar-actions">
-            <button id="newChatButton" class="primary w-full" type="button">
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
-              新建 Agent Run
-            </button>
-          </div>
-          
-          <div id="sessionList" class="session-list" aria-live="polite"></div>
 
-          <div class="sidebar-footer">
+        <div class="sidebar-actions">
+          <button id="newChatButton" class="new-chat-btn" type="button" title="新任务">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
+            <span class="sidebar-label">新任务</span>
+          </button>
+        </div>
+
+        <div id="sessionList" class="session-list" aria-live="polite"></div>
+
+        <div class="sidebar-footer">
+          <div class="sidebar-status">
+            <span id="streamState" class="signal signal-idle sidebar-label">连接中</span>
+          </div>
+          <div class="sidebar-footer-row">
             <div class="umo-switcher" id="umoSwitcher" role="button" tabindex="0" aria-label="切换用户">
               <div class="umo-avatar">
                 <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path><circle cx="12" cy="7" r="4"></circle></svg>
               </div>
-              <div class="umo-info">
+              <div class="umo-info sidebar-label">
                 <div class="umo-name" id="currentUmoName">加载中...</div>
               </div>
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"></polyline></svg>
             </div>
-            <button id="settingsBtn" class="icon-btn ghost" aria-label="全局配置" title="全局配置">
+            <button id="settingsBtn" class="icon-btn ghost sidebar-label" aria-label="全局配置" title="全局配置">
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
             </button>
           </div>
         </div>
       </aside>
+      <div id="sidebarScrim" class="sidebar-scrim" aria-hidden="true"></div>
 
-      <!-- 中心视口: 瀑布流对话 -->
-      <section class="pane pane-center" aria-label="主视口">
+      <!-- 中心视口 -->
+      <section class="pane pane-center centered" aria-label="主视口">
         <header class="chat-header">
           <div class="chat-header-left">
-            <button id="toggleLeft" class="icon-btn mobile-only" aria-label="折叠侧边栏">
+            <button id="toggleLeft" class="icon-btn mobile-only" aria-label="打开侧栏">
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="3" y1="12" x2="21" y2="12"></line><line x1="3" y1="6" x2="21" y2="6"></line><line x1="3" y1="18" x2="21" y2="18"></line></svg>
             </button>
+            <h1 id="chatTitle" class="chat-title"></h1>
           </div>
           <div class="chat-header-right">
-            <button id="toggleRight" class="icon-btn" aria-label="折叠属性面板" title="折叠/展开 属性面板">
+            <button id="refreshButton" class="icon-btn" aria-label="刷新" title="刷新">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 0 1-15.5 6.3L3 16"></path><path d="M3 21v-5h5"></path><path d="M3 12a9 9 0 0 1 15.5-6.3L21 8"></path><path d="M21 3v5h-5"></path></svg>
+            </button>
+            <button id="toggleRight" class="icon-btn" aria-label="详情面板" title="详情面板">
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect><line x1="15" y1="3" x2="15" y2="21"></line></svg>
             </button>
           </div>
         </header>
 
         <div id="chatFeed" class="chat-feed is-empty">
-          <!-- Empty State -->
+          <!-- Empty State（JS 会以相同结构重绘） -->
           <div class="empty-hero" id="emptyHero">
             <div class="brand-logo">
-              <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a10 10 0 1 0 10 10H12V2Z"></path><path d="M12 12 2.1 7.1"></path><path d="m12 12 9.9 4.9"></path></svg>
+              <svg width="40" height="40" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 2c.6 4.9 1.6 6.9 3.3 8.2 1.3 1 3.2 1.5 6.7 1.8-4.9.6-6.9 1.6-8.2 3.3-1 1.3-1.5 3.2-1.8 6.7-.6-4.9-1.6-6.9-3.3-8.2C7.4 12.8 5.5 12.3 2 12c4.9-.6 6.9-1.6 8.2-3.3 1-1.3 1.5-3.2 1.8-6.7Z"/></svg>
             </div>
+            <h1 class="hero-greeting">你好</h1>
           </div>
         </div>
 
@@ -72,22 +86,22 @@
             <form id="chatForm" class="prompt-form">
               <div id="attachmentStrip" class="attachment-strip hidden" aria-live="polite"></div>
               <div class="prompt-main">
-                <textarea id="promptText" rows="1" placeholder="给管家发送消息..." autocomplete="off"></textarea>
+                <textarea id="promptText" rows="1" placeholder="有什么可以帮忙的？" autocomplete="off"></textarea>
               </div>
               <div class="prompt-toolbar">
                 <div class="prompt-toolbar-left">
-                  <div class="model-selector-inline">
-                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 2 7 12 12 22 7 12 2"></polygon><polyline points="2 17 12 22 22 17"></polyline><polyline points="2 12 12 17 22 12"></polyline></svg>
-                    <select id="dispatchAgent" aria-label="选择 Agent"></select>
-                  </div>
-                </div>
-                <div class="prompt-toolbar-right">
                   <input id="imageInput" type="file" accept="image/jpeg,image/png,image/webp,image/gif" multiple hidden>
                   <button class="icon-btn attachment-button" type="button" id="attachButton" aria-label="添加图片" title="添加图片（最多 5 张，每张 10 MB）">
-                    <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"></path></svg>
+                    <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
                   </button>
-                  <button class="primary send-btn icon-only" type="submit" aria-label="发送" id="sendBtn">
-                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"></line><polygon points="22 2 15 22 11 13 2 9 22 2"></polygon></svg>
+                </div>
+                <div class="prompt-toolbar-right">
+                  <div class="model-selector-inline" title="选择执行本次任务的管家">
+                    <select id="dispatchAgent" aria-label="选择 Agent"></select>
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"></polyline></svg>
+                  </div>
+                  <button class="send-btn icon-only" type="submit" aria-label="发送" id="sendBtn">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="19" x2="12" y2="5"></line><polyline points="5 12 12 5 19 12"></polyline></svg>
                   </button>
                 </div>
               </div>
@@ -96,13 +110,16 @@
         </div>
       </section>
 
-      <!-- 右侧属性面板 -->
-      <aside id="paneRight" class="pane pane-right collapsed" aria-label="属性">
-        <header class="pane-header compact">
+      <!-- 详情面板：按需从右侧滑入（Claude Artifacts 式） -->
+      <aside id="paneRight" class="detail-panel" aria-label="详情" aria-hidden="true">
+        <header class="detail-header">
           <div>
-            <p class="eyebrow">Inspector</p>
+            <p class="eyebrow">详情</p>
             <h2 id="inspectorTitle">未选择</h2>
           </div>
+          <button id="closeDetail" class="icon-btn" aria-label="关闭详情">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+          </button>
         </header>
 
         <div class="pane-content">
@@ -141,6 +158,9 @@
         </div>
       </aside>
     </main>
+
+    <!-- 会话条目 "…" 菜单 -->
+    <div id="sessionMenu" class="menu-popover hidden" role="menu"></div>
 
     <!-- UMO Selector Modal -->
     <div id="umoModal" class="modal-overlay hidden">

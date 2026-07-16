@@ -13,8 +13,6 @@ from astrbot.api import logger
 
 from .constants import DEFAULT_MAID_AGENT_NAME
 
-DEFAULT_SESSION_TIMEOUT_MINUTES = 20
-DEFAULT_DISPATCH_AUTO_BACKGROUND_SECONDS = 600
 DEFAULT_FOREGROUND_TIMEOUT_SECONDS = 50
 DEFAULT_MAX_ACTIVE_PER_UMO = 5
 DEFAULT_MAX_ACTIVE_GLOBAL = 20
@@ -28,18 +26,8 @@ DEFAULT_DISPATCH_PROMPT_TEMPLATE = (
     "如果大小姐和对方的需求一致，结合两者的需求准确完成任务。你的汇报对象是大小姐，不是对方。"
 )
 
-_DISPATCH_PROMPT_FIELDS = frozenset(
-    {"user_input_block", "maid_full_reply_block", "maid_request_block"}
-)
-_warned_deprecated_prompt_templates: set[str] = set()
+_DISPATCH_PROMPT_FIELDS = frozenset({"user_input_block", "maid_request_block"})
 _warned_invalid_prompt_templates: set[str] = set()
-
-DEPRECATED_CONFIG_KEYS = (
-    "session_enabled",
-    "session_timeout_minutes",
-    "dispatch_auto_background_enabled",
-    "dispatch_auto_background_seconds",
-)
 
 
 @dataclass(slots=True)
@@ -49,13 +37,8 @@ class MaidModeConfig:
     hide_native_tools: bool = True
     hide_transfer_tools: bool = True
     include_raw_user_input: bool = True
-    session_enabled: bool = True
     log_raw_llm_io: bool = False
-    session_timeout_minutes: int = DEFAULT_SESSION_TIMEOUT_MINUTES
-    dispatch_auto_background_enabled: bool = True
-    dispatch_auto_background_seconds: int = DEFAULT_DISPATCH_AUTO_BACKGROUND_SECONDS
     dispatch_prompt_template: str = DEFAULT_DISPATCH_PROMPT_TEMPLATE
-    # 1.3.0 foreground-first runtime fields.
     foreground_timeout_seconds: int = DEFAULT_FOREGROUND_TIMEOUT_SECONDS
     memory_agent_names: list[str] | None = None
     max_active_per_umo: int = DEFAULT_MAX_ACTIVE_PER_UMO
@@ -72,17 +55,15 @@ def render_dispatch_prompt(
     *,
     user_input_block: str,
     maid_request_block: str,
-    maid_full_reply_block: str = "",
 ) -> str:
-    """Render a configured dispatch prompt with 1.2 placeholder compatibility.
+    """Render a configured dispatch prompt.
 
-    Unknown or malformed placeholders fall back to the 1.3 default template so
-    a stale user configuration cannot turn an otherwise valid runtime run into
+    Unknown or malformed placeholders fall back to the default template so a
+    stale user configuration cannot turn an otherwise valid runtime run into
     an immediate failure.
     """
     values = {
         "user_input_block": user_input_block,
-        "maid_full_reply_block": maid_full_reply_block,
         "maid_request_block": maid_request_block,
     }
     normalized_template = str(template or "")
@@ -99,7 +80,7 @@ def render_dispatch_prompt(
         if normalized_template not in _warned_invalid_prompt_templates:
             _warned_invalid_prompt_templates.add(normalized_template)
             logger.warning(
-                "[大小姐模式] dispatch_prompt_template 格式无效，已回退 1.3 默认模板: %s",
+                "[大小姐模式] dispatch_prompt_template 格式无效，已回退默认模板: %s",
                 exc,
             )
         return _render_default_dispatch_prompt(values)
@@ -111,20 +92,10 @@ def render_dispatch_prompt(
         if normalized_template not in _warned_invalid_prompt_templates:
             _warned_invalid_prompt_templates.add(normalized_template)
             logger.warning(
-                "[大小姐模式] dispatch_prompt_template 包含未知占位符 %s，已回退 1.3 默认模板。",
+                "[大小姐模式] dispatch_prompt_template 包含未知占位符 %s，已回退默认模板。",
                 ", ".join(repr(field) for field in unknown_fields),
             )
         return _render_default_dispatch_prompt(values)
-
-    if (
-        "maid_full_reply_block" in parsed_fields
-        and normalized_template not in _warned_deprecated_prompt_templates
-    ):
-        _warned_deprecated_prompt_templates.add(normalized_template)
-        logger.warning(
-            "[大小姐模式] dispatch_prompt_template 仍使用已弃用占位符 "
-            "{maid_full_reply_block}；1.3 runtime 会将其映射为空，1.4 将移除兼容。"
-        )
 
     try:
         return normalized_template.format_map(values).strip()
@@ -132,7 +103,7 @@ def render_dispatch_prompt(
         if normalized_template not in _warned_invalid_prompt_templates:
             _warned_invalid_prompt_templates.add(normalized_template)
             logger.warning(
-                "[大小姐模式] dispatch_prompt_template 渲染失败，已回退 1.3 默认模板: %s",
+                "[大小姐模式] dispatch_prompt_template 渲染失败，已回退默认模板: %s",
                 exc,
             )
         return _render_default_dispatch_prompt(values)
@@ -166,12 +137,6 @@ def _safe_int(value: Any, default: int) -> int:
 def load_maid_mode_config(config: Mapping[str, Any] | None = None) -> MaidModeConfig:
     """从插件注入配置中读取 maid agent 配置。"""
     cfg = dict(config or {})
-    for key in DEPRECATED_CONFIG_KEYS:
-        if key in cfg:
-            logger.warning(
-                "[大小姐模式] 配置项 %s 已在 1.3.0 弃用，将仅为 1.2 兼容路径读取；1.4 会移除。",
-                key,
-            )
 
     default_agent_name = str(cfg.get("default_agent_name", DEFAULT_MAID_AGENT_NAME)).strip()
     if not default_agent_name:
@@ -197,38 +162,13 @@ def load_maid_mode_config(config: Mapping[str, Any] | None = None) -> MaidModeCo
     hide_native_tools = _parse_bool(cfg.get("hide_native_tools", True), True)
     hide_transfer_tools = _parse_bool(cfg.get("hide_transfer_tools", True), True)
     include_raw_user_input = _parse_bool(cfg.get("include_raw_user_input", True), True)
-    session_enabled = _parse_bool(cfg.get("session_enabled", True), True)
     log_raw_llm_io = _parse_bool(cfg.get("log_raw_llm_io", False), False)
-    dispatch_auto_background_enabled = _parse_bool(
-        cfg.get("dispatch_auto_background_enabled", True),
-        True,
-    )
     dispatch_prompt_template = str(
         cfg.get("dispatch_prompt_template", DEFAULT_DISPATCH_PROMPT_TEMPLATE)
     )
     if not dispatch_prompt_template.strip():
         dispatch_prompt_template = DEFAULT_DISPATCH_PROMPT_TEMPLATE
 
-    timeout_raw = cfg.get("session_timeout_minutes", DEFAULT_SESSION_TIMEOUT_MINUTES)
-    try:
-        session_timeout_minutes = int(timeout_raw)
-    except (TypeError, ValueError):
-        session_timeout_minutes = DEFAULT_SESSION_TIMEOUT_MINUTES
-    if session_timeout_minutes <= 0:
-        session_timeout_minutes = DEFAULT_SESSION_TIMEOUT_MINUTES
-
-    auto_background_raw = cfg.get(
-        "dispatch_auto_background_seconds",
-        DEFAULT_DISPATCH_AUTO_BACKGROUND_SECONDS,
-    )
-    try:
-        dispatch_auto_background_seconds = int(auto_background_raw)
-    except (TypeError, ValueError):
-        dispatch_auto_background_seconds = DEFAULT_DISPATCH_AUTO_BACKGROUND_SECONDS
-    if dispatch_auto_background_seconds <= 0:
-        dispatch_auto_background_seconds = DEFAULT_DISPATCH_AUTO_BACKGROUND_SECONDS
-
-    # 1.3.0 foreground-first runtime fields.
     foreground_timeout_seconds = _safe_int(
         cfg.get("foreground_timeout_seconds", DEFAULT_FOREGROUND_TIMEOUT_SECONDS),
         DEFAULT_FOREGROUND_TIMEOUT_SECONDS,
@@ -284,11 +224,7 @@ def load_maid_mode_config(config: Mapping[str, Any] | None = None) -> MaidModeCo
         hide_native_tools=hide_native_tools,
         hide_transfer_tools=hide_transfer_tools,
         include_raw_user_input=include_raw_user_input,
-        session_enabled=session_enabled,
         log_raw_llm_io=log_raw_llm_io,
-        session_timeout_minutes=session_timeout_minutes,
-        dispatch_auto_background_enabled=dispatch_auto_background_enabled,
-        dispatch_auto_background_seconds=dispatch_auto_background_seconds,
         dispatch_prompt_template=dispatch_prompt_template,
         foreground_timeout_seconds=foreground_timeout_seconds,
         memory_agent_names=memory_agent_names,

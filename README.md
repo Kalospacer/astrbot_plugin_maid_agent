@@ -24,7 +24,7 @@
 - **Console Agent/Run 操作**：运行记录支持停止和读取结果；终态 Agent 在无待通知结果时可二次确认删除，并同步清理 transcript、runs、outputs 与 SQLite 审计记录。
 - **实时调用链**：runtime 工具开始/结束通过独立 SSE 推送；刷新或查看历史 Run 时按 `run_start/run_end` 从 transcript 恢复，不依赖 SQLite 快照。
 
-旧 `call_maid(action=...)` 接口保留兼容转换并输出弃用提示。不修改 AstrBot Core 任何文件。
+1.4.0 起旧 `call_maid(action=...)` 兼容接口与 1.2 后台执行引擎已整体移除。不修改 AstrBot Core 任何文件。
 
 ---
 
@@ -53,13 +53,13 @@
 
 在主模型需要后台执行动作时，插件通过原生 **`call_maid` Function Call** 表达意图。`dispatch` 只负责登记后台任务并立即返回，真正的子 Agent 执行仍在后台完成，结束后再回灌给大小姐。
 
-当前工具动作包括：
+当前工具接口：
 
-- **发起任务**：`call_maid(action=\"dispatch\", agent_name=\"...\", request_text=\"...\")`
-- **批量发起任务**：同一轮多次调用 `dispatch`，插件会将它们视为同一个 batch 并发执行
-- **停止任务**：`call_maid(action=\"stop\")`
-- **补充要求**：`call_maid(action=\"steer\", request_text=\"补充要求\")`
-- **结束任务**：`call_maid(action=\"done\")`
+- **发起任务**：`call_maid(request_text="...", agent_name="...")`，默认前台同步等待，超时转后台
+- **后台任务**：`call_maid(request_text="...", run_in_background=true)` 立即返回句柄
+- **批量任务**：`call_maid(tasks=[{request_text, agent_name?, run_in_background?}, ...])` 最多 5 项
+- **恢复 Agent**：`call_maid(resume_agent_id="...", request_text="...")`，running 时等价 steer
+- **查询/控制**：`maid_task(action="status|result|stop|steer", task_id=..., agent_id=..., message=...)`
 
 **标准交互执行流：**
 
@@ -93,7 +93,6 @@
 - 新 dispatch 永远创建新 agent；只有显式 `resume_agent_id` 才恢复稳定身份。
 - 每个 agent 同时最多一个 active run；每个 UMO 可并发多个不同 agent。
 - running agent 的 resume 转为 steer；terminal/interrupted agent 的 resume 创建新 task 并后台执行。
-- `action=done` 在 1.3.x 仅为无状态兼容 no-op，1.4 将移除。
 
 > **数据存储**：`data/plugin_data/astrbot_plugin_maid_agent/agents/<agent_id>/`。
 > 旧 `sessions/*.json` 保留但不作为 1.3 runtime 状态真源。

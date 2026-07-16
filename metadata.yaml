@@ -1,5 +1,5 @@
 name: astrbot_plugin_maid_agent
-version: "1.3.0"
+version: "1.4.0"
 description: "大小姐+管家模式子代理系统：主模型仅保留自然语言对话上下文，所有工具调用通过管家subagent执行，减少结构化数据提示词污染角色扮演。"
 author: "Kalo"
 repo: "https://github.com/Kalospacer/astrbot_plugin_maid_agent"
@@ -28,6 +28,6 @@ astrbot_version: ">=4.20.0"
 # 插件启用后的行为说明：
 # 1. 主模型（大小姐）只看到自然语言对话历史，不直接持有工具
 # 2. 主模型通过原生 `call_maid` Function Call 表达调度意图
-# 3. `call_maid(action="dispatch")` 只登记后台任务，请求会在当前回复发送后投递执行
+# 3. `call_maid` 默认前台同步等待执行结果，超时后原地转后台继续执行
 # 4. 插件在后台调度 subagent，并将执行结果回灌给大小姐
-# 5. 管家 session 可在单 active 模式下跨轮持久化，直到完成或超时
+# 5. 可用 `maid_task(status/result/stop/steer)` 查询或控制后台任务

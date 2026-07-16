@@ -4,18 +4,19 @@
     <meta charset="utf-8" />
     <title>代理女仆 Console</title>
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link
+      rel="stylesheet"
+      href="https://fonts.googleapis.com/css2?family=Outfit&family=Noto+Sans:wght@100..900&display=swap"
+    />
     <link rel="stylesheet" href="style.css" />
   </head>
   <body>
     <main class="shell chat-layout">
-      <!-- 侧栏：品牌 / 新任务 / 会话列表 / 用户 -->
+      <!-- 侧栏：新任务 / 会话列表 / 用户 -->
       <aside id="paneLeft" class="pane pane-left" aria-label="侧边栏">
         <div class="sidebar-top">
           <div class="sidebar-brand">
-            <span class="brand-mark" aria-hidden="true">
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2c.6 4.9 1.6 6.9 3.3 8.2 1.3 1 3.2 1.5 6.7 1.8-4.9.6-6.9 1.6-8.2 3.3-1 1.3-1.5 3.2-1.8 6.7-.6-4.9-1.6-6.9-3.3-8.2C7.4 12.8 5.5 12.3 2 12c4.9-.6 6.9-1.6 8.2-3.3 1-1.3 1.5-3.2 1.8-6.7Z"/></svg>
-            </span>
-            <span class="brand-name sidebar-label">代理女仆</span>
+            <span class="brand-name sidebar-label">代理女仆 Console</span>
           </div>
           <button id="collapseSidebar" class="icon-btn small collapse-btn" aria-label="折叠侧栏" title="折叠/展开侧栏">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"></rect><line x1="9" y1="3" x2="9" y2="21"></line></svg>
@@ -71,15 +72,7 @@
           </div>
         </header>
 
-        <div id="chatFeed" class="chat-feed is-empty">
-          <!-- Empty State（JS 会以相同结构重绘） -->
-          <div class="empty-hero" id="emptyHero">
-            <div class="brand-logo">
-              <svg width="40" height="40" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 2c.6 4.9 1.6 6.9 3.3 8.2 1.3 1 3.2 1.5 6.7 1.8-4.9.6-6.9 1.6-8.2 3.3-1 1.3-1.5 3.2-1.8 6.7-.6-4.9-1.6-6.9-3.3-8.2C7.4 12.8 5.5 12.3 2 12c4.9-.6 6.9-1.6 8.2-3.3 1-1.3 1.5-3.2 1.8-6.7Z"/></svg>
-            </div>
-            <h1 class="hero-greeting">你好</h1>
-          </div>
-        </div>
+        <div id="chatFeed" class="chat-feed is-empty"></div>
 
         <div class="chat-footer">
           <section class="prompt-area">
@@ -96,10 +89,18 @@
                   </button>
                 </div>
                 <div class="prompt-toolbar-right">
-                  <div class="model-selector-inline" title="选择执行本次任务的管家">
-                    <select id="dispatchAgent" aria-label="选择 Agent"></select>
-                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"></polyline></svg>
-                  </div>
+                  <button
+                    id="dispatchAgentBtn"
+                    class="model-selector-inline"
+                    type="button"
+                    title="选择执行本次任务的管家"
+                    aria-label="选择 Agent"
+                    aria-haspopup="menu"
+                    aria-expanded="false"
+                  >
+                    <span id="dispatchAgentLabel">butler</span>
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="6 9 12 15 18 9"></polyline></svg>
+                  </button>
                   <button class="send-btn icon-only" type="submit" aria-label="发送" id="sendBtn">
                     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="19" x2="12" y2="5"></line><polyline points="5 12 12 5 19 12"></polyline></svg>
                   </button>
@@ -161,6 +162,8 @@
 
     <!-- 会话条目 "…" 菜单 -->
     <div id="sessionMenu" class="menu-popover hidden" role="menu"></div>
+    <!-- Agent 选择菜单 -->
+    <div id="agentMenu" class="menu-popover agent-menu hidden" role="menu" aria-label="选择 Agent"></div>
 
     <!-- UMO Selector Modal -->
     <div id="umoModal" class="modal-overlay hidden">

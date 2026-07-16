@@ -3,15 +3,9 @@ let bridge = window.AstrBotPluginPage || null;
 const ACTIVE_STATUSES = new Set(["queued", "starting", "running", "stopping"]);
 const QUIET_EVENT_TYPES = new Set(["queued", "finished"]);
 
-const STAR_SVG = `<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 2c.6 4.9 1.6 6.9 3.3 8.2 1.3 1 3.2 1.5 6.7 1.8-4.9.6-6.9 1.6-8.2 3.3-1 1.3-1.5 3.2-1.8 6.7-.6-4.9-1.6-6.9-3.3-8.2C7.4 12.8 5.5 12.3 2 12c4.9-.6 6.9-1.6 8.2-3.3 1-1.3 1.5-3.2 1.8-6.7Z"/></svg>`;
-const HERO_STAR_SVG = STAR_SVG.replace('width="14" height="14"', 'width="40" height="40"');
-
-function greetingByHour() {
-  const hour = new Date().getHours();
-  if (hour >= 5 && hour < 11) return "早上好";
-  if (hour >= 11 && hour < 18) return "下午好";
-  return "晚上好";
-}
+const POLL_INTERVAL_SSE_MS = 20000;
+const POLL_INTERVAL_FALLBACK_MS = 5000;
+const RUNTIME_REFRESH_EVERY = 3;
 
 const state = {
   tasks: [],
@@ -21,6 +15,8 @@ const state = {
   sessionTasks: [],
   sessionEvents: {},
   agents: [],
+  agentNames: [],
+  dispatchAgent: "",
   runtimeAgents: [],
   runtimeRuns: {},
   selectedAgentId: "",
@@ -28,11 +24,15 @@ const state = {
   overview: null,
   detail: null,
   subscriptionId: "",
+  streamLive: false,
   pollTimer: 0,
+  pollCount: 0,
   durationTimer: 0,
   refreshInFlight: false,
   refreshQueued: false,
   thinkingOpenState: {},
+  lastFeedFingerprint: "",
+  lastSessionListFingerprint: "",
   renamingSessionId: "",
   pendingDeleteSessionId: "",
   pendingDeleteAgentId: "",
@@ -51,6 +51,187 @@ function escapeHtml(value) {
     .replaceAll(">", "&gt;")
     .replaceAll('"', "&quot;")
     .replaceAll("'", "&#039;");
+}
+
+/* 轻量 Markdown → HTML（无 vendor）。只输出转义后的安全标签，覆盖 ChatUI 常见结构。 */
+function renderInlineMarkdown(text) {
+  let s = escapeHtml(String(text ?? ""));
+  // images ![alt](url)
+  s = s.replace(/!\[([^\]]*)\]\((https?:\/\/[^)\s]+)\)/g, (_m, alt, url) => {
+    return `<img src="${url}" alt="${alt}" loading="lazy">`;
+  });
+  // links [text](url)
+  s = s.replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g, (_m, label, url) => {
+    return `<a href="${url}" target="_blank" rel="noopener noreferrer">${label}</a>`;
+  });
+  // bold / italic / strike / code（顺序：code 先，再粗体，再斜体）
+  s = s.replace(/`([^`\n]+)`/g, (_m, code) => `<code>${code}</code>`);
+  s = s.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+  s = s.replace(/__([^_]+)__/g, "<strong>$1</strong>");
+  s = s.replace(/(?<!\*)\*([^*\n]+)\*(?!\*)/g, "<em>$1</em>");
+  s = s.replace(/(?<!_)_([^_\n]+)_(?!_)/g, "<em>$1</em>");
+  s = s.replace(/~~([^~]+)~~/g, "<del>$1</del>");
+  // soft line breaks inside paragraphs
+  s = s.replace(/\n/g, "<br>");
+  return s;
+}
+
+function isTableSeparator(line) {
+  return /^\s*\|?[\s:|-]+\|[\s:|-]*\|?\s*$/.test(line) && /\|/.test(line) && /-+/.test(line);
+}
+
+function splitTableRow(line) {
+  const trimmed = line.trim().replace(/^\|/, "").replace(/\|$/, "");
+  return trimmed.split("|").map((cell) => cell.trim());
+}
+
+function renderMarkdown(text) {
+  const raw = String(text ?? "").replace(/\r\n?/g, "\n").trim();
+  if (!raw) return "";
+
+  const lines = raw.split("\n");
+  const html = [];
+  let i = 0;
+  let paragraph = [];
+
+  const flushParagraph = () => {
+    if (!paragraph.length) return;
+    html.push(`<p>${renderInlineMarkdown(paragraph.join("\n"))}</p>`);
+    paragraph = [];
+  };
+
+  while (i < lines.length) {
+    const line = lines[i];
+
+    // fenced code
+    const fence = line.match(/^```([\w-]*)\s*$/);
+    if (fence) {
+      flushParagraph();
+      const lang = fence[1] || "";
+      const body = [];
+      i += 1;
+      while (i < lines.length && !/^```\s*$/.test(lines[i])) {
+        body.push(lines[i]);
+        i += 1;
+      }
+      if (i < lines.length) i += 1; // closing ```
+      const cls = lang ? ` class="language-${escapeHtml(lang)}"` : "";
+      html.push(`<pre><code${cls}>${escapeHtml(body.join("\n"))}</code></pre>`);
+      continue;
+    }
+
+    // horizontal rule
+    if (/^\s*(-{3,}|\*{3,}|_{3,})\s*$/.test(line)) {
+      flushParagraph();
+      html.push("<hr>");
+      i += 1;
+      continue;
+    }
+
+    // heading
+    const heading = line.match(/^(#{1,6})\s+(.+)$/);
+    if (heading) {
+      flushParagraph();
+      const level = heading[1].length;
+      html.push(`<h${level}>${renderInlineMarkdown(heading[2])}</h${level}>`);
+      i += 1;
+      continue;
+    }
+
+    // blockquote
+    if (/^\s*>\s?/.test(line)) {
+      flushParagraph();
+      const quote = [];
+      while (i < lines.length && /^\s*>\s?/.test(lines[i])) {
+        quote.push(lines[i].replace(/^\s*>\s?/, ""));
+        i += 1;
+      }
+      html.push(`<blockquote>${renderMarkdown(quote.join("\n"))}</blockquote>`);
+      continue;
+    }
+
+    // table (GFM-ish)
+    if (
+      line.includes("|") &&
+      i + 1 < lines.length &&
+      isTableSeparator(lines[i + 1])
+    ) {
+      flushParagraph();
+      const header = splitTableRow(line);
+      i += 2; // skip separator
+      const rows = [];
+      while (i < lines.length && lines[i].includes("|") && lines[i].trim()) {
+        rows.push(splitTableRow(lines[i]));
+        i += 1;
+      }
+      const thead = `<thead><tr>${header.map((c) => `<th>${renderInlineMarkdown(c)}</th>`).join("")}</tr></thead>`;
+      const tbody = rows.length
+        ? `<tbody>${rows
+            .map(
+              (row) =>
+                `<tr>${header
+                  .map((_, idx) => `<td>${renderInlineMarkdown(row[idx] || "")}</td>`)
+                  .join("")}</tr>`,
+            )
+            .join("")}</tbody>`
+        : "";
+      html.push(`<table>${thead}${tbody}</table>`);
+      continue;
+    }
+
+    // unordered list
+    if (/^\s*[-*+]\s+/.test(line)) {
+      flushParagraph();
+      const items = [];
+      while (i < lines.length && /^\s*[-*+]\s+/.test(lines[i])) {
+        items.push(lines[i].replace(/^\s*[-*+]\s+/, ""));
+        i += 1;
+      }
+      html.push(`<ul>${items.map((item) => `<li>${renderInlineMarkdown(item)}</li>`).join("")}</ul>`);
+      continue;
+    }
+
+    // ordered list
+    if (/^\s*\d+\.\s+/.test(line)) {
+      flushParagraph();
+      const items = [];
+      while (i < lines.length && /^\s*\d+\.\s+/.test(lines[i])) {
+        items.push(lines[i].replace(/^\s*\d+\.\s+/, ""));
+        i += 1;
+      }
+      html.push(`<ol>${items.map((item) => `<li>${renderInlineMarkdown(item)}</li>`).join("")}</ol>`);
+      continue;
+    }
+
+    // blank line ends paragraph
+    if (!line.trim()) {
+      flushParagraph();
+      i += 1;
+      continue;
+    }
+
+    paragraph.push(line);
+    i += 1;
+  }
+  flushParagraph();
+  return html.join("");
+}
+
+function afterMarkdownSanitize(root) {
+  if (!root) return;
+  root.querySelectorAll?.("a[href]")?.forEach((anchor) => {
+    const href = anchor.getAttribute("href") || "";
+    if (!/^https?:\/\//i.test(href)) {
+      anchor.removeAttribute("href");
+      return;
+    }
+    anchor.setAttribute("target", "_blank");
+    anchor.setAttribute("rel", "noopener noreferrer");
+  });
+  root.querySelectorAll?.("img[src]")?.forEach((img) => {
+    const src = img.getAttribute("src") || "";
+    if (!/^https?:\/\//i.test(src)) img.remove();
+  });
 }
 
 function compactId(value) {
@@ -103,7 +284,10 @@ function setStreamState(kind, text) {
   const node = $("#streamState");
   if (!node) return;
   node.textContent = text;
-  node.className = `signal ${kind}`;
+  node.className = `signal ${kind} sidebar-label`;
+  const wasLive = state.streamLive;
+  state.streamLive = kind === "signal-active";
+  if (wasLive !== state.streamLive) startPolling();
 }
 
 function ensureBridge() {
@@ -338,10 +522,14 @@ function updateKnownUmos() {
   }
 }
 
-async function loadOverview() {
+async function loadOverview({ applyForm = true } = {}) {
   state.overview = await apiGet("console/overview");
   state.settings = state.overview.config || state.settings;
-  if (state.settings) fillSettings(state.settings);
+  if (applyForm && state.settings) fillSettings(state.settings);
+  if (!state.dispatchAgent && state.settings?.default_agent_name) {
+    state.dispatchAgent = state.settings.default_agent_name;
+    syncDispatchAgentLabel();
+  }
 }
 
 async function loadAgents() {
@@ -350,7 +538,10 @@ async function loadAgents() {
   renderAgentOptions();
 }
 
-async function loadRuntimeAgents() {
+async function loadRuntimeAgents({ force = false } = {}) {
+  if (!force && state.pollCount > 0 && state.pollCount % RUNTIME_REFRESH_EVERY !== 0) {
+    return;
+  }
   const data = await apiGet("console/agents");
   state.runtimeAgents = data.agents || [];
   const entries = await Promise.all(
@@ -373,13 +564,14 @@ async function loadTasks() {
   updateSessionList();
 }
 
-async function loadSession(taskId, { scrollMode = "bottom" } = {}) {
+async function loadSession(taskId, { scrollMode = "bottom", force = false } = {}) {
   if (!taskId) {
     state.selectedAgentId = "";
     state.selectedSessionId = "";
     state.sessionTasks = [];
     state.sessionEvents = {};
     state.detail = null;
+    state.lastFeedFingerprint = "";
     renderChatFeed();
     renderInspector();
     updateSessionList();
@@ -389,11 +581,25 @@ async function loadSession(taskId, { scrollMode = "bottom" } = {}) {
   const scrollSnapshot = captureFeedScroll();
   const selected = state.tasks.find((task) => task.task_id === taskId);
   const rootId = selected?.parent_task_id || taskId;
-  state.selectedSessionId = rootId;
-  state.selectedAgentId = "";
-  state.sessionTasks = state.tasks
+  const nextSessionTasks = state.tasks
     .filter((task) => task.task_id === rootId || task.parent_task_id === rootId)
     .sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
+
+  if (
+    !force &&
+    state.selectedSessionId === rootId &&
+    !state.selectedAgentId &&
+    sessionTasksUnchanged(state.sessionTasks, nextSessionTasks) &&
+    !nextSessionTasks.some((task) => ACTIVE_STATUSES.has(task.status))
+  ) {
+    state.sessionTasks = nextSessionTasks;
+    updateSessionList();
+    return;
+  }
+
+  state.selectedSessionId = rootId;
+  state.selectedAgentId = "";
+  state.sessionTasks = nextSessionTasks;
 
   state.sessionEvents = {};
   for (const task of state.sessionTasks) {
@@ -468,8 +674,13 @@ async function refreshConsole({ silent = false, keepSession = true } = {}) {
   state.refreshInFlight = true;
   const selectedBefore = state.selectedSessionId;
   try {
+    state.pollCount += 1;
     await loadTasks();
-    await Promise.allSettled([loadOverview(), loadAgents(), loadRuntimeAgents()]);
+    await Promise.allSettled([
+      loadOverview({ applyForm: !silent }),
+      loadAgents(),
+      loadRuntimeAgents({ force: !silent }),
+    ]);
 
     if (keepSession && selectedBefore && state.selectedAgentId) {
       const exists = (state.runtimeRuns[state.selectedAgentId] || []).some(
@@ -485,7 +696,7 @@ async function refreshConsole({ silent = false, keepSession = true } = {}) {
         (task) => task.task_id === selectedBefore || task.parent_task_id === selectedBefore,
       );
       if (stillExists) {
-        await loadSession(selectedBefore, { scrollMode: "preserve" });
+        await loadSession(selectedBefore, { scrollMode: "preserve", force: !silent });
       } else {
         await loadSession("");
       }
@@ -509,9 +720,10 @@ async function refreshConsole({ silent = false, keepSession = true } = {}) {
 
 function startPolling() {
   window.clearInterval(state.pollTimer);
+  const interval = state.streamLive ? POLL_INTERVAL_SSE_MS : POLL_INTERVAL_FALLBACK_MS;
   state.pollTimer = window.setInterval(() => {
     refreshConsole({ silent: true, keepSession: true });
-  }, 5000);
+  }, interval);
 }
 
 function startDurationTicker() {
@@ -520,15 +732,151 @@ function startDurationTicker() {
   state.durationTimer = window.setInterval(updateLiveDurations, 1000);
 }
 
+function getConfiguredDefaultAgent() {
+  return state.settings?.default_agent_name || state.overview?.config?.default_agent_name || "butler";
+}
+
+function getAgentNames() {
+  const configuredDefault = getConfiguredDefaultAgent();
+  return [...new Set([configuredDefault, ...state.agents.map((agent) => agent.name)].filter(Boolean))];
+}
+
+function syncDispatchAgentLabel() {
+  const label = $("#dispatchAgentLabel");
+  if (label) label.textContent = state.dispatchAgent || getConfiguredDefaultAgent();
+}
+
 function renderAgentOptions() {
-  const select = $("#dispatchAgent");
-  if (!select) return;
-  const configuredDefault =
-    state.settings?.default_agent_name || state.overview?.config?.default_agent_name || "butler";
-  const names = [...new Set([configuredDefault, ...state.agents.map((agent) => agent.name)].filter(Boolean))];
-  select.innerHTML = names
-    .map((name) => `<option value="${escapeHtml(name)}">${escapeHtml(name)}</option>`)
-    .join("");
+  const names = getAgentNames();
+  const namesKey = names.join("\0");
+  const prevKey = state.agentNames.join("\0");
+  state.agentNames = names;
+
+  if (!state.dispatchAgent || !names.includes(state.dispatchAgent)) {
+    state.dispatchAgent = names[0] || getConfiguredDefaultAgent();
+  }
+  syncDispatchAgentLabel();
+
+  // names unchanged and selection still valid — menu will rebuild on open
+  if (namesKey === prevKey) return;
+}
+
+function closeAgentMenu() {
+  const menu = $("#agentMenu");
+  const btn = $("#dispatchAgentBtn");
+  menu?.classList.add("hidden");
+  if (btn) btn.setAttribute("aria-expanded", "false");
+}
+
+function openAgentMenu() {
+  const menu = $("#agentMenu");
+  const btn = $("#dispatchAgentBtn");
+  if (!menu || !btn) return;
+  closeSessionMenu();
+  const names = getAgentNames();
+  if (!names.length) {
+    menu.innerHTML = `<div class="menu-item" disabled>暂无 Agent</div>`;
+  } else {
+    menu.innerHTML = names
+      .map((name) => {
+        const active = name === state.dispatchAgent;
+        return `
+          <button class="menu-item ${active ? "active" : ""}" type="button" role="menuitem"
+            data-agent-name="${escapeHtml(name)}">
+            <span class="check" aria-hidden="true">${active ? "✓" : ""}</span>
+            <span>${escapeHtml(name)}</span>
+          </button>
+        `;
+      })
+      .join("");
+  }
+  menu.classList.remove("hidden");
+  btn.setAttribute("aria-expanded", "true");
+  const rect = btn.getBoundingClientRect();
+  const menuRect = menu.getBoundingClientRect();
+  const top = Math.min(rect.top - menuRect.height - 6, window.innerHeight - menuRect.height - 8);
+  menu.style.top = `${Math.max(8, top)}px`;
+  menu.style.left = `${Math.max(8, Math.min(rect.right - menuRect.width, window.innerWidth - menuRect.width - 8))}px`;
+}
+
+function toggleAgentMenu() {
+  const menu = $("#agentMenu");
+  if (!menu) return;
+  if (menu.classList.contains("hidden")) openAgentMenu();
+  else closeAgentMenu();
+}
+
+function sessionTasksUnchanged(prevTasks, nextTasks) {
+  if (prevTasks.length !== nextTasks.length) return false;
+  for (let i = 0; i < nextTasks.length; i += 1) {
+    const a = prevTasks[i];
+    const b = nextTasks[i];
+    if (!a || !b) return false;
+    if (
+      a.task_id !== b.task_id ||
+      a.status !== b.status ||
+      a.updated_at !== b.updated_at ||
+      a.request_text !== b.request_text ||
+      a.title !== b.title
+    ) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function buildFeedFingerprint() {
+  const taskPart = state.sessionTasks
+    .map((task) => {
+      const events = state.sessionEvents[task.task_id] || [];
+      const last = events[events.length - 1];
+      const chain = taskMeta(task).tool_chain;
+      const chainSig = chain
+        ? `${chain.step_count || 0}:${chain.updated_at || ""}:${(chain.steps || []).length}`
+        : "";
+      return [
+        task.task_id,
+        task.status,
+        task.updated_at,
+        task.request_text || "",
+        events.length,
+        last?.event_id || last?.id || last?.created_at || "",
+        chainSig,
+      ].join("~");
+    })
+    .join("|");
+  const thinkingPart = Object.entries(state.thinkingOpenState)
+    .map(([k, v]) => `${k}:${v ? 1 : 0}`)
+    .join(",");
+  return `${state.selectedSessionId}#${taskPart}#${thinkingPart}`;
+}
+
+function buildSessionListFingerprint() {
+  const runtimePart = state.runtimeAgents
+    .filter((agent) => agent.unified_msg_origin === state.selectedUmo)
+    .map((agent) => {
+      const runs = (state.runtimeRuns[agent.agent_id] || [])
+        .map((run) => `${run.task_id}:${run.status}:${run.updated_at || run.created_at || ""}`)
+        .join(",");
+      return `${agent.agent_id}:${agent.agent_name}:${runs}`;
+    })
+    .join("|");
+  const auditPart = state.tasks
+    .filter((task) => task.unified_msg_origin === state.selectedUmo && !task.parent_task_id)
+    .map(
+      (task) =>
+        `${task.task_id}:${task.status}:${task.updated_at}:${taskTitle(task)}:${isPinned(task) ? 1 : 0}`,
+    )
+    .join("|");
+  return [
+    state.selectedUmo,
+    state.selectedSessionId,
+    state.renamingSessionId,
+    state.pendingDeleteSessionId,
+    state.pendingDeleteAgentId,
+    runtimePart,
+    auditPart,
+  ].join("#");
 }
 
 function renderUmoSwitcher() {
@@ -556,6 +904,12 @@ function renderUmoSwitcher() {
 function updateSessionList() {
   const list = $("#sessionList");
   if (!list) return;
+
+  const fingerprint = buildSessionListFingerprint();
+  if (fingerprint === state.lastSessionListFingerprint && list.childElementCount > 0) {
+    return;
+  }
+  state.lastSessionListFingerprint = fingerprint;
 
   const runtimeAgents = state.runtimeAgents
     .filter((agent) => agent.unified_msg_origin === state.selectedUmo)
@@ -674,17 +1028,19 @@ function renderChatFeed() {
 
   if (!state.selectedSessionId) {
     feed.classList.add("is-empty");
-    feed.innerHTML = `
-      <div class="empty-hero" id="emptyHero">
-        <div class="brand-logo">${HERO_STAR_SVG}</div>
-        <h1 class="hero-greeting">${escapeHtml(greetingByHour())}</h1>
-      </div>
-    `;
+    feed.innerHTML = "";
+    state.lastFeedFingerprint = "";
     $("#promptText")?.focus();
     return;
   }
 
   captureThinkingOpenState();
+  const fingerprint = buildFeedFingerprint();
+  if (fingerprint === state.lastFeedFingerprint && feed.childElementCount > 0) {
+    return;
+  }
+  state.lastFeedFingerprint = fingerprint;
+
   feed.classList.remove("is-empty");
   let html = "";
 
@@ -711,7 +1067,7 @@ function renderChatFeed() {
       }
       // 回复气泡只认最终结果与工具主动发送的消息。
       if (event.event_type === "agent_result" || event.event_type === "tool_direct_message") {
-        if (event.message) responseHtml += `${escapeHtml(event.message)}\n\n`;
+        if (event.message) responseHtml += `${event.message}\n\n`;
         continue;
       }
       if (QUIET_EVENT_TYPES.has(event.event_type) || event.event_type?.startsWith("system")) {
@@ -725,14 +1081,14 @@ function renderChatFeed() {
       html += `
         <div class="chat-message maid">
           <div class="chat-message-inner">
-            <div class="chat-avatar">${STAR_SVG}</div>
+            <div class="chat-avatar" aria-hidden="true">✦</div>
             <div class="assistant-flow">
       `;
 
       html += traceHtml;
 
       if (responseHtml) {
-        html += `<div class="bubble">${responseHtml.trim()}</div>`;
+        html += `<div class="bubble markdown-body">${renderMarkdown(responseHtml.trim())}</div>`;
       } else if (["error", "failed", "stopped"].includes(task.status)) {
         html += `<div class="bubble error-text">任务发生异常，已终止。</div>`;
       }
@@ -745,7 +1101,12 @@ function renderChatFeed() {
     }
   }
 
+  if (!html) {
+    html = `<div class="empty-state">该会话暂无消息</div>`;
+  }
+
   feed.innerHTML = html;
+  afterMarkdownSanitize(feed);
 }
 
 function stringifyStructuredValue(value) {
@@ -1075,7 +1436,7 @@ async function submitPrompt() {
   const text = input?.value.trim() || "";
   if (!text && state.attachments.length === 0) return;
 
-  const agent = $("#dispatchAgent")?.value || state.settings?.default_agent_name || "butler";
+  const agent = state.dispatchAgent || getConfiguredDefaultAgent();
   const selectedRoot = getSelectedRootTask();
   const umo = selectedRoot?.unified_msg_origin || state.selectedUmo;
   if (!umo) {
@@ -1649,17 +2010,39 @@ function bindEvents() {
     if (!(event.target instanceof Element)) return;
     if (event.target.closest("#sessionMenu") || event.target.closest("[data-menu-kind]")) return;
     closeSessionMenu();
+    if (
+      event.target.closest("#agentMenu") ||
+      event.target.closest("#dispatchAgentBtn")
+    ) {
+      return;
+    }
+    closeAgentMenu();
   });
 
   document.addEventListener("keydown", (event) => {
     if (event.key !== "Escape") return;
     closeSessionMenu();
+    closeAgentMenu();
     const panel = $("#paneRight");
     if (panel?.classList.contains("open")) {
       panel.classList.remove("open");
       panel.setAttribute("aria-hidden", "true");
     }
     closeMobileSidebar();
+  });
+
+  $("#dispatchAgentBtn")?.addEventListener("click", (event) => {
+    event.stopPropagation();
+    toggleAgentMenu();
+  });
+
+  $("#agentMenu")?.addEventListener("click", (event) => {
+    const target = event.target instanceof Element ? event.target : null;
+    const item = target?.closest("[data-agent-name]");
+    if (!item || item.disabled) return;
+    state.dispatchAgent = item.dataset.agentName || getConfiguredDefaultAgent();
+    syncDispatchAgentLabel();
+    closeAgentMenu();
   });
 
   sessionList?.addEventListener("submit", async (event) => {
@@ -1800,7 +2183,17 @@ function bindEvents() {
     });
   });
 
-  $("#settingsBtn")?.addEventListener("click", () => {
+  $("#settingsBtn")?.addEventListener("click", async () => {
+    try {
+      // silent poll 不会写表单 DOM；打开时再从内存/接口回填。
+      if (state.settings) {
+        fillSettings(state.settings);
+      } else {
+        await loadOverview({ applyForm: true });
+      }
+    } catch (err) {
+      toast(err.message || "加载配置失败");
+    }
     $("#settingsModal")?.classList.remove("hidden");
   });
 
@@ -1874,10 +2267,14 @@ async function boot() {
   }
 
   await bridge.ready();
+  state.dispatchAgent = getConfiguredDefaultAgent();
+  syncDispatchAgentLabel();
   setStreamState("signal-poll", "轮询同步");
   startPolling();
   startDurationTicker();
   await refreshConsole({ silent: true, keepSession: false });
+  // silent 刷新不写表单，启动后用已加载的 settings 回填一次。
+  if (state.settings) fillSettings(state.settings);
   await subscribeStream();
 }
 

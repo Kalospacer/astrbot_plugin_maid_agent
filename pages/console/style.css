@@ -1,38 +1,40 @@
 /* ============================================================
-   代理女仆 Console — Claude Desktop 风格
+   代理女仆 Console — AstrBot 同款色板 + Claude Desktop 布局
    亮/暗主题由 AstrBot bridge 维护的 <html data-theme> 驱动，
-   全部走 CSS 变量，无 JS 参与。
+   色值对齐 dashboard PurpleTheme / PurpleThemeDark。
    ============================================================ */
 
 :root {
-  --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
-    "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", Helvetica, Arial, sans-serif;
-  --font-display: Georgia, "Times New Roman", "Songti SC", "Noto Serif SC", serif;
-  --font-mono: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", Menlo, monospace;
+  /* 与 AstrBot dashboard 同款：Outfit + Noto Sans + CJK fallback */
+  --font-sans: "Outfit", "Noto Sans", "PingFang SC", "Hiragino Sans GB",
+    "Noto Sans CJK SC", "Microsoft YaHei", "Noto Sans SC", sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, "Roboto Mono",
+    "Helvetica Neue", Consolas, monospace;
 
-  /* 暖色系（Claude ivory / oat / terracotta） */
-  --bg-app: #faf9f5;
-  --bg-sidebar: #f0eee6;
+  /* AstrBot PurpleTheme (light) */
+  --bg-app: #ffffff;
+  --bg-sidebar: #eef2f6;
   --bg-raised: #ffffff;
-  --bg-bubble-user: #f0eee6;
+  --bg-bubble-user: #e7ebf4;
+  --bg-code: #ececec;
 
-  --text-main: #1f1e1d;
-  --text-muted: #6e6b63;
+  --text-main: #1b1c1d;
+  --text-muted: rgba(0, 0, 0, 0.55);
 
-  --accent: #c96442;
-  --accent-hover: #b8552f;
-  --accent-soft: #f3e2da;
+  --accent: #3c96ca;
+  --accent-hover: #2f86bd;
+  --accent-soft: #e8f3fa;
 
-  --ok: #62825d;
-  --err: #b3452c;
-  --err-soft: #f5e0da;
+  --ok: #00c853;
+  --err: #f44336;
+  --err-soft: #f9d8d8;
 
-  --line: #e8e4da;
-  --line-strong: #d9d4c7;
+  --line: #d0d0d0;
+  --line-strong: #bdbdbd;
 
-  --shadow-float: 0 2px 8px rgba(31, 30, 29, 0.05);
-  --shadow-modal: 0 16px 40px rgba(31, 30, 29, 0.14);
-  --shadow-panel: -8px 0 32px rgba(31, 30, 29, 0.1);
+  --shadow-float: 0 2px 8px rgba(27, 28, 29, 0.06);
+  --shadow-modal: 0 16px 40px rgba(27, 28, 29, 0.14);
+  --shadow-panel: -8px 0 32px rgba(27, 28, 29, 0.1);
 
   --left-width: 264px;
   --left-rail: 56px;
@@ -45,28 +47,30 @@
 }
 
 [data-theme="dark"] {
-  --bg-app: #262624;
-  --bg-sidebar: #1f1e1d;
-  --bg-raised: #30302e;
-  --bg-bubble-user: #3a3833;
+  /* AstrBot PurpleThemeDark */
+  --bg-app: #1a1a1a;
+  --bg-sidebar: #1a2e3d;
+  --bg-raised: #242424;
+  --bg-bubble-user: #2d2e30;
+  --bg-code: #282833;
 
-  --text-main: #eceae4;
-  --text-muted: #a8a49c;
+  --text-main: #e8eaed;
+  --text-muted: rgba(255, 255, 255, 0.68);
 
-  --accent: #d97757;
-  --accent-hover: #e08a6d;
-  --accent-soft: #46352e;
+  --accent: #5ba4d4;
+  --accent-hover: #84c9ea;
+  --accent-soft: #1a2e3d;
 
-  --ok: #7fa874;
-  --err: #e5745a;
-  --err-soft: #4a2f28;
+  --ok: #52c41a;
+  --err: #ff4d4f;
+  --err-soft: #3d1a1a;
 
-  --line: #3a3835;
-  --line-strong: #4a4740;
+  --line: #333333;
+  --line-strong: #3a3a3a;
 
-  --shadow-float: 0 2px 8px rgba(0, 0, 0, 0.25);
-  --shadow-modal: 0 16px 40px rgba(0, 0, 0, 0.45);
-  --shadow-panel: -8px 0 32px rgba(0, 0, 0, 0.4);
+  --shadow-float: 0 2px 8px rgba(0, 0, 0, 0.28);
+  --shadow-modal: 0 16px 40px rgba(0, 0, 0, 0.5);
+  --shadow-panel: -8px 0 32px rgba(0, 0, 0, 0.45);
 }
 
 * { box-sizing: border-box; }
@@ -137,29 +141,27 @@ textarea { resize: none; }
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 12px 12px 8px 16px;
-  min-height: 52px;
+  gap: 8px;
+  padding: 12px 12px 4px 16px;
+  min-height: 48px;
 }
 .sidebar-brand {
   display: flex;
   align-items: center;
-  gap: 10px;
   min-width: 0;
-}
-.brand-mark {
-  color: var(--accent);
-  display: flex;
-  align-items: center;
-  flex-shrink: 0;
+  flex: 1;
 }
 .brand-name {
-  font-family: var(--font-display);
-  font-size: 16px;
-  letter-spacing: 0.02em;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-main);
   white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  letter-spacing: 0.01em;
 }
 
-.sidebar-actions { padding: 8px 12px; }
+.sidebar-actions { padding: 4px 12px 8px; }
 .new-chat-btn {
   display: flex;
   align-items: center;
@@ -374,7 +376,6 @@ textarea { resize: none; }
   padding: 12px 0 4px;
   justify-content: center;
 }
-.pane-left.collapsed .sidebar-brand { justify-content: center; }
 .pane-left.collapsed .sidebar-actions { padding: 8px; }
 .pane-left.collapsed .new-chat-btn { justify-content: center; padding: 9px 0; }
 .pane-left.collapsed .session-list { visibility: hidden; }
@@ -491,74 +492,153 @@ textarea { resize: none; }
   justify-content: center;
   align-items: center;
 }
-.empty-hero {
-  text-align: center;
-  color: var(--text-main);
-  padding: 0 24px 12px;
-}
-.brand-logo {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: var(--accent);
-  margin-bottom: 18px;
-}
-.hero-greeting {
-  font-family: var(--font-display);
-  font-size: 36px;
-  font-weight: 400;
-  letter-spacing: 0.01em;
-  margin: 0;
-}
 
-/* 消息流：assistant 平铺、user 燕麦块（Claude 式左对齐） */
+/* 消息流：对齐 AstrBot ChatUI（用户右气泡 / 助手左平铺） */
 .chat-message {
-  padding: 12px 24px;
+  padding: 10px 24px;
   display: flex;
   justify-content: center;
   width: 100%;
+}
+.chat-message.is-new {
   animation: message-in 0.15s ease-out;
 }
 .chat-message-inner {
   max-width: var(--feed-width);
   width: 100%;
   display: flex;
-  gap: 14px;
+  gap: 10px;
 }
-.bubble {
-  padding: 12px 16px;
-  border-radius: var(--radius-bubble);
-  font-size: 15px;
-  line-height: 1.7;
-  white-space: pre-wrap;
-  word-break: break-word;
+.chat-message.user .chat-message-inner {
+  justify-content: flex-end;
 }
 .chat-message.user .bubble {
-  background: var(--bg-bubble-user);
+  max-width: min(32rem, 72%);
+  width: auto;
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
   color: var(--text-main);
-  width: 100%;
+  border-radius: 1.5rem;
+  padding: 12px 18px;
+}
+.chat-message.maid .chat-message-inner {
+  align-items: flex-start;
+}
+.chat-avatar {
+  flex-shrink: 0;
+  width: 28px;
+  height: 28px;
+  margin-top: 2px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--accent);
+  font-size: 22px;
+  line-height: 1;
+  user-select: none;
+}
+.bubble {
+  padding: 10px 14px;
+  border-radius: 8px;
+  font-size: 15px;
+  line-height: 1.65;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 .chat-message.maid .bubble {
   background: transparent;
   color: var(--text-main);
   padding: 0;
+  max-width: min(760px, 100%);
 }
-.chat-avatar {
-  width: 28px;
-  height: 28px;
-  border-radius: 50%;
-  flex-shrink: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: var(--accent-soft);
-  color: var(--accent);
-  font-weight: 600;
-  font-size: 12px;
-  margin-top: 2px;
+.chat-message.maid .bubble.markdown-body {
+  white-space: normal;
 }
 .assistant-flow { flex: 1; min-width: 0; }
 .error-text { color: var(--err); }
+
+/* Markdown body（助手回复，间距贴近 ChatUI） */
+.markdown-body > :first-child { margin-top: 0; }
+.markdown-body > :last-child { margin-bottom: 0; }
+.markdown-body p { margin: 0.25rem 0; }
+.markdown-body h1,
+.markdown-body h2,
+.markdown-body h3,
+.markdown-body h4,
+.markdown-body h5,
+.markdown-body h6 {
+  margin: 1.1em 0 0.45em;
+  font-weight: 600;
+  line-height: 1.35;
+  color: var(--text-main);
+}
+.markdown-body h1 { font-size: 1.35em; }
+.markdown-body h2 { font-size: 1.2em; }
+.markdown-body h3 { font-size: 1.08em; }
+.markdown-body ul,
+.markdown-body ol {
+  margin: 0.35em 0 0.65em;
+  padding-left: 1.4em;
+}
+.markdown-body li { margin: 0.15em 0; }
+.markdown-body li > ul,
+.markdown-body li > ol { margin-bottom: 0; }
+.markdown-body blockquote {
+  margin: 0.45em 0 0.65em;
+  padding: 0.2em 0 0.2em 0.9em;
+  border-left: 3px solid var(--accent);
+  color: var(--text-muted);
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+  border-radius: 6px;
+}
+.markdown-body a {
+  color: var(--accent);
+  text-decoration: none;
+}
+.markdown-body a:hover { text-decoration: underline; color: var(--accent-hover); }
+.markdown-body hr {
+  border: none;
+  border-top: 1px solid var(--line);
+  margin: 1em 0;
+}
+.markdown-body code {
+  font-family: var(--font-mono);
+  font-size: 0.9em;
+  background: var(--bg-code);
+  padding: 0.12em 0.35em;
+  border-radius: 4px;
+}
+.markdown-body pre {
+  margin: 0 0 0.85em;
+  padding: 12px 14px;
+  background: var(--bg-code);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-item);
+  overflow-x: auto;
+}
+.markdown-body pre code {
+  background: transparent;
+  padding: 0;
+  font-size: 12.5px;
+  line-height: 1.55;
+}
+.markdown-body table {
+  border-collapse: collapse;
+  margin: 0 0 0.85em;
+  width: 100%;
+  font-size: 0.95em;
+}
+.markdown-body th,
+.markdown-body td {
+  border: 1px solid var(--line);
+  padding: 6px 10px;
+  text-align: left;
+}
+.markdown-body th { background: var(--bg-sidebar); font-weight: 600; }
+.markdown-body img {
+  max-width: 100%;
+  border-radius: var(--radius-item);
+}
 
 /* ============================== 执行轨迹（思考块） ============================== */
 .trace-panel {
@@ -810,32 +890,50 @@ textarea { resize: none; }
   gap: 8px;
 }
 .model-selector-inline {
-  display: flex;
+  display: inline-flex;
   align-items: center;
-  gap: 4px;
+  gap: 6px;
   color: var(--text-muted);
   background: transparent;
   border-radius: var(--radius-item);
   padding: 4px 8px;
   font-size: 13px;
-  cursor: pointer;
-  transition: background 0.2s;
-}
-.model-selector-inline:hover { background: var(--bg-sidebar); }
-.model-selector-inline select {
-  background: transparent;
-  color: var(--text-muted);
   font-weight: 500;
-  font-size: 13px;
   cursor: pointer;
-  appearance: none;
-  -webkit-appearance: none;
-  padding-right: 2px;
+  transition: background 0.2s, color 0.2s;
+  max-width: 180px;
 }
-.model-selector-inline:hover select { color: var(--text-main); }
-.model-selector-inline select option {
-  background: var(--bg-raised);
+.model-selector-inline:hover,
+.model-selector-inline[aria-expanded="true"] {
+  background: var(--bg-sidebar);
   color: var(--text-main);
+}
+.model-selector-inline #dispatchAgentLabel {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+.model-selector-inline svg {
+  flex-shrink: 0;
+  opacity: 0.75;
+}
+.agent-menu {
+  min-width: 160px;
+  max-width: min(280px, 90vw);
+  max-height: min(320px, 50vh);
+  overflow-y: auto;
+}
+.menu-item.active {
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-weight: 600;
+}
+.menu-item.active:hover { background: var(--accent-soft); }
+.menu-item .check {
+  width: 14px;
+  color: var(--accent);
+  flex-shrink: 0;
 }
 .send-btn.icon-only {
   width: 32px;
@@ -1060,7 +1158,7 @@ textarea { resize: none; }
 .modal-overlay {
   position: fixed;
   top: 0; left: 0; right: 0; bottom: 0;
-  background: rgba(31, 30, 29, 0.45);
+  background: rgba(27, 28, 29, 0.4);
   backdrop-filter: blur(2px);
   display: flex;
   align-items: center;
@@ -1089,9 +1187,8 @@ textarea { resize: none; }
   border-bottom: 1px solid var(--line);
 }
 .modal-header h2 {
-  font-family: var(--font-display);
   font-size: 17px;
-  font-weight: 500;
+  font-weight: 600;
   margin: 0;
 }
 .modal-body { padding: 20px; overflow-y: auto; }
@@ -1221,14 +1318,13 @@ textarea { resize: none; }
     display: none;
     position: fixed;
     inset: 0;
-    background: rgba(31, 30, 29, 0.4);
+    background: rgba(27, 28, 29, 0.4);
     z-index: 350;
   }
   .sidebar-scrim.show { display: block; }
   .mobile-only { display: flex; }
   .chat-message { padding: 10px 16px; }
   .chat-footer { padding: 0 12px 14px; }
-  .hero-greeting { font-size: 27px; }
   .chat-title { max-width: 40vw; }
 }
 

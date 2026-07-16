@@ -6,20 +6,28 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
+from string import Formatter
 from typing import Any
+
+from astrbot.api import logger
 
 from .constants import DEFAULT_MAID_AGENT_NAME
 
-DEFAULT_SESSION_TIMEOUT_MINUTES = 20
+DEFAULT_FOREGROUND_TIMEOUT_SECONDS = 50
+DEFAULT_MAX_ACTIVE_PER_UMO = 5
+DEFAULT_MAX_ACTIVE_GLOBAL = 20
+DEFAULT_RETENTION_DAYS = 30
 DEFAULT_DISPATCH_PROMPT_TEMPLATE = (
     "{user_input_block}"
-    "{maid_full_reply_block}"
     "{maid_request_block}"
     "你是MuiceMaid，一个全能的管家AIagent助手，擅长从大小姐的话语中理解大小姐的意图，并提取出大小姐的需求主动完成大小姐的愿望。"
     "你需要综合考虑大小姐和对方的对话，提取他们是否需要执行某些实际操作，并综合以上信息完成任务，请判断对方的需求，和大小姐的意图，"
     "如果大小姐误解了对方的需求，你以对方的需求为准完成任务，如果大小姐拒绝了对方的请求，你应当停止工作并汇报结束，"
     "如果大小姐和对方的需求一致，结合两者的需求准确完成任务。你的汇报对象是大小姐，不是对方。"
 )
+
+_DISPATCH_PROMPT_FIELDS = frozenset({"user_input_block", "maid_request_block"})
+_warned_invalid_prompt_templates: set[str] = set()
 
 
 @dataclass(slots=True)
@@ -29,10 +37,76 @@ class MaidModeConfig:
     hide_native_tools: bool = True
     hide_transfer_tools: bool = True
     include_raw_user_input: bool = True
-    session_enabled: bool = True
     log_raw_llm_io: bool = False
-    session_timeout_minutes: int = DEFAULT_SESSION_TIMEOUT_MINUTES
     dispatch_prompt_template: str = DEFAULT_DISPATCH_PROMPT_TEMPLATE
+    foreground_timeout_seconds: int = DEFAULT_FOREGROUND_TIMEOUT_SECONDS
+    memory_agent_names: list[str] | None = None
+    max_active_per_umo: int = DEFAULT_MAX_ACTIVE_PER_UMO
+    max_active_global: int = DEFAULT_MAX_ACTIVE_GLOBAL
+    retention_days: int = DEFAULT_RETENTION_DAYS
+
+
+def _render_default_dispatch_prompt(values: Mapping[str, str]) -> str:
+    return DEFAULT_DISPATCH_PROMPT_TEMPLATE.format_map(values).strip()
+
+
+def render_dispatch_prompt(
+    template: str,
+    *,
+    user_input_block: str,
+    maid_request_block: str,
+) -> str:
+    """Render a configured dispatch prompt.
+
+    Unknown or malformed placeholders fall back to the default template so a
+    stale user configuration cannot turn an otherwise valid runtime run into
+    an immediate failure.
+    """
+    values = {
+        "user_input_block": user_input_block,
+        "maid_request_block": maid_request_block,
+    }
+    normalized_template = str(template or "")
+    if not normalized_template.strip():
+        return _render_default_dispatch_prompt(values)
+
+    try:
+        parsed_fields = [
+            field_name
+            for _, field_name, _, _ in Formatter().parse(normalized_template)
+            if field_name is not None
+        ]
+    except ValueError as exc:
+        if normalized_template not in _warned_invalid_prompt_templates:
+            _warned_invalid_prompt_templates.add(normalized_template)
+            logger.warning(
+                "[大小姐模式] dispatch_prompt_template 格式无效，已回退默认模板: %s",
+                exc,
+            )
+        return _render_default_dispatch_prompt(values)
+
+    unknown_fields = sorted(
+        {field_name for field_name in parsed_fields if field_name not in _DISPATCH_PROMPT_FIELDS}
+    )
+    if unknown_fields:
+        if normalized_template not in _warned_invalid_prompt_templates:
+            _warned_invalid_prompt_templates.add(normalized_template)
+            logger.warning(
+                "[大小姐模式] dispatch_prompt_template 包含未知占位符 %s，已回退默认模板。",
+                ", ".join(repr(field) for field in unknown_fields),
+            )
+        return _render_default_dispatch_prompt(values)
+
+    try:
+        return normalized_template.format_map(values).strip()
+    except (AttributeError, KeyError, TypeError, ValueError) as exc:
+        if normalized_template not in _warned_invalid_prompt_templates:
+            _warned_invalid_prompt_templates.add(normalized_template)
+            logger.warning(
+                "[大小姐模式] dispatch_prompt_template 渲染失败，已回退默认模板: %s",
+                exc,
+            )
+        return _render_default_dispatch_prompt(values)
 
 
 def _parse_bool(value: Any, default: bool) -> bool:
@@ -49,6 +123,15 @@ def _parse_bool(value: Any, default: bool) -> bool:
         if normalized in {"0", "false", "no", "off", ""}:
             return False
     return default
+
+
+def _safe_int(value: Any, default: int) -> int:
+    try:
+        if isinstance(value, bool):
+            return default
+        return int(value)
+    except (TypeError, ValueError):
+        return default
 
 
 def load_maid_mode_config(config: Mapping[str, Any] | None = None) -> MaidModeConfig:
@@ -79,7 +162,6 @@ def load_maid_mode_config(config: Mapping[str, Any] | None = None) -> MaidModeCo
     hide_native_tools = _parse_bool(cfg.get("hide_native_tools", True), True)
     hide_transfer_tools = _parse_bool(cfg.get("hide_transfer_tools", True), True)
     include_raw_user_input = _parse_bool(cfg.get("include_raw_user_input", True), True)
-    session_enabled = _parse_bool(cfg.get("session_enabled", True), True)
     log_raw_llm_io = _parse_bool(cfg.get("log_raw_llm_io", False), False)
     dispatch_prompt_template = str(
         cfg.get("dispatch_prompt_template", DEFAULT_DISPATCH_PROMPT_TEMPLATE)
@@ -87,13 +169,54 @@ def load_maid_mode_config(config: Mapping[str, Any] | None = None) -> MaidModeCo
     if not dispatch_prompt_template.strip():
         dispatch_prompt_template = DEFAULT_DISPATCH_PROMPT_TEMPLATE
 
-    timeout_raw = cfg.get("session_timeout_minutes", DEFAULT_SESSION_TIMEOUT_MINUTES)
-    try:
-        session_timeout_minutes = int(timeout_raw)
-    except (TypeError, ValueError):
-        session_timeout_minutes = DEFAULT_SESSION_TIMEOUT_MINUTES
-    if session_timeout_minutes <= 0:
-        session_timeout_minutes = DEFAULT_SESSION_TIMEOUT_MINUTES
+    foreground_timeout_seconds = _safe_int(
+        cfg.get("foreground_timeout_seconds", DEFAULT_FOREGROUND_TIMEOUT_SECONDS),
+        DEFAULT_FOREGROUND_TIMEOUT_SECONDS,
+    )
+    if not 1 <= foreground_timeout_seconds <= 55:
+        # Must stay strictly below the Core local-tool timeout (60s) so the
+        # foreground wait_for can migrate to background before Core cancels it.
+        logger.warning(
+            "[大小姐模式] foreground_timeout_seconds=%s 越界，已重置为默认 %s",
+            foreground_timeout_seconds,
+            DEFAULT_FOREGROUND_TIMEOUT_SECONDS,
+        )
+        foreground_timeout_seconds = DEFAULT_FOREGROUND_TIMEOUT_SECONDS
+
+    max_active_per_umo = _safe_int(
+        cfg.get("max_active_per_umo", DEFAULT_MAX_ACTIVE_PER_UMO),
+        DEFAULT_MAX_ACTIVE_PER_UMO,
+    )
+    if max_active_per_umo <= 0:
+        max_active_per_umo = DEFAULT_MAX_ACTIVE_PER_UMO
+
+    max_active_global = _safe_int(
+        cfg.get("max_active_global", DEFAULT_MAX_ACTIVE_GLOBAL),
+        DEFAULT_MAX_ACTIVE_GLOBAL,
+    )
+    if max_active_global <= 0:
+        max_active_global = DEFAULT_MAX_ACTIVE_GLOBAL
+
+    retention_days = _safe_int(
+        cfg.get("retention_days", DEFAULT_RETENTION_DAYS),
+        DEFAULT_RETENTION_DAYS,
+    )
+    if retention_days < 0:
+        retention_days = DEFAULT_RETENTION_DAYS
+
+    memory_agent_names_raw = cfg.get("memory_agent_names")
+    memory_agent_names: list[str] | None = None
+    if isinstance(memory_agent_names_raw, (list, tuple, set)):
+        seen: set[str] = set()
+        for item in memory_agent_names_raw:
+            normalized = str(item).strip()
+            if not normalized:
+                continue
+            key = normalized.casefold()
+            if key in seen:
+                continue
+            seen.add(key)
+            memory_agent_names = (memory_agent_names or []) + [normalized]
 
     return MaidModeConfig(
         default_agent_name=default_agent_name,
@@ -101,8 +224,11 @@ def load_maid_mode_config(config: Mapping[str, Any] | None = None) -> MaidModeCo
         hide_native_tools=hide_native_tools,
         hide_transfer_tools=hide_transfer_tools,
         include_raw_user_input=include_raw_user_input,
-        session_enabled=session_enabled,
         log_raw_llm_io=log_raw_llm_io,
-        session_timeout_minutes=session_timeout_minutes,
         dispatch_prompt_template=dispatch_prompt_template,
+        foreground_timeout_seconds=foreground_timeout_seconds,
+        memory_agent_names=memory_agent_names,
+        max_active_per_umo=max_active_per_umo,
+        max_active_global=max_active_global,
+        retention_days=retention_days,
     )

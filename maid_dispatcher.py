@@ -5,36 +5,27 @@
 from __future__ import annotations
 
 import asyncio
-import json
 from typing import TYPE_CHECKING, Any
+from weakref import WeakValueDictionary
 
 from astrbot.api import logger
 from astrbot.api.provider import ProviderRequest
-from astrbot.core.agent.context.token_counter import EstimateTokenCounter
 from astrbot.core.agent.hooks import BaseAgentRunHooks
 from astrbot.core.agent.message import Message
 from astrbot.core.agent.runners.tool_loop_agent_runner import ToolLoopAgentRunner
 from astrbot.core.astr_agent_context import AgentContextWrapper, AstrAgentContext
 from astrbot.core.astr_agent_tool_exec import FunctionToolExecutor
-from astrbot.core.utils.active_event_registry import active_event_registry
 from astrbot.core.utils.llm_metadata import LLM_METADATAS
 
-from .session_store import MaidAgentSession, MaidSessionStore
+from .config import _safe_int
 
-_provider_config_locks: dict[int, asyncio.Lock] = {}
+_provider_config_locks: WeakValueDictionary[int, asyncio.Lock] = WeakValueDictionary()
 
 if TYPE_CHECKING:
     from astrbot.api.event import AstrMessageEvent
     from astrbot.api.star import Context
     from astrbot.core.agent.handoff import HandoffTool
     from astrbot.core.provider.provider import Provider
-
-
-def _safe_int(value: Any, default: int) -> int:
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        return default
 
 
 def _list_handoffs(context: Context) -> list[HandoffTool]:
@@ -81,29 +72,6 @@ def _resolve_handoff(
     raise ValueError(f"未找到可用的子 agent: {agent_name}")
 
 
-def _build_dispatch_prompt(
-    true_user_input: str | None,
-    maid_full_reply: str,
-    dispatch_prompt_template: str,
-    maid_request: str | None = None,
-) -> str:
-    normalized_true_input = (true_user_input or "").strip()
-    user_input_block = f"【对方原话】\n{normalized_true_input}\n\n" if normalized_true_input else ""
-    maid_full_reply_block = f"【大小姐完整回复】\n{maid_full_reply.strip()}\n\n"
-    maid_request_block = (
-        f"【大小姐显式请求】\n{maid_request.strip()}\n\n"
-        if maid_request and maid_request.strip()
-        else ""
-    )
-    return dispatch_prompt_template.format_map(
-        {
-            "user_input_block": user_input_block,
-            "maid_full_reply_block": maid_full_reply_block,
-            "maid_request_block": maid_request_block,
-        }
-    ).strip()
-
-
 def _normalize_begin_dialogs(dialogs: Any) -> list[Message] | None:
     if not dialogs:
         return None
@@ -122,14 +90,6 @@ def _normalize_begin_dialogs(dialogs: Any) -> list[Message] | None:
             )
             continue
     return contexts or None
-
-
-def _load_provider_settings(context: Context, event: AstrMessageEvent) -> dict[str, Any]:
-    root_cfg = context.get_config(umo=event.unified_msg_origin)
-    if not isinstance(root_cfg, dict):
-        return {}
-    provider_settings = root_cfg.get("provider_settings", {})
-    return provider_settings if isinstance(provider_settings, dict) else {}
 
 
 def _get_compress_provider(
@@ -167,117 +127,6 @@ def _ensure_provider_max_context_tokens(provider: Provider) -> int:
     return inferred
 
 
-def _build_session_contexts(
-    session: MaidAgentSession | None,
-    begin_dialogs: list[Message] | None,
-) -> list[dict[str, Any]] | list[Message] | None:
-    if session and session.messages:
-        messages = list(session.messages)
-        if messages and messages[0].get("role") == "system":
-            messages = messages[1:]
-        return messages or None
-    return begin_dialogs
-
-
-def _should_stop_background_subagent(event: AstrMessageEvent) -> bool:
-    return event.is_stopped() or bool(event.get_extra("agent_stop_requested"))
-
-
-def _format_assistant_message(message: Message) -> str:
-    parts: list[str] = []
-    content = message.content
-    if isinstance(content, str):
-        if content.strip():
-            parts.append(content.strip())
-    elif isinstance(content, list):
-        text_bits: list[str] = []
-        for item in content:
-            if getattr(item, "type", "") == "text":
-                text = getattr(item, "text", "")
-                if text:
-                    text_bits.append(str(text).strip())
-        if text_bits:
-            parts.append("\n".join(bit for bit in text_bits if bit))
-
-    tool_calls = message.tool_calls or []
-    if tool_calls:
-        tool_lines: list[str] = []
-        for tool_call in tool_calls:
-            function = getattr(tool_call, "function", None)
-            name = getattr(function, "name", "") or ""
-            arguments = getattr(function, "arguments", None)
-            if arguments:
-                import json
-                try:
-                    args_str = json.dumps(json.loads(arguments), ensure_ascii=False, indent=2)
-                    tool_lines.append(f"调用工具 {name}: {args_str}")
-                except Exception:
-                    tool_lines.append(f"调用工具 {name}: {arguments}")
-            else:
-                tool_lines.append(f"调用工具 {name}")
-        if tool_lines:
-            parts.append("\n".join(tool_lines))
-
-    return "\n".join(part for part in parts if part).strip()
-
-
-async def _publish_latest_assistant_output(
-    runner: ToolLoopAgentRunner,
-    on_assistant_output_updated,
-    last_published_output: str,
-) -> str:
-    if on_assistant_output_updated is None:
-        return last_published_output
-    latest_output = _get_latest_assistant_output(runner.run_context.messages)
-    if latest_output and latest_output != last_published_output:
-        await on_assistant_output_updated(latest_output)
-        return latest_output
-    return last_published_output
-
-
-def _dump_runner_messages(runner: ToolLoopAgentRunner) -> list[dict[str, Any]]:
-    dumped: list[dict[str, Any]] = []
-    for message in runner.run_context.messages:
-        try:
-            if hasattr(message, "model_dump"):
-                dumped.append(message.model_dump())
-            elif isinstance(message, dict):
-                dumped.append(message)
-            else:
-                dumped.append({"repr": repr(message)})
-        except Exception as exc:
-            dumped.append({"repr": repr(message), "dump_error": str(exc)})
-    return dumped
-
-
-async def _publish_tool_chain_snapshot(
-    runner: ToolLoopAgentRunner,
-    on_tool_chain_updated,
-    last_signature: str,
-) -> str:
-    if on_tool_chain_updated is None:
-        return last_signature
-    messages = _dump_runner_messages(runner)
-    try:
-        signature = json.dumps(messages, ensure_ascii=False, sort_keys=True, default=str)
-    except Exception:
-        signature = repr(messages)
-    if signature == last_signature:
-        return last_signature
-    await on_tool_chain_updated(messages)
-    return signature
-
-
-def _get_latest_assistant_output(messages: list[Message]) -> str:
-    for message in reversed(messages):
-        if message.role != "assistant":
-            continue
-        rendered = _format_assistant_message(message)
-        if rendered:
-            return rendered
-    return ""
-
-
 async def _build_runner(
     *,
     context: Context,
@@ -298,6 +147,7 @@ async def _build_runner(
     tool_schema_mode: str,
     max_context_tokens: int,
     session_id: str,
+    agent_hooks=None,
 ) -> ToolLoopAgentRunner:
     agent_context = AstrAgentContext(context=context, event=event)
     runner = ToolLoopAgentRunner()
@@ -326,7 +176,7 @@ async def _build_runner(
                     tool_call_timeout=tool_call_timeout,
                 ),
                 tool_executor=FunctionToolExecutor(),
-                agent_hooks=BaseAgentRunHooks[AstrAgentContext](),
+                agent_hooks=agent_hooks or BaseAgentRunHooks[AstrAgentContext](),
                 streaming=stream,
                 llm_compress_instruction=llm_compress_instruction,
                 llm_compress_keep_recent=llm_compress_keep_recent,
@@ -342,222 +192,3 @@ async def _build_runner(
                 else:
                     provider.provider_config["max_context_tokens"] = original_max_context_tokens
     return runner
-
-
-async def dispatch_to_maid_agent(
-    context: Context,
-    event: AstrMessageEvent,
-    session_store: MaidSessionStore,
-    agent_name: str,
-    maid_full_reply: str,
-    maid_request: str,
-    true_user_input: str | None,
-    image_urls_raw: Any = None,
-    explicit_session_id: str | None = None,
-    active_event: AstrMessageEvent | None = None,
-    on_runner_registered=None,
-    on_runner_unregistered=None,
-    on_assistant_output_updated=None,
-    on_tool_chain_updated=None,
-) -> tuple[str, str]:
-    """根据 agent 名调用对应子 agent，并返回其自然语言结果与实际命中的 agent 名。"""
-    handoff, resolved_agent_name = _resolve_handoff(
-        context,
-        agent_name,
-        fallback_agent_name=session_store.config.default_agent_name,
-    )
-    logger.debug("[大小姐模式] 本次调度实际使用子 agent: %s", resolved_agent_name)
-
-    runner_event = active_event or event
-    agent_context = AstrAgentContext(context=context, event=runner_event)
-    run_context = AgentContextWrapper(context=agent_context, tool_call_timeout=60)
-
-    toolset = FunctionToolExecutor._build_handoff_toolset(run_context, handoff.agent.tools)
-    image_urls = await FunctionToolExecutor._collect_handoff_image_urls(run_context, image_urls_raw)
-
-    provider_id = getattr(
-        handoff, "provider_id", None
-    ) or await context.get_current_chat_provider_id(event.unified_msg_origin)
-    dispatch_prompt = _build_dispatch_prompt(
-        true_user_input=true_user_input,
-        maid_full_reply=maid_full_reply,
-        dispatch_prompt_template=session_store.config.dispatch_prompt_template,
-        maid_request=maid_request,
-    )
-    begin_dialogs = _normalize_begin_dialogs(getattr(handoff.agent, "begin_dialogs", None))
-
-    provider_settings = _load_provider_settings(context, event)
-    agent_max_step = max(1, _safe_int(provider_settings.get("max_agent_step", 30), 30))
-    stream = bool(provider_settings.get("streaming_response", False))
-    tool_call_timeout = _safe_int(provider_settings.get("tool_call_timeout", 60), 60)
-    llm_compress_instruction = str(provider_settings.get("llm_compress_instruction", "") or "")
-    llm_compress_keep_recent = _safe_int(provider_settings.get("llm_compress_keep_recent", 4), 4)
-    truncate_turns = _safe_int(provider_settings.get("dequeue_context_length", 1), 1)
-    enforce_max_turns = _safe_int(provider_settings.get("max_context_length", -1), -1)
-    tool_schema_mode = str(provider_settings.get("tool_schema_mode", "full") or "full")
-    llm_compress_provider = _get_compress_provider(context, provider_settings)
-
-    provider = context.get_provider_by_id(provider_id)
-    if provider is None:
-        raise RuntimeError(f"未找到子 agent provider: {provider_id}")
-    max_context_tokens = _ensure_provider_max_context_tokens(provider)
-
-    session: MaidAgentSession | None = None
-    if session_store.config.session_enabled:
-        if explicit_session_id:
-            session, reused = await session_store.get_or_create_detached_session(
-                event.unified_msg_origin,
-                resolved_agent_name,
-                session_id=explicit_session_id,
-            )
-        else:
-            session, reused = await session_store.get_or_create_active_session(
-                event.unified_msg_origin,
-                resolved_agent_name,
-            )
-        if reused:
-            logger.info(
-                "[大小姐模式] 已续接现有管家 session: umo=%s session_id=%s",
-                event.unified_msg_origin,
-                session.session_id,
-            )
-
-    request_session_id = (
-        explicit_session_id
-        or (session.session_id if session is not None else "")
-        or event.unified_msg_origin
-    )
-
-    runner = await _build_runner(
-        context=context,
-        event=runner_event,
-        provider=provider,
-        prompt=dispatch_prompt,
-        image_urls=image_urls,
-        system_prompt=handoff.agent.instructions,
-        tools=toolset,
-        contexts=_build_session_contexts(session, begin_dialogs),
-        stream=stream,
-        tool_call_timeout=tool_call_timeout,
-        llm_compress_instruction=llm_compress_instruction,
-        llm_compress_keep_recent=llm_compress_keep_recent,
-        llm_compress_provider=llm_compress_provider,
-        truncate_turns=truncate_turns,
-        enforce_max_turns=enforce_max_turns,
-        tool_schema_mode=tool_schema_mode,
-        max_context_tokens=max_context_tokens,
-        session_id=request_session_id,
-    )
-    estimated_context_tokens = EstimateTokenCounter().count_tokens(runner.run_context.messages)
-
-    logger.info(
-        "[大小姐模式] 子 agent 上下文预算: agent=%s provider=%s model=%s estimated_context_tokens=%s max_context_tokens=%s strategy=%s compress_provider=%s",
-        resolved_agent_name,
-        provider_id,
-        provider.get_model(),
-        estimated_context_tokens,
-        max_context_tokens,
-        provider_settings.get("context_limit_reached_strategy", "truncate_by_turns"),
-        provider_settings.get("llm_compress_provider_id", "") or "<none>",
-    )
-
-    event_registered = False
-    step_count = 0
-    last_published_output = ""
-    last_published_tool_chain = ""
-
-    try:
-        if on_runner_registered is not None:
-            on_runner_registered(event.unified_msg_origin, runner)
-        active_event_registry.register(runner_event)
-        event_registered = True
-
-        while not runner.done() and step_count < agent_max_step:
-            step_count += 1
-            if _should_stop_background_subagent(runner_event):
-                runner.request_stop()
-            async for _ in runner.step():
-                last_published_output = await _publish_latest_assistant_output(
-                    runner,
-                    on_assistant_output_updated,
-                    last_published_output,
-                )
-                if _should_stop_background_subagent(runner_event):
-                    runner.request_stop()
-            last_published_tool_chain = await _publish_tool_chain_snapshot(
-                runner,
-                on_tool_chain_updated,
-                last_published_tool_chain,
-            )
-
-        if not runner.done():
-            logger.warning(
-                "[大小姐模式] 子 agent 达到最大步数 (%s)，将强制收尾。",
-                agent_max_step,
-            )
-            if runner.req:
-                runner.req.func_tool = None
-            runner.run_context.messages.append(
-                Message(
-                    role="user",
-                    content="工具调用次数已达到上限，请停止使用工具，并根据已经收集到的信息，对你的任务和发现进行总结，然后直接回复对方。",
-                )
-            )
-            async for _ in runner.step():
-                last_published_output = await _publish_latest_assistant_output(
-                    runner,
-                    on_assistant_output_updated,
-                    last_published_output,
-                )
-                if _should_stop_background_subagent(runner_event):
-                    runner.request_stop()
-            last_published_tool_chain = await _publish_tool_chain_snapshot(
-                runner,
-                on_tool_chain_updated,
-                last_published_tool_chain,
-            )
-    finally:
-        if on_runner_unregistered is not None:
-            on_runner_unregistered(event.unified_msg_origin, runner)
-        if event_registered:
-            active_event_registry.unregister(runner_event)
-
-    llm_resp = runner.get_final_llm_resp()
-    if llm_resp is None:
-        raise RuntimeError("子 agent 未返回最终响应")
-    if llm_resp.usage is not None:
-        logger.info(
-            "[大小姐模式] 子 agent token 用量: agent=%s input=%s output=%s total=%s",
-            resolved_agent_name,
-            llm_resp.usage.input,
-            llm_resp.usage.output,
-            llm_resp.usage.total,
-        )
-    else:
-        logger.debug(
-            "[大小姐模式] 子 agent 未返回 usage 信息: agent=%s model=%s",
-            resolved_agent_name,
-            provider.get_model(),
-        )
-
-    if session is not None:
-        session.agent_name = resolved_agent_name
-        session.messages = [msg.model_dump() for msg in runner.run_context.messages]
-        session.last_maid_request = maid_request
-        session.last_agent_result = llm_resp.completion_text or ""
-        persisted = await session_store.save_session_if_active(
-            session,
-            require_active_session_id=not explicit_session_id,
-        )
-        if persisted:
-            logger.debug(
-                "[大小姐模式] 已持久化管家 session: session_id=%s messages=%d",
-                session.session_id,
-                len(session.messages),
-            )
-        else:
-            logger.info(
-                "[大小姐模式] 跳过持久化已关闭/失效的管家 session: session_id=%s",
-                session.session_id,
-            )
-    return llm_resp.completion_text or "", resolved_agent_name

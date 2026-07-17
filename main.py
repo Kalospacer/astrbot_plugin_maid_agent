@@ -35,7 +35,6 @@ from astrbot.core.utils.astrbot_path import get_astrbot_temp_path
 from astrbot.core.utils.history_saver import persist_agent_history
 
 from .config import _safe_int, load_maid_mode_config, render_dispatch_prompt
-from .console_store import ConsoleTaskPatch, MaidConsoleEventStore
 from .constants import (
     CALL_MAID_TOOL_NAME,
     MAID_NOTIFICATION_ID_META_KEY,
@@ -66,7 +65,14 @@ from .runtime_orchestrator import (
     RunNotFoundError,
     RuntimeOrchestrator,
 )
-from .runtime_store import RunMeta, RuntimeStore
+from .runtime_store import (
+    CTRL_RUN_END,
+    CTRL_RUN_START,
+    CTRL_STEER,
+    RunMeta,
+    RuntimeStore,
+)
+from .sse_hub import SseHub
 from .toolset_adapter import (
     _agent_memory_enabled as _agent_memory_enabled_fn,
 )
@@ -311,7 +317,7 @@ class MaidAgent(Star):
         super().__init__(context)
         self.config = config if config is not None else {}
         self.maid_mode_config = load_maid_mode_config(self.config)
-        self.console_store = MaidConsoleEventStore()
+        self.sse_hub = SseHub()
         self._active_asyncio_tasks: set[asyncio.Task] = set()
         # 1.3.0 runtime: foreground-first subagent orchestration.
         self.runtime_store = RuntimeStore(self.maid_mode_config)
@@ -327,18 +333,14 @@ class MaidAgent(Star):
 
     async def initialize(self) -> None:
         """插件初始化"""
-        await self.console_store.initialize()
-        reconciled_task_ids = await self.console_store.reconcile_incomplete_tasks()
-        if reconciled_task_ids:
-            logger.warning(
-                "[大小姐模式] 已收敛 %s 个因插件重启遗留的后台任务: %s",
-                len(reconciled_task_ids),
-                ",".join(task_id[:8] for task_id in reconciled_task_ids),
-            )
         # 1.3.0 runtime: collapse orphaned runs and retry pending notifications.
         reconciled_runs = await self.runtime_store.reconcile_on_restart()
         if reconciled_runs:
-            await self.console_store_reconcile_runtime(reconciled_runs)
+            logger.warning(
+                "[大小姐模式] 启动时收敛 %d 个遗留 runtime run 为 interrupted: %s",
+                len(reconciled_runs),
+                ",".join(run.task_id[:8] for run in reconciled_runs),
+            )
         await self.outbox.on_restart()
         self._patch_runtime_tool_schemas()
         self._schedule_retention_cleanup()
@@ -370,61 +372,9 @@ class MaidAgent(Star):
             await asyncio.gather(*tasks, return_exceptions=True)
 
         self._active_asyncio_tasks.clear()
-        await self.console_store.close()
+        await self.sse_hub.close()
 
     async def _on_runtime_terminal(self, run: RunMeta) -> None:
-        notification_id = run.notification.notification_id if run.notification else ""
-        existing_task = None
-        try:
-            existing_task = await self.console_store.get_task(run.task_id)
-        except Exception as exc:  # noqa: BLE001
-            logger.warning(
-                "[大小姐模式] 读取终态 Console 任务失败，将使用 runtime 默认字段: "
-                "task_id=%s err=%s",
-                run.task_id,
-                exc,
-            )
-        audit_patch = self._build_task_patch(
-            task_id=run.task_id,
-            kind=str((existing_task or {}).get("kind") or "single"),
-            source=str((existing_task or {}).get("source") or "runtime"),
-            unified_msg_origin=run.unified_msg_origin,
-            sender_id=run.sender_id,
-            agent_name=run.agent_name,
-            status=run.status,
-            request_text=run.request_text,
-            parent_task_id=str((existing_task or {}).get("parent_task_id") or ""),
-            title=str((existing_task or {}).get("title") or ""),
-            meta={
-                "agent_id": run.agent_id,
-                "run_mode": run.mode,
-                "background_reason": run.background_reason,
-                "notification_id": notification_id,
-            },
-        )
-        await self._console_ensure_task_safe(audit_patch)
-        await self._console_update_status_safe(
-            run.task_id,
-            run.status,
-            meta={
-                "agent_id": run.agent_id,
-                "run_mode": run.mode,
-                "background_reason": run.background_reason,
-                "notification_id": notification_id,
-            },
-        )
-        await self._console_event_safe(
-            task_id=run.task_id,
-            event_type="runtime_terminal",
-            title=f"Run {run.status}",
-            message=run.result or run.error,
-            source="runtime",
-            status=run.status,
-            payload={
-                "agent_id": run.agent_id,
-                "notification_id": notification_id,
-            },
-        )
         await self.outbox.queue_delivery(run.unified_msg_origin)
 
     def _patch_runtime_tool_schemas(self) -> None:
@@ -508,23 +458,6 @@ class MaidAgent(Star):
 
         task = asyncio.create_task(_loop(), name="maid-retention-loop")
         self._track_background_task(task)
-
-    async def console_store_reconcile_runtime(self, runs: list) -> None:
-        """Surface interrupted 1.3.0 runs into the SQLite audit store."""
-        for run in runs:
-            try:
-                await self._console_update_status_safe(run.task_id, "interrupted")
-                await self._console_event_safe(
-                    task_id=run.task_id,
-                    event_type="interrupted",
-                    title="插件重启时仍在运行",
-                    message="已标记为 interrupted，不自动重放。",
-                    source="system",
-                    status="interrupted",
-                    payload={"agent_id": run.agent_id},
-                )
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("[大小姐模式] 收敛 runtime run 到 console 失败: %s", exc)
 
     async def _make_child_runner(self, run: RunMeta, event, payload: dict):
         """Build a _ChildRunner that executes the subagent loop for a run.
@@ -730,11 +663,14 @@ class MaidAgent(Star):
             )
             tool_chain = self._build_runtime_tool_chain_payload(records)
             current = await self.runtime_store.load_run(run.agent_id, run.task_id)
-            await self.console_store.publish_runtime_trace(
-                agent_id=run.agent_id,
-                task_id=run.task_id,
-                status=current.status if current is not None else run.status,
-                tool_chain=tool_chain,
+            await self.sse_hub.publish(
+                {
+                    "type": "runtime_trace",
+                    "agent_id": run.agent_id,
+                    "task_id": run.task_id,
+                    "status": current.status if current is not None else run.status,
+                    "tool_chain": tool_chain,
+                }
             )
         except Exception as exc:  # noqa: BLE001
             logger.warning(
@@ -908,31 +844,6 @@ class MaidAgent(Star):
         prefix = f"/{PLUGIN_DATA_DIR_NAME}/console"
         routes = [
             (f"{prefix}/overview", self.console_overview, ["GET"], "Maid console overview"),
-            (f"{prefix}/tasks", self.console_tasks, ["GET"], "Maid console task list"),
-            (
-                f"{prefix}/tasks/<task_id>",
-                self.console_task_detail,
-                ["GET"],
-                "Maid console task detail",
-            ),
-            (
-                f"{prefix}/tasks/<task_id>/update",
-                self.console_update_task,
-                ["POST"],
-                "Update maid console task",
-            ),
-            (
-                f"{prefix}/tasks/<task_id>/delete",
-                self.console_delete_task,
-                ["POST"],
-                "Delete maid console task",
-            ),
-            (
-                f"{prefix}/tasks/<task_id>/events",
-                self.console_task_events,
-                ["GET"],
-                "Maid console task events",
-            ),
             (f"{prefix}/stream", self.console_stream, ["GET"], "Maid console SSE stream"),
             (
                 f"{prefix}/upload",
@@ -982,8 +893,6 @@ class MaidAgent(Star):
                 ["POST"],
                 "Query/await a 1.3.0 runtime task result from dashboard",
             ),
-            (f"{prefix}/export", self.console_export, ["GET"], "Export maid console history"),
-            (f"{prefix}/clear", self.console_clear, ["POST"], "Clear maid console history"),
             (f"{prefix}/settings", self.console_settings_get, ["GET"], "Get maid settings"),
             (f"{prefix}/settings", self.console_settings_save, ["POST"], "Save maid settings"),
             (f"{prefix}/subagents", self.console_subagents, ["GET"], "List subagents"),
@@ -999,6 +908,18 @@ class MaidAgent(Star):
                 self.console_agent_run_trace,
                 ["GET"],
                 "Get one 1.3.0 runtime run trace",
+            ),
+            (
+                f"{prefix}/agents/<agent_id>/transcript",
+                self.console_agent_transcript,
+                ["GET"],
+                "Get the full conversation transcript of a 1.3.0 runtime agent",
+            ),
+            (
+                f"{prefix}/agents/<agent_id>/export",
+                self.console_agent_export,
+                ["GET"],
+                "Download the conversation transcript of a 1.3.0 runtime agent",
             ),
             (
                 f"{prefix}/agents/<agent_id>/delete",
@@ -1139,98 +1060,6 @@ class MaidAgent(Star):
     @staticmethod
     def _config_payload(config) -> dict[str, Any]:
         return asdict(config)
-
-    def _build_task_patch(
-        self,
-        *,
-        task_id: str,
-        kind: str,
-        source: str,
-        unified_msg_origin: str,
-        sender_id: str,
-        agent_name: str,
-        status: str,
-        request_text: str,
-        parent_task_id: str = "",
-        title: str = "",
-        meta: dict[str, Any] | None = None,
-    ) -> ConsoleTaskPatch:
-        return ConsoleTaskPatch(
-            task_id=task_id,
-            kind=kind,
-            source=source,
-            unified_msg_origin=unified_msg_origin,
-            sender_id=sender_id,
-            agent_name=agent_name,
-            status=status,
-            title=title,
-            request_text=request_text,
-            parent_task_id=parent_task_id,
-            meta=meta or {},
-        )
-
-    async def _console_ensure_task_safe(self, patch: ConsoleTaskPatch) -> None:
-        try:
-            await self.console_store.ensure_task(patch)
-        except Exception as exc:
-            logger.warning("[大小姐模式] 控制台任务记录失败: %s", exc)
-
-    async def _console_update_status_safe(
-        self,
-        task_id: str,
-        status: str,
-        *,
-        meta: dict[str, Any] | None = None,
-    ) -> None:
-        try:
-            await self.console_store.update_task_status(task_id, status, meta=meta)
-        except Exception as exc:
-            logger.warning("[大小姐模式] 控制台任务状态更新失败: %s", exc)
-
-    async def _console_event_safe(
-        self,
-        *,
-        task_id: str,
-        event_type: str,
-        title: str,
-        message: str = "",
-        source: str = "system",
-        status: str = "",
-        payload: dict[str, Any] | None = None,
-    ) -> None:
-        try:
-            await self.console_store.record_event(
-                task_id=task_id,
-                event_type=event_type,
-                title=title,
-                message=message,
-                source=source,
-                status=status,
-                payload=payload,
-            )
-        except Exception as exc:
-            logger.warning("[大小姐模式] 控制台事件记录失败: %s", exc)
-
-    async def _console_action_safe(
-        self,
-        *,
-        task_id: str,
-        action: str,
-        payload: dict[str, Any] | None = None,
-        result_text: str = "",
-        status: str = "ok",
-    ) -> None:
-        try:
-            await self.console_store.record_action(
-                task_id=task_id,
-                action=action,
-                source="dashboard",
-                payload=payload,
-                result_text=result_text,
-                status=status,
-            )
-        except Exception as exc:
-            logger.warning("[大小姐模式] 控制台动作记录失败: %s", exc)
 
     @staticmethod
     def _message_content_to_text(content: Any) -> str:
@@ -1432,54 +1261,23 @@ class MaidAgent(Star):
         )
 
     async def console_overview(self):
-        overview = await self.console_store.get_overview()
-        overview["config"] = self._config_payload(self.maid_mode_config)
+        agent_ids = await self.runtime_store.list_agent_ids()
+        agents = [
+            meta
+            for agent_id in agent_ids
+            if (meta := await self.runtime_store.load_agent(agent_id)) is not None
+        ]
+        active = [meta for meta in agents if meta.active_task_id]
+        overview = {
+            "agent_count": len(agents),
+            "active_agent_count": len(active),
+            "umo_count": len({meta.unified_msg_origin for meta in agents if meta.unified_msg_origin}),
+            "config": self._config_payload(self.maid_mode_config),
+        }
         return self._console_ok(overview)
 
-    async def console_tasks(self):
-        limit = request.args.get("limit", 80, type=int)
-        status = request.args.get("status", "", type=str)
-        query = request.args.get("query", "", type=str) or request.args.get("q", "", type=str)
-        tasks = await self.console_store.list_tasks(limit=limit, status=status, query=query)
-        return self._console_ok({"tasks": tasks})
-
-    async def console_task_detail(self, task_id: str):
-        task = await self.console_store.get_task(task_id)
-        if task is None:
-            return self._console_error("任务不存在。", status_code=404)
-        events = await self.console_store.get_task_events(task_id)
-        actions = await self.console_store.get_task_actions(task_id)
-        return self._console_ok(
-            {
-                "task": task,
-                "events": events,
-                "actions": actions,
-            }
-        )
-
-    async def console_task_events(self, task_id: str):
-        task = await self.console_store.get_task(task_id)
-        if task is None:
-            return self._console_error("任务不存在。", status_code=404)
-        events = await self.console_store.get_task_events(task_id)
-        actions = await self.console_store.get_task_actions(task_id)
-        return self._console_ok({"events": events, "actions": actions})
-
-    async def console_update_task(self, task_id: str):
-        body = await self._console_json_body()
-        title = body.get("title")
-        meta = body.get("meta")
-        task = await self.console_store.update_task_meta(task_id, title=title, meta_update=meta)
-        if task is None:
-            return self._console_error("任务不存在。", status_code=404)
-        return self._console_ok({"task": task})
-
-    async def console_delete_task(self, task_id: str):
-        await self.console_store.delete_task(task_id)
-        return self._console_ok({}, "任务已删除")
-
     async def console_stream(self):
-        queue = await self.console_store.subscribe()
+        queue = await self.sse_hub.subscribe()
 
         async def stream():
             try:
@@ -1492,7 +1290,7 @@ class MaidAgent(Star):
             except asyncio.CancelledError:
                 pass
             finally:
-                await self.console_store.unsubscribe(queue)
+                await self.sse_hub.unsubscribe(queue)
 
         response = await make_response(
             stream(),
@@ -1558,23 +1356,6 @@ class MaidAgent(Star):
                     "image_urls_raw": image_urls_raw,
                 },
             )
-            await self._console_ensure_task_safe(
-                self._build_task_patch(
-                    task_id=outcome.task_id,
-                    kind="single",
-                    source="dashboard",
-                    unified_msg_origin=umo,
-                    sender_id=event.get_sender_id(),
-                    agent_name=outcome.agent_name,
-                    status=outcome.status,
-                    request_text=request_text,
-                    meta={
-                        "agent_id": outcome.agent_id,
-                        "run_mode": outcome.mode,
-                        "image_count": len(image_urls_raw),
-                    },
-                )
-            )
             return self._console_ok({"outcome": outcome.to_dict()}, "已派发。")
         except Exception as exc:
             return self._console_error(str(exc))
@@ -1599,12 +1380,6 @@ class MaidAgent(Star):
         except Exception as exc:
             return self._console_error(str(exc))
         result_text = "已将补充要求转交给运行中的 agent。"
-        await self._console_action_safe(
-            task_id=task_id or "__agent__",
-            action="steer",
-            payload={"agent_id": agent_id, "message_text": message_text},
-            result_text=result_text,
-        )
         return self._console_ok({"agent_id": agent_id, "ticket": ticket}, result_text)
 
     async def console_stop(self):
@@ -1619,11 +1394,6 @@ class MaidAgent(Star):
             )
         except Exception as exc:
             return self._console_error(str(exc))
-        await self._console_action_safe(
-            task_id=task_id,
-            action="stop",
-            result_text="已请求停止。",
-        )
         return self._console_ok({"outcome": outcome.to_dict()}, "已请求停止。")
 
     async def console_done(self):
@@ -1656,22 +1426,6 @@ class MaidAgent(Star):
             return self._console_ok({"outcome": outcome.to_dict()}, "已重新派发。")
         except Exception as exc:
             return self._console_error(str(exc))
-
-    async def console_export(self):
-        payload = await self.console_store.export_history()
-        body = json.dumps(payload, ensure_ascii=False, indent=2, default=str)
-        response = await make_response(
-            body,
-            {
-                "Content-Type": "application/json; charset=utf-8",
-                "Content-Disposition": 'attachment; filename="maid-console-history.json"',
-            },
-        )
-        return response
-
-    async def console_clear(self):
-        await self.console_store.clear_history()
-        return self._console_ok({}, "历史记录已清空。")
 
     async def console_settings_get(self):
         return self._console_ok(
@@ -1710,12 +1464,6 @@ class MaidAgent(Star):
         self.maid_mode_config = loaded
         self.orchestrator.config = loaded
         self.runtime_store.config = loaded
-        await self._console_action_safe(
-            task_id="__settings__",
-            action="settings_save",
-            payload={"keys": sorted(key for key in allowed_keys if key in body)},
-            result_text="配置已保存。",
-        )
         return self._console_ok({"config": self._config_payload(loaded)}, "配置已保存。")
 
     async def console_subagents(self):
@@ -1818,6 +1566,146 @@ class MaidAgent(Star):
         except ValueError as exc:
             return self._console_error(str(exc))
 
+    def _build_agent_transcript_payload(
+        self,
+        agent_id: str,
+        records: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        """Split the agent's full transcript into per-run conversation segments.
+
+        Records are attributed by, in order: the record's own ``task_id``, the
+        currently open ``run_start`` segment, or the most recent segment.
+        ``steer`` control records become user-side bubbles of their segment.
+        """
+        segments: dict[str, dict[str, Any]] = {}
+        order: list[str] = []
+        current_id = ""
+
+        def _new_segment(task_id: str) -> dict[str, Any]:
+            segment = {
+                "task_id": task_id,
+                "user_text": "",
+                "steers": [],
+                "records": [],
+                "orphan_count": 0,
+            }
+            segments[task_id] = segment
+            order.append(task_id)
+            return segment
+
+        def _fallback_segment() -> dict[str, Any] | None:
+            if current_id:
+                return segments[current_id]
+            if order:
+                return segments[order[-1]]
+            return None
+
+        for record in records:
+            if record.get("_control"):
+                kind = str(record.get("kind") or "")
+                record_task_id = str(record.get("task_id") or "").strip().casefold()
+                if kind == CTRL_RUN_START and record_task_id:
+                    _new_segment(record_task_id)
+                    current_id = record_task_id
+                    continue
+                if kind == CTRL_RUN_END and record_task_id:
+                    if record_task_id == current_id:
+                        current_id = ""
+                    continue
+                if kind == CTRL_STEER:
+                    text = str(record.get("message") or "").strip()
+                    target = _fallback_segment()
+                    if text and target is not None:
+                        target["steers"].append(text)
+                    continue
+                # tool_start / tool_end 等其他控制记录按归属进段，
+                # 交由 _build_runtime_tool_chain_payload 消费。
+                target = _fallback_segment()
+                if target is not None:
+                    target["records"].append(record)
+                continue
+
+            record_task_id = str(record.get("task_id") or "").strip().casefold()
+            target = segments.get(record_task_id) if record_task_id else None
+            if target is None:
+                target = _fallback_segment()
+                if target is not None:
+                    target["orphan_count"] += 1
+            if target is None:
+                # 首个 run_start 之前的记录（如 begin_dialogs）：暂存到虚拟段，
+                # 之后并入第一个真实 segment，保证不丢消息。
+                target = segments.get("")
+                if target is None:
+                    target = _new_segment("")
+                target["records"].append(record)
+                continue
+            target["records"].append(record)
+            if not target["user_text"] and str(record.get("role") or "") == "user":
+                target["user_text"] = self._message_content_to_text(record.get("content"))
+
+        # 把 run_start 之前的虚拟段并入第一个真实 segment（没有真实段则保留）。
+        leading = segments.pop("", None)
+        if leading is not None:
+            order = [task_id for task_id in order if task_id]
+            if order:
+                first = segments[order[0]]
+                first["records"] = leading["records"] + first["records"]
+                first["orphan_count"] += leading["orphan_count"]
+                if not first["user_text"] and leading["user_text"]:
+                    first["user_text"] = leading["user_text"]
+            else:
+                order.append("")
+                segments[""] = leading
+
+        runs = []
+        for task_id in order:
+            segment = segments[task_id]
+            runs.append(
+                {
+                    "task_id": segment["task_id"],
+                    "user_text": segment["user_text"],
+                    "steers": segment["steers"],
+                    "tool_chain": self._build_runtime_tool_chain_payload(segment["records"]),
+                    "orphan_count": segment["orphan_count"],
+                }
+            )
+        return {"agent_id": agent_id, "runs": runs}
+
+    async def console_agent_transcript(self, agent_id: str):
+        try:
+            meta = await self.runtime_store.load_agent(agent_id)
+            if meta is None:
+                return self._console_error("agent 不存在。", status_code=404)
+            records = await self.runtime_store.load_transcript(agent_id)
+            payload = self._build_agent_transcript_payload(meta.agent_id, records)
+        except ValueError as exc:
+            return self._console_error(str(exc), status_code=400)
+        return self._console_ok(payload)
+
+    async def console_agent_export(self, agent_id: str):
+        try:
+            meta = await self.runtime_store.load_agent(agent_id)
+            if meta is None:
+                return self._console_error("agent 不存在。", status_code=404)
+            records = await self.runtime_store.load_transcript(agent_id)
+            payload = self._build_agent_transcript_payload(meta.agent_id, records)
+            payload["agent"] = meta.to_dict()
+            payload["runs_meta"] = [
+                run.to_dict() for run in await self.runtime_store.list_runs(meta.agent_id)
+            ]
+        except ValueError as exc:
+            return self._console_error(str(exc), status_code=400)
+        body = json.dumps(payload, ensure_ascii=False, indent=2, default=str)
+        filename = f"maid-agent-{meta.agent_id[:8]}-transcript.json"
+        response = await make_response(
+            body,
+            {
+                "Content-Type": "application/json; charset=utf-8",
+                "Content-Disposition": f'attachment; filename="{filename}"',
+            },
+        )
+        return response
+
     async def console_delete_agent(self, agent_id: str):
         try:
             body = await self._console_json_body()
@@ -1826,21 +1714,10 @@ class MaidAgent(Star):
             if not normalized or confirmation != normalized:
                 return self._console_error("删除确认无效，请重新确认 Agent ID。")
             removed_runs = await self.orchestrator.delete_agent(normalized)
-            removed_audits = 0
-            try:
-                removed_audits = await self.console_store.delete_agent_tasks(normalized)
-            except Exception as exc:  # noqa: BLE001
-                logger.warning(
-                    "[大小姐模式] runtime agent 已删除，但清理 Console 审计记录失败: "
-                    "agent_id=%s err=%s",
-                    normalized,
-                    exc,
-                )
             return self._console_ok(
                 {
                     "agent_id": normalized,
                     "removed_runs": removed_runs,
-                    "removed_audits": removed_audits,
                 },
                 "Agent 及其所有 Run 已删除。",
             )
@@ -2108,38 +1985,6 @@ class MaidAgent(Star):
         except (ValueError, AgentBusyError) as exc:
             return self._json_outcome({"status": "error", "error": str(exc)})
 
-        current_run = await self.runtime_store.load_run(outcome.agent_id, outcome.task_id)
-        audit_status = current_run.status if current_run is not None else outcome.status
-        audit_mode = current_run.mode if current_run is not None else outcome.mode
-        audit_reason = (
-            current_run.background_reason if current_run is not None else outcome.background_reason
-        )
-        notification_id = (
-            current_run.notification.notification_id
-            if current_run is not None and current_run.notification is not None
-            else ""
-        )
-        # Audit the 1.3.0 dispatch into SQLite; runtime files remain the truth.
-        await self._console_ensure_task_safe(
-            self._build_task_patch(
-                task_id=outcome.task_id,
-                kind="single",
-                source="chat",
-                unified_msg_origin=event.unified_msg_origin,
-                sender_id=event.get_sender_id(),
-                agent_name=outcome.agent_name,
-                status=audit_status,
-                request_text=request_text,
-                title=f"管家任务: {request_text[:60]}",
-                meta={
-                    "agent_id": outcome.agent_id,
-                    "run_mode": audit_mode,
-                    "background_reason": audit_reason,
-                    "notification_id": notification_id,
-                },
-            )
-        )
-
         # Foreground completed inline -> deliver the result back as the tool
         # result so the main agent can use it in the same turn.
         if outcome.mode == "foreground" and outcome.status == STATUS_COMPLETED:
@@ -2201,35 +2046,7 @@ class MaidAgent(Star):
             )
         except CapacityExceededError as exc:
             return self._json_outcome({"status": "error", "error": str(exc), "mode": "rejected"})
-        for request_item, outcome in zip(requests, batch_outcome.items):
-            current_run = await self.runtime_store.load_run(outcome.agent_id, outcome.task_id)
-            status = current_run.status if current_run is not None else outcome.status
-            mode = current_run.mode if current_run is not None else outcome.mode
-            notification_id = (
-                current_run.notification.notification_id
-                if current_run is not None and current_run.notification is not None
-                else ""
-            )
-            await self._console_ensure_task_safe(
-                self._build_task_patch(
-                    task_id=outcome.task_id,
-                    kind="batch_item",
-                    source="chat",
-                    unified_msg_origin=event.unified_msg_origin,
-                    sender_id=event.get_sender_id(),
-                    agent_name=outcome.agent_name,
-                    status=status,
-                    request_text=request_item.request_text,
-                    title=f"批量管家任务: {request_item.request_text[:60]}",
-                    meta={
-                        "batch_id": batch_outcome.batch_id,
-                        "agent_id": outcome.agent_id,
-                        "run_mode": mode,
-                        "background_reason": outcome.background_reason,
-                        "notification_id": notification_id,
-                    },
-                )
-            )
+        for outcome in batch_outcome.items:
             if outcome.mode == "foreground" and outcome.status in {
                 STATUS_COMPLETED,
                 STATUS_FAILED,

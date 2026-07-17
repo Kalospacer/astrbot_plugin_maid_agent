@@ -169,7 +169,6 @@ def _make_plugin():
         list_runs=_async_return([]),
         load_run=_async_return(None),
     )
-    plugin.console_store = SimpleNamespace(ensure_task=_async_return({}))
     return plugin
 
 
@@ -677,30 +676,10 @@ def test_notification_wake_preserves_send_toolset():
     asyncio.run(scenario())
 
 
-def test_runtime_terminal_upserts_console_task_before_status_event():
+def test_runtime_terminal_only_triggers_outbox_delivery():
     async def scenario():
         calls = []
         plugin = object.__new__(MaidAgent)
-
-        class _ConsoleStore:
-            async def get_task(self, _task_id):
-                calls.append("get_task")
-                return None
-
-        plugin.console_store = _ConsoleStore()
-
-        async def ensure(patch):
-            calls.append(("ensure", patch.status, patch.task_id))
-
-        async def update(task_id, status, **_kwargs):
-            calls.append(("update", task_id, status))
-
-        async def event(**kwargs):
-            calls.append(("event", kwargs["task_id"], kwargs["status"]))
-
-        plugin._console_ensure_task_safe = ensure
-        plugin._console_update_status_safe = update
-        plugin._console_event_safe = event
 
         async def notify(_umo):
             calls.append("notify")
@@ -722,11 +701,7 @@ def test_runtime_terminal_upserts_console_task_before_status_event():
         )
 
         await plugin._on_runtime_terminal(run)
-        assert calls[0] == "get_task"
-        assert calls[1] == ("ensure", "completed", run.task_id)
-        assert calls[2] == ("update", run.task_id, "completed")
-        assert calls[3] == ("event", run.task_id, "completed")
-        assert calls[4] == "notify"
+        assert calls == ["notify"]
 
     asyncio.run(scenario())
 

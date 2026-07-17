@@ -72,11 +72,7 @@ def _make_console_plugin(body: dict) -> tuple[MaidAgent, _DispatchRecorder]:
     async def json_body():
         return body
 
-    async def no_op(*_args, **_kwargs):
-        return None
-
     plugin._console_json_body = json_body
-    plugin._console_ensure_task_safe = no_op
     plugin._console_ok = lambda data=None, message=None: {"data": data, "message": message}
     plugin._console_error = lambda message, status_code=400: {
         "error": message,

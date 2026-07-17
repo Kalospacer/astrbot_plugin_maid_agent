@@ -131,13 +131,16 @@
           </div>
 
           <section id="detailTab" class="tab-panel active">
+            <div id="runSelectorWrap" class="run-selector-wrap hidden">
+              <label for="runSelector">查看 Run</label>
+              <select id="runSelector"></select>
+            </div>
             <dl id="taskFacts" class="facts"></dl>
             <div class="action-grid">
               <button id="stopButton" class="danger" type="button">停止</button>
               <button id="rerunButton" type="button">重跑</button>
               <button id="resultButton" type="button">读取结果</button>
             </div>
-            <div id="actionList" class="action-list"></div>
           </section>
 
           <section id="chainTab" class="tab-panel">
@@ -150,7 +153,7 @@
             <h3>元数据</h3>
             <pre id="rawMeta" class="raw-box"></pre>
             <div class="action-grid">
-              <button id="exportButton" type="button">导出历史</button>
+              <button id="exportButton" type="button">导出对话</button>
             </div>
           </section>
         </div>

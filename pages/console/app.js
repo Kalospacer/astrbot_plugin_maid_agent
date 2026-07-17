@@ -1,28 +1,25 @@
 let bridge = window.AstrBotPluginPage || null;
 
 const ACTIVE_STATUSES = new Set(["queued", "starting", "running", "stopping"]);
-const QUIET_EVENT_TYPES = new Set(["queued", "finished"]);
 
 const POLL_INTERVAL_SSE_MS = 20000;
 const POLL_INTERVAL_FALLBACK_MS = 5000;
 const RUNTIME_REFRESH_EVERY = 3;
 
 const state = {
-  tasks: [],
   umos: [],
   selectedUmo: "",
-  selectedSessionId: "",
-  sessionTasks: [],
-  sessionEvents: {},
   agents: [],
   agentNames: [],
   dispatchAgent: "",
   runtimeAgents: [],
   runtimeRuns: {},
   selectedAgentId: "",
+  selectedViewRunId: "",
+  agentTranscript: null,
+  transcriptRunTrace: {},
   settings: null,
   overview: null,
-  detail: null,
   subscriptionId: "",
   streamLive: false,
   pollTimer: 0,
@@ -493,44 +490,25 @@ function applyFeedScroll(snapshot, mode) {
   }, 50);
 }
 
-function taskTitle(task) {
-  return task?.title || task?.request_text || "新会话";
+function getSelectedAgent() {
+  return state.runtimeAgents.find((agent) => agent.agent_id === state.selectedAgentId) || null;
 }
 
-function taskMeta(task) {
-  return task?.meta && typeof task.meta === "object" ? task.meta : {};
+function getSelectedRuns() {
+  if (!state.selectedAgentId) return [];
+  return [...(state.runtimeRuns[state.selectedAgentId] || [])].sort(
+    (a, b) => new Date(a.created_at) - new Date(b.created_at),
+  );
 }
 
-function getTaskRootId(task) {
-  return task?.parent_task_id || task?.task_id || "";
-}
-
-function getSelectedRootTask() {
-  return state.tasks.find((task) => task.task_id === state.selectedSessionId) || null;
-}
-
-function getLatestTaskInSession() {
-  return state.sessionTasks[state.sessionTasks.length - 1] || getSelectedRootTask();
-}
-
-function getActiveTaskInSession() {
-  return [...state.sessionTasks].reverse().find((task) => ACTIVE_STATUSES.has(task.status)) || null;
-}
-
-function mergeTask(nextTask) {
-  const existing = state.tasks.find((task) => task.task_id === nextTask.task_id);
-  if (existing) {
-    Object.assign(existing, nextTask);
-  } else {
-    state.tasks.push(nextTask);
-  }
+function getViewRun() {
+  const runs = getSelectedRuns();
+  if (!runs.length) return null;
+  return runs.find((run) => run.task_id === state.selectedViewRunId) || runs[runs.length - 1];
 }
 
 function updateKnownUmos() {
   const umoSet = new Set();
-  for (const task of state.tasks) {
-    if (task.unified_msg_origin) umoSet.add(task.unified_msg_origin);
-  }
   for (const agent of state.runtimeAgents) {
     if (agent.unified_msg_origin) umoSet.add(agent.unified_msg_origin);
   }
@@ -563,125 +541,46 @@ async function loadRuntimeAgents({ force = false } = {}) {
   }
   const data = await apiGet("console/agents");
   state.runtimeAgents = data.agents || [];
-  const entries = await Promise.all(
-    state.runtimeAgents.map(async (agent) => {
-      const detail = await apiGet(`console/agents/${encodeURIComponent(agent.agent_id)}/runs`);
-      return [agent.agent_id, detail.runs || []];
-    }),
-  );
-  state.runtimeRuns = Object.fromEntries(entries);
   updateKnownUmos();
   renderUmoSwitcher();
   updateSessionList();
 }
 
-async function loadTasks() {
-  const data = await apiGet("console/tasks", { limit: 500 });
-  state.tasks = data.tasks || [];
-  updateKnownUmos();
-  renderUmoSwitcher();
+async function loadAgentTranscript(agentId, { scrollMode = "preserve" } = {}) {
+  if (!agentId) return;
+  const scrollSnapshot = captureFeedScroll();
+  const [transcriptData, runsData] = await Promise.all([
+    apiGet(`console/agents/${encodeURIComponent(agentId)}/transcript`),
+    apiGet(`console/agents/${encodeURIComponent(agentId)}/runs`),
+  ]);
+  state.agentTranscript = transcriptData;
+  state.runtimeRuns[agentId] = runsData.runs || [];
+  state.transcriptRunTrace = {};
+  renderChatFeed();
+  renderInspector();
   updateSessionList();
+  applyFeedScroll(scrollSnapshot, scrollMode);
 }
 
-async function loadSession(taskId, { scrollMode = "bottom", force = false } = {}) {
-  if (!taskId) {
-    state.selectedAgentId = "";
-    state.selectedSessionId = "";
-    state.sessionTasks = [];
-    state.sessionEvents = {};
-    state.detail = null;
+async function loadAgent(agentId, { scrollMode = "bottom" } = {}) {
+  // 选中态唯一权威来源：先写选中，再异步拉数据；拉取失败不改选中。
+  state.selectedAgentId = agentId || "";
+  state.selectedViewRunId = "";
+  state.transcriptRunTrace = {};
+  if (!agentId) {
+    state.agentTranscript = null;
     state.lastFeedFingerprint = "";
     renderChatFeed();
     renderInspector();
     updateSessionList();
     return;
   }
-
-  const scrollSnapshot = captureFeedScroll();
-  const selected = state.tasks.find((task) => task.task_id === taskId);
-  const rootId = selected?.parent_task_id || taskId;
-  const nextSessionTasks = state.tasks
-    .filter((task) => task.task_id === rootId || task.parent_task_id === rootId)
-    .sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
-
-  if (
-    !force &&
-    state.selectedSessionId === rootId &&
-    !state.selectedAgentId &&
-    sessionTasksUnchanged(state.sessionTasks, nextSessionTasks) &&
-    !nextSessionTasks.some((task) => ACTIVE_STATUSES.has(task.status))
-  ) {
-    state.sessionTasks = nextSessionTasks;
-    updateSessionList();
-    return;
-  }
-
-  state.selectedSessionId = rootId;
-  state.selectedAgentId = "";
-  state.sessionTasks = nextSessionTasks;
-
-  state.sessionEvents = {};
-  for (const task of state.sessionTasks) {
-    const data = await apiGet(`console/tasks/${encodeURIComponent(task.task_id)}/events`);
-    state.sessionEvents[task.task_id] = data.events || [];
-  }
-
-  const latestTask = getLatestTaskInSession();
-  state.detail = latestTask
-    ? await apiGet(`console/tasks/${encodeURIComponent(latestTask.task_id)}`)
-    : null;
-
-  renderChatFeed();
-  renderInspector();
-  updateSessionList();
-  applyFeedScroll(scrollSnapshot, scrollMode);
-}
-
-async function loadRuntimeRun(agentId, taskId, { scrollMode = "bottom" } = {}) {
-  const scrollSnapshot = captureFeedScroll();
-  const run = (state.runtimeRuns[agentId] || []).find((item) => item.task_id === taskId);
-  if (!run) return;
-  let traceData = null;
   try {
-    traceData = await apiGet(
-      `console/agents/${encodeURIComponent(agentId)}/runs/${encodeURIComponent(taskId)}/trace`,
-    );
-  } catch {
-    // The run list remains usable if a trace disappears during refresh/delete.
+    await loadAgentTranscript(agentId, { scrollMode });
+  } catch (err) {
+    toast(err.message || "加载对话失败");
+    updateSessionList();
   }
-  if (traceData?.status) run.status = traceData.status;
-  if (traceData?.tool_chain) run.tool_chain = traceData.tool_chain;
-  state.selectedAgentId = agentId;
-  state.selectedSessionId = taskId;
-  const task = {
-    ...run,
-    kind: "run",
-    meta: {
-      agent_id: run.agent_id,
-      run_mode: run.mode,
-      background_reason: run.background_reason,
-      notification: run.notification,
-      output_file: run.output_file,
-      tool_chain: run.tool_chain || {},
-    },
-  };
-  state.sessionTasks = [task];
-  state.sessionEvents = {
-    [taskId]: run.result || run.error
-      ? [
-          {
-            event_type: "agent_result",
-            title: run.status,
-            message: run.result || run.error,
-          },
-        ]
-      : [],
-  };
-  state.detail = { task, actions: [] };
-  renderChatFeed();
-  renderInspector();
-  updateSessionList();
-  applyFeedScroll(scrollSnapshot, scrollMode);
 }
 
 async function refreshConsole({ silent = false, keepSession = true } = {}) {
@@ -691,39 +590,24 @@ async function refreshConsole({ silent = false, keepSession = true } = {}) {
   }
 
   state.refreshInFlight = true;
-  const selectedBefore = state.selectedSessionId;
   try {
     state.pollCount += 1;
-    // runtime / tasks 并行：审计记录分组已移除，updateSessionList 不再依赖
-    // runtimeRuns 去重，两者顺序无关，并行可省掉串行 waterfall。
-    await Promise.all([
-      loadRuntimeAgents({ force: !silent }),
-      loadTasks(),
-    ]);
+    await loadRuntimeAgents({ force: !silent });
     await Promise.allSettled([
       loadOverview({ applyForm: !silent }),
       loadAgents(),
     ]);
 
-    if (keepSession && selectedBefore && state.selectedAgentId) {
-      const exists = (state.runtimeRuns[state.selectedAgentId] || []).some(
-        (run) => run.task_id === selectedBefore,
+    if (keepSession && state.selectedAgentId) {
+      const exists = state.runtimeAgents.some(
+        (agent) => agent.agent_id === state.selectedAgentId,
       );
       if (exists) {
-        await loadRuntimeRun(state.selectedAgentId, selectedBefore, { scrollMode: "preserve" });
+        await loadAgentTranscript(state.selectedAgentId, { scrollMode: "preserve" });
       } else {
-        await loadSession("");
+        await loadAgent("");
       }
-    } else if (keepSession && selectedBefore) {
-      const stillExists = state.tasks.some(
-        (task) => task.task_id === selectedBefore || task.parent_task_id === selectedBefore,
-      );
-      if (stillExists) {
-        await loadSession(selectedBefore, { scrollMode: "preserve", force: !silent });
-      } else {
-        await loadSession("");
-      }
-    } else if (!state.selectedSessionId) {
+    } else if (!state.selectedAgentId) {
       renderChatFeed();
       renderInspector();
     }
@@ -829,64 +713,51 @@ function toggleAgentMenu() {
   else closeAgentMenu();
 }
 
-function sessionTasksUnchanged(prevTasks, nextTasks) {
-  if (prevTasks.length !== nextTasks.length) return false;
-  for (let i = 0; i < nextTasks.length; i += 1) {
-    const a = prevTasks[i];
-    const b = nextTasks[i];
-    if (!a || !b) return false;
-    if (
-      a.task_id !== b.task_id ||
-      a.status !== b.status ||
-      a.updated_at !== b.updated_at ||
-      a.request_text !== b.request_text ||
-      a.title !== b.title
-    ) {
-      return false;
-    }
-  }
-  return true;
-}
-
 function buildFeedFingerprint() {
-  const taskPart = state.sessionTasks
-    .map((task) => {
-      const events = state.sessionEvents[task.task_id] || [];
-      const last = events[events.length - 1];
-      const chain = taskMeta(task).tool_chain;
-      const chainSig = chain
-        ? `${chain.step_count || 0}:${chain.updated_at || ""}:${(chain.steps || []).length}`
-        : "";
+  const agent = getSelectedAgent();
+  const segments = state.agentTranscript?.runs || [];
+  const runs = getSelectedRuns();
+  const taskPart = segments
+    .map((segment) => {
+      const chain = segment.tool_chain || {};
+      const entries = Array.isArray(chain.entries) ? chain.entries : [];
+      const last = entries[entries.length - 1];
+      const run = runs.find((item) => item.task_id === segment.task_id);
       return [
-        task.task_id,
-        task.status,
-        task.updated_at,
-        task.request_text || "",
-        events.length,
-        last?.event_id || last?.id || last?.created_at || "",
-        chainSig,
+        segment.task_id,
+        run?.status || "",
+        run?.updated_at || "",
+        entries.length,
+        last?.index ?? "",
+        (run?.result || run?.error || "").length,
+        segment.steers.length,
       ].join("~");
     })
     .join("|");
   const thinkingPart = Object.entries(state.thinkingOpenState)
     .map(([k, v]) => `${k}:${v ? 1 : 0}`)
     .join(",");
-  return `${state.selectedSessionId}#${taskPart}#${thinkingPart}`;
+  return `${state.selectedAgentId}#${agent?.active_task_id || ""}#${taskPart}#${thinkingPart}`;
 }
 
 function buildSessionListFingerprint() {
   const runtimePart = state.runtimeAgents
     .filter((agent) => agent.unified_msg_origin === state.selectedUmo)
-    .map((agent) => {
-      const runs = (state.runtimeRuns[agent.agent_id] || [])
-        .map((run) => `${run.task_id}:${run.status}:${run.updated_at || run.created_at || ""}`)
-        .join(",");
-      return `${agent.agent_id}:${agent.agent_name}:${runs}`;
-    })
+    .map((agent) =>
+      [
+        agent.agent_id,
+        agent.agent_name,
+        agent.last_status,
+        agent.updated_at,
+        agent.run_count,
+        agent.pending_notification ? 1 : 0,
+        agent.active_task_id,
+      ].join(":"),
+    )
     .join("|");
   return [
     state.selectedUmo,
-    state.selectedSessionId,
+    state.selectedAgentId,
     state.pendingDeleteAgentId,
     runtimePart,
   ].join("#");
@@ -929,7 +800,7 @@ function updateSessionList() {
     .sort((a, b) => new Date(b.updated_at) - new Date(a.updated_at));
 
   if (runtimeAgents.length === 0) {
-    list.innerHTML = `<div class="empty-state">暂无 Agent / Run</div>`;
+    list.innerHTML = `<div class="empty-state">暂无 Agent 会话</div>`;
     return;
   }
 
@@ -937,29 +808,27 @@ function updateSessionList() {
 
   list.innerHTML = runtimeAgents
     .map((agent) => {
-      const runs = [...(state.runtimeRuns[agent.agent_id] || [])].sort(
-        (a, b) => new Date(b.created_at) - new Date(a.created_at),
-      );
-      const deletingAgent = agent.agent_id === state.pendingDeleteAgentId;
-      const runsHtml = runs
-        .map(
-          (run) => `
-            <div class="session-item runtime-session-item ${run.task_id === state.selectedSessionId ? "active" : ""} ${deletingAgent ? "delete-armed" : ""}"
-                 data-id="${escapeHtml(run.task_id)}" data-runtime-agent="${escapeHtml(agent.agent_id)}">
-              <div class="session-copy">
-                <div class="session-title">${escapeHtml(run.request_text || compactId(run.task_id))}</div>
-                <small><span class="status-dot status-${escapeHtml(run.status)}"></span>${escapeHtml(run.mode)} · ${escapeHtml(run.status)}${run.notification && !run.notification.delivered ? " · 待通知" : ""}</small>
-              </div>
-              <div class="session-actions">
-                <button class="session-action-btn" type="button" data-menu-kind="runtime" aria-label="更多操作" title="更多操作">${MORE_SVG}</button>
-              </div>
-            </div>
-          `,
-        )
-        .join("");
+      const deleting = agent.agent_id === state.pendingDeleteAgentId;
+      const runCountLabel = agent.run_count > 1 ? `${agent.run_count} runs` : `${agent.run_count || 0} run`;
+      const pendingLabel = agent.pending_notification ? " · 待通知" : "";
+      const subtitle = [
+        agent.last_status || "unknown",
+        runCountLabel,
+        formatTime(agent.updated_at),
+      ]
+        .filter(Boolean)
+        .join(" · ");
       return `
-        <div class="session-group-title">${escapeHtml(aliasForAgentId(agent.agent_id))} · ${escapeHtml(agent.agent_name)}</div>
-        ${runsHtml || '<div class="empty-state">暂无 Run</div>'}
+        <div class="session-item ${agent.agent_id === state.selectedAgentId ? "active" : ""} ${deleting ? "delete-armed" : ""}"
+             data-id="${escapeHtml(agent.agent_id)}">
+          <div class="session-copy">
+            <div class="session-title">${escapeHtml(aliasForAgentId(agent.agent_id))} · ${escapeHtml(agent.agent_name)}</div>
+            <small><span class="status-dot status-${escapeHtml(agent.last_status || "")}"></span>${escapeHtml(subtitle)}${escapeHtml(pendingLabel)}</small>
+          </div>
+          <div class="session-actions">
+            <button class="session-action-btn" type="button" data-menu-kind="runtime" aria-label="更多操作" title="更多操作">${MORE_SVG}</button>
+          </div>
+        </div>
       `;
     })
     .join("");
@@ -985,17 +854,19 @@ function getThinkingOpenAttribute(task, defaultOpen) {
 function renderChatHeader() {
   const node = $("#chatTitle");
   if (!node) return;
-  const root = state.sessionTasks[0];
-  node.textContent = state.selectedSessionId && root ? taskTitle(root) : "";
+  const agent = getSelectedAgent();
+  node.textContent = agent
+    ? `${aliasForAgentId(agent.agent_id)} · ${agent.agent_name}`
+    : "";
 }
 
 function renderChatFeed() {
   const feed = $("#chatFeed");
   if (!feed) return;
-  $(".pane-center")?.classList.toggle("centered", !state.selectedSessionId);
+  $(".pane-center")?.classList.toggle("centered", !state.selectedAgentId);
   renderChatHeader();
 
-  if (!state.selectedSessionId) {
+  if (!state.selectedAgentId) {
     feed.classList.add("is-empty");
     feed.innerHTML = "";
     state.lastFeedFingerprint = "";
@@ -1013,69 +884,96 @@ function renderChatFeed() {
   feed.classList.remove("is-empty");
   let html = "";
 
-  for (const task of state.sessionTasks) {
-    if (task.request_text) {
+  const agent = getSelectedAgent();
+  const runs = getSelectedRuns();
+  const segments = state.agentTranscript?.runs || [];
+
+  segments.forEach((segment, segmentIndex) => {
+    const run = runs.find((item) => item.task_id === segment.task_id) || null;
+    const status = run?.status || "completed";
+    const isActive = ACTIVE_STATUSES.has(status);
+    const pseudoTask = {
+      task_id: segment.task_id,
+      status,
+      meta: { tool_chain: segment.tool_chain },
+      created_at: run?.created_at || "",
+      started_at: run?.started_at || run?.created_at || "",
+      ended_at: run?.ended_at || run?.completed_at || run?.updated_at || "",
+      updated_at: run?.updated_at || "",
+    };
+
+    if (segment.user_text) {
+      const shown = displayUserText(segment.user_text);
       html += `
         <div class="chat-message user">
           <div class="chat-message-inner">
-            <div class="bubble">${escapeHtml(task.request_text)}</div>
+            <div class="bubble" title="${escapeHtml(segment.user_text)}">${escapeHtml(shown)}</div>
           </div>
         </div>
       `;
     }
 
-    const events = state.sessionEvents[task.task_id] || [];
-    let eventLinesHtml = "";
-    let responseHtml = "";
+    const traceHtml = renderTracePanel(pseudoTask, "feed", "");
+    const resultText = String(run?.result || "");
+    const errorText = String(run?.error || "");
+    const failed = ["error", "failed", "stopped", "interrupted"].includes(status);
 
-    for (const event of events) {
-      // agent_output 是流式过程快照（每步一条、含 tool_call 文本化），
-      // 过程由 trace 面板表达，不进回复气泡——否则会复述工具调用且与 agent_result 撞车重复。
-      if (event.event_type === "agent_output") {
-        continue;
-      }
-      // 回复气泡只认最终结果与工具主动发送的消息。
-      if (event.event_type === "agent_result" || event.event_type === "tool_direct_message") {
-        if (event.message) responseHtml += `${event.message}\n\n`;
-        continue;
-      }
-      if (QUIET_EVENT_TYPES.has(event.event_type) || event.event_type?.startsWith("system")) {
-        continue;
-      }
-      eventLinesHtml += `<div class="trace-event-line"><strong>${escapeHtml(event.title || event.event_type)}</strong>${event.message ? ` - ${escapeHtml(event.message)}` : ""}</div>`;
-    }
-
-    const traceHtml = renderTracePanel(task, "feed", eventLinesHtml);
-    if (traceHtml || responseHtml || ["error", "failed", "stopped"].includes(task.status)) {
+    if (traceHtml || resultText || failed) {
       html += `
         <div class="chat-message maid">
           <div class="chat-message-inner">
             <div class="chat-avatar" aria-hidden="true">✦</div>
             <div class="assistant-flow">
       `;
-
       html += traceHtml;
-
-      if (responseHtml) {
-        html += `<div class="bubble markdown-body">${renderMarkdown(responseHtml.trim())}</div>`;
-      } else if (["error", "failed", "stopped"].includes(task.status)) {
-        html += `<div class="bubble error-text">任务发生异常，已终止。</div>`;
+      if (resultText) {
+        html += `<div class="bubble markdown-body">${renderMarkdown(resultText)}</div>`;
+      } else if (failed) {
+        html += `<div class="bubble error-text">${escapeHtml(errorText || "任务发生异常，已终止。")}</div>`;
       }
-
       html += `
             </div>
           </div>
         </div>
       `;
     }
-  }
+
+    for (const steerText of segment.steers) {
+      html += `
+        <div class="chat-message user">
+          <div class="chat-message-inner">
+            <div class="bubble" title="${escapeHtml(steerText)}">${escapeHtml(displayUserText(steerText))}</div>
+          </div>
+        </div>
+      `;
+    }
+
+    if (segmentIndex < segments.length - 1) {
+      html += `<div class="run-divider" aria-hidden="true"></div>`;
+    }
+  });
 
   if (!html) {
-    html = `<div class="empty-state">该会话暂无消息</div>`;
+    const hint = agent?.active_task_id
+      ? "该 Agent 正在运行，暂无对话记录"
+      : "该 Agent 暂无对话记录";
+    html = `<div class="empty-state">${hint}</div>`;
   }
 
   feed.innerHTML = html;
   afterMarkdownSanitize(feed);
+}
+
+function displayUserText(text) {
+  const raw = String(text ?? "").trim();
+  if (!raw) return "";
+  const blockMatch = raw.match(/【(?:大小姐请求|对方原话)】\s*\n?/);
+  if (blockMatch) {
+    const after = raw.slice(blockMatch.index + blockMatch[0].length).trim();
+    const firstBlock = after.split(/【[^】]+】/)[0].trim();
+    if (firstBlock) return firstBlock.length > 120 ? `${firstBlock.slice(0, 119)}…` : firstBlock;
+  }
+  return raw.length > 120 ? `${raw.slice(0, 119)}…` : raw;
 }
 
 function stringifyStructuredValue(value) {
@@ -1277,7 +1175,7 @@ function renderTraceStep(step, taskActive, stepKey) {
 
 function renderTracePanel(task, variant, extraHtml = "") {
   if (!task) return "";
-  const chain = taskMeta(task).tool_chain || {};
+  const chain = (task.meta && typeof task.meta === "object" ? task.meta.tool_chain : null) || {};
   const entries = Array.isArray(chain.entries) ? chain.entries : [];
   const steps = pairToolChainSteps(entries);
   const isActive = ACTIVE_STATUSES.has(task.status);
@@ -1333,7 +1231,7 @@ function renderTracePanel(task, variant, extraHtml = "") {
 function renderToolChain(task) {
   const node = $("#toolChain");
   if (!node) return;
-  const chain = task ? taskMeta(task).tool_chain || {} : {};
+  const chain = task?.meta?.tool_chain || {};
   const rawMessages = Array.isArray(chain.messages) ? chain.messages : [];
   const panelHtml = task ? renderTracePanel(task, "inspector") : "";
 
@@ -1356,13 +1254,45 @@ function renderToolChain(task) {
 }
 
 function renderInspector() {
-  const task = state.detail?.task;
-  if (!task) {
-    $("#inspectorTitle").textContent = "未选择";
-    $("#taskFacts").innerHTML = "";
-    $("#actionList").innerHTML = "";
+  const agent = getSelectedAgent();
+  const runs = getSelectedRuns();
+  const task = getViewRun();
+
+  const selector = $("#runSelector");
+  const selectorWrap = $("#runSelectorWrap");
+  if (selector && selectorWrap) {
+    if (agent && runs.length > 0) {
+      selectorWrap.classList.remove("hidden");
+      selector.innerHTML = runs
+        .map(
+          (run) => `
+            <option value="${escapeHtml(run.task_id)}" ${run.task_id === task?.task_id ? "selected" : ""}>
+              ${escapeHtml(formatTime(run.created_at))} · ${escapeHtml(run.status)}
+            </option>
+          `,
+        )
+        .join("");
+    } else {
+      selectorWrap.classList.add("hidden");
+      selector.innerHTML = "";
+    }
+  }
+
+  if (!agent || !task) {
+    $("#inspectorTitle").textContent = agent
+      ? `${aliasForAgentId(agent.agent_id)} · ${agent.agent_name}`
+      : "未选择";
+    $("#taskFacts").innerHTML = agent
+      ? `
+        <dt>Agent</dt><dd>${escapeHtml(aliasForAgentId(agent.agent_id))} · ${escapeHtml(agent.agent_name)}</dd>
+        <dt>来源 UMO</dt><dd>${escapeHtml(agent.unified_msg_origin)}</dd>
+        <dt>Run 数</dt><dd>${escapeHtml(agent.run_count ?? runs.length)}</dd>
+        <dt>更新时间</dt><dd>${escapeHtml(formatTime(agent.updated_at))}</dd>
+      `
+      : "";
     $("#rawRequest").textContent = "";
     $("#rawMeta").textContent = "";
+    if ($("#stopButton")) $("#stopButton").disabled = true;
     renderToolChain(null);
     return;
   }
@@ -1370,33 +1300,49 @@ function renderInspector() {
   $("#inspectorTitle").textContent = compactId(task.task_id);
   $("#taskFacts").innerHTML = `
     <dt>状态</dt><dd>${escapeHtml(task.status)}</dd>
-    <dt>类型</dt><dd>${escapeHtml(task.kind)}</dd>
-    <dt>Agent</dt><dd>${escapeHtml(aliasForAgentId(task.agent_id || taskMeta(task).agent_id))} · ${escapeHtml(task.agent_name)}</dd>
-    <dt>模式</dt><dd>${escapeHtml(task.mode || taskMeta(task).run_mode || "")}</dd>
-    <dt>通知</dt><dd>${escapeHtml(task.notification?.notification_id || taskMeta(task).notification?.notification_id || "-")}</dd>
-    <dt>来源 UMO</dt><dd>${escapeHtml(task.unified_msg_origin)}</dd>
+    <dt>类型</dt><dd>run</dd>
+    <dt>Agent</dt><dd>${escapeHtml(aliasForAgentId(task.agent_id || agent.agent_id))} · ${escapeHtml(task.agent_name || agent.agent_name)}</dd>
+    <dt>模式</dt><dd>${escapeHtml(task.mode || "")}</dd>
+    <dt>通知</dt><dd>${escapeHtml(task.notification?.notification_id || "-")}</dd>
+    <dt>来源 UMO</dt><dd>${escapeHtml(task.unified_msg_origin || agent.unified_msg_origin)}</dd>
     <dt>更新时间</dt><dd>${escapeHtml(formatTime(task.updated_at))}</dd>
   `;
   if ($("#stopButton")) {
     $("#stopButton").disabled = !["starting", "running"].includes(task.status);
   }
 
-  $("#actionList").innerHTML = (state.detail.actions || [])
-    .map((action) => {
-      const cls = action.status === "error" ? 'style="color:var(--accent-error);"' : "";
-      return `
-        <div class="action-item" ${cls}>
-          <strong>${escapeHtml(action.action)}</strong>
-          <small>${escapeHtml(formatTime(action.created_at))}</small>
-          ${action.result_text ? `<div class="action-result">${escapeHtml(action.result_text)}</div>` : ""}
-        </div>
-      `;
-    })
-    .join("");
-
   $("#rawRequest").textContent = task.request_text || "";
-  $("#rawMeta").textContent = JSON.stringify(taskMeta(task), null, 2);
-  renderToolChain(task);
+  $("#rawMeta").textContent = JSON.stringify({ agent, run: task }, null, 2);
+
+  const trace = state.transcriptRunTrace[task.task_id];
+  if (trace) {
+    renderToolChain({
+      task_id: task.task_id,
+      status: task.status,
+      meta: { tool_chain: trace },
+      started_at: task.started_at || task.created_at,
+      ended_at: task.ended_at || task.updated_at,
+      updated_at: task.updated_at,
+    });
+  } else {
+    renderToolChain(null);
+    loadViewRunTrace(task.task_id);
+  }
+}
+
+async function loadViewRunTrace(taskId) {
+  if (!state.selectedAgentId || !taskId) return;
+  if (state.transcriptRunTrace[taskId]) return;
+  state.transcriptRunTrace[taskId] = null; // in-flight 占位，防重复拉取
+  try {
+    const data = await apiGet(
+      `console/agents/${encodeURIComponent(state.selectedAgentId)}/runs/${encodeURIComponent(taskId)}/trace`,
+    );
+    state.transcriptRunTrace[taskId] = data.tool_chain || { entries: [], messages: [] };
+    renderInspector();
+  } catch {
+    delete state.transcriptRunTrace[taskId];
+  }
 }
 
 async function submitPrompt() {
@@ -1405,8 +1351,8 @@ async function submitPrompt() {
   if (!text && state.attachments.length === 0) return;
 
   const agent = state.dispatchAgent || getConfiguredDefaultAgent();
-  const selectedRoot = getSelectedRootTask();
-  const umo = selectedRoot?.unified_msg_origin || state.selectedUmo;
+  const selectedAgent = getSelectedAgent();
+  const umo = selectedAgent?.unified_msg_origin || state.selectedUmo;
   if (!umo) {
     toast("先选择或填写 UMO");
     $("#umoModal")?.classList.remove("hidden");
@@ -1419,57 +1365,38 @@ async function submitPrompt() {
   try {
     const imageUrlsRaw = await readyAttachmentPaths();
     const requestText = text || "请查看并处理附带的图片。";
-    const runtimeRun = state.selectedAgentId
-      ? (state.runtimeRuns[state.selectedAgentId] || []).find(
-          (run) => run.task_id === state.selectedSessionId,
-        )
-      : null;
-    if (runtimeRun && ["starting", "running"].includes(runtimeRun.status)) {
+
+    if (selectedAgent && selectedAgent.active_task_id) {
       if (imageUrlsRaw.length) {
-        throw new Error("运行中的 steer 目前只支持文字；请等待完成后用 Resume 附图。 ");
+        throw new Error("运行中的 steer 目前只支持文字；请等待完成后用 Resume 附图。");
       }
       await apiPost("console/actions/steer", {
-        agent_id: state.selectedAgentId,
-        task_id: runtimeRun.task_id,
+        agent_id: selectedAgent.agent_id,
+        task_id: selectedAgent.active_task_id,
         message_text: requestText,
       });
       clearPromptComposer(input);
       toast("已 steer 当前 Agent");
-      await refreshConsole({ silent: true, keepSession: true });
+      await loadAgentTranscript(selectedAgent.agent_id, { scrollMode: "bottom" });
       return;
     }
-    if (runtimeRun && state.selectedAgentId) {
+
+    if (selectedAgent) {
       const res = await apiPost("console/actions/resume", {
-        agent_id: state.selectedAgentId,
+        agent_id: selectedAgent.agent_id,
         request_text: requestText,
         unified_msg_origin: umo,
         image_urls_raw: imageUrlsRaw,
       });
       if (!res.outcome) throw new Error(res.error || "resume 失败");
       clearPromptComposer(input);
-      await refreshConsole({ silent: true, keepSession: false });
-      await loadRuntimeRun(res.outcome.agent_id, res.outcome.task_id, { scrollMode: "bottom" });
+      await refreshConsole({ silent: true, keepSession: true });
+      await loadAgent(res.outcome.agent_id || selectedAgent.agent_id, { scrollMode: "bottom" });
       toast("已 Resume Agent");
       return;
     }
 
-    const activeTask = getActiveTaskInSession();
-    let res;
-    if (activeTask) {
-      if (imageUrlsRaw.length) {
-        throw new Error("运行中的 steer 目前只支持文字；请等待任务完成后再附图。 ");
-      }
-      res = await apiPost("console/actions/steer", {
-        task_id: activeTask.task_id,
-        message_text: requestText,
-      });
-      clearPromptComposer(input);
-      toast("已续接当前任务");
-      await refreshConsole({ silent: true, keepSession: true });
-      return;
-    }
-
-    res = await apiPost("console/actions/dispatch", {
+    const res = await apiPost("console/actions/dispatch", {
       unified_msg_origin: umo,
       agent_name: agent,
       request_text: requestText,
@@ -1479,7 +1406,7 @@ async function submitPrompt() {
     if (!res.outcome) throw new Error(res.error || "派发失败");
     clearPromptComposer(input);
     await refreshConsole({ silent: true, keepSession: false });
-    await loadRuntimeRun(res.outcome.agent_id, res.outcome.task_id, { scrollMode: "bottom" });
+    await loadAgent(res.outcome.agent_id, { scrollMode: "bottom" });
     toast("已创建 Agent Run");
   } catch (err) {
     toast(err.message || "发送失败");
@@ -1519,7 +1446,7 @@ async function deleteRuntimeAgent(agentId) {
       confirm_agent_id: agentId,
     });
     state.pendingDeleteAgentId = "";
-    if (state.selectedAgentId === agentId) await loadSession("");
+    if (state.selectedAgentId === agentId) await loadAgent("");
     toast("Agent 及其所有 Run 已删除");
     await refreshConsole({ silent: true, keepSession: false });
   } catch (err) {
@@ -1528,12 +1455,15 @@ async function deleteRuntimeAgent(agentId) {
 }
 
 function requestDeleteRuntimeAgent(agentId) {
-  const runs = state.runtimeRuns[agentId] || [];
-  if (runs.some((run) => ACTIVE_STATUSES.has(run.status))) {
+  const agent = state.runtimeAgents.find((item) => item.agent_id === agentId);
+  if (!agent) return;
+  const hasActiveRun =
+    Boolean(agent.active_task_id) || ACTIVE_STATUSES.has(agent.last_status || "");
+  if (hasActiveRun) {
     toast("Agent 仍有活跃 Run，请先停止");
     return;
   }
-  if (runs.some((run) => run.notification && !run.notification.delivered)) {
+  if (agent.pending_notification) {
     toast("Agent 仍有待通知结果，请先读取结果");
     return;
   }
@@ -1555,21 +1485,20 @@ function requestDeleteRuntimeAgent(agentId) {
   deleteRuntimeAgent(agentId);
 }
 
-function buildRuntimeMenuItems(agentId, taskId) {
-  const runs = state.runtimeRuns[agentId] || [];
-  const run = runs.find((item) => item.task_id === taskId);
-  const hasActiveRun = runs.some((item) => ACTIVE_STATUSES.has(item.status));
-  const hasPendingNotification = runs.some(
-    (item) => item.notification && !item.notification.delivered,
-  );
+function buildRuntimeMenuItems(agent) {
+  const hasActiveRun =
+    Boolean(agent.active_task_id) || ACTIVE_STATUSES.has(agent.last_status || "");
+  const hasPendingNotification = Boolean(agent.pending_notification);
   const items = [];
-  if (run && ACTIVE_STATUSES.has(run.status)) {
-    items.push({ action: "stop", label: "停止此 Run" });
+  if (hasActiveRun && agent.active_task_id) {
+    items.push({ action: "stop", label: "停止当前 Run", taskId: agent.active_task_id });
   }
-  items.push({ action: "result", label: "读取结果" });
+  if (agent.last_task_id) {
+    items.push({ action: "result", label: "读取最新结果", taskId: agent.last_task_id });
+  }
   items.push({
     action: "delete-agent",
-    label: state.pendingDeleteAgentId === agentId ? "确认删除 Agent" : "删除 Agent…",
+    label: state.pendingDeleteAgentId === agent.agent_id ? "确认删除 Agent" : "删除 Agent…",
     danger: true,
     disabled: hasActiveRun || hasPendingNotification,
     hint: hasActiveRun
@@ -1589,12 +1518,15 @@ function closeSessionMenu() {
 function openSessionMenu(anchor, itemEl, context) {
   const menu = $("#sessionMenu");
   if (!menu) return;
-  const items = buildRuntimeMenuItems(context.agentId, context.taskId);
+  const agent = state.runtimeAgents.find((item) => item.agent_id === context.agentId);
+  if (!agent) return;
+  const items = buildRuntimeMenuItems(agent);
   menu.innerHTML = items
     .map(
       (item) => `
         <button class="menu-item ${item.danger ? "danger" : ""}" type="button"
-          data-action="${escapeHtml(item.action)}" ${item.disabled ? "disabled" : ""}
+          data-action="${escapeHtml(item.action)}" data-task-id="${escapeHtml(item.taskId || "")}"
+          ${item.disabled ? "disabled" : ""}
           ${item.hint ? `title="${escapeHtml(item.hint)}"` : ""}>
           ${escapeHtml(item.label)}
         </button>
@@ -1602,7 +1534,6 @@ function openSessionMenu(anchor, itemEl, context) {
     )
     .join("");
   menu.dataset.kind = context.kind;
-  menu.dataset.taskId = context.taskId || "";
   menu.dataset.agentId = context.agentId || "";
   menu.classList.remove("hidden");
   itemEl?.classList.add("menu-open");
@@ -1618,7 +1549,7 @@ function closeMobileSidebar() {
 }
 
 async function stopCurrentTask() {
-  const task = state.detail?.task;
+  const task = getViewRun();
   if (!task) return;
   try {
     await apiPost("console/actions/stop", { task_id: task.task_id });
@@ -1630,12 +1561,13 @@ async function stopCurrentTask() {
 }
 
 async function readCurrentResult() {
-  const task = state.detail?.task;
-  if (!task) return;
+  const agent = getSelectedAgent();
+  const task = getViewRun();
+  if (!agent || !task) return;
   try {
     const res = await apiPost("console/actions/result", {
       task_id: task.task_id,
-      agent_id: task.agent_id || taskMeta(task).agent_id || "",
+      agent_id: agent.agent_id,
       block: false,
       timeout_ms: 0,
     });
@@ -1647,13 +1579,13 @@ async function readCurrentResult() {
 }
 
 async function rerunCurrentTask() {
-  const task = state.detail?.task;
+  const task = getViewRun();
   if (!task) return;
   try {
     const res = await apiPost("console/actions/rerun", { task_id: task.task_id });
     if (!res.outcome) throw new Error(res.error || "重跑失败");
     await refreshConsole({ silent: true, keepSession: false });
-    await loadRuntimeRun(res.outcome.agent_id, res.outcome.task_id, { scrollMode: "bottom" });
+    await loadAgent(res.outcome.agent_id, { scrollMode: "bottom" });
     toast("已重新派发");
   } catch (err) {
     toast(err.message || "重跑失败");
@@ -1661,8 +1593,13 @@ async function rerunCurrentTask() {
 }
 
 async function exportHistory() {
+  if (!state.selectedAgentId) return;
   try {
-    await ensureBridge().download("console/export", {}, `maid-history-${Date.now()}.json`);
+    await ensureBridge().download(
+      `console/agents/${encodeURIComponent(state.selectedAgentId)}/export`,
+      {},
+      `maid-agent-${state.selectedAgentId.slice(0, 8)}-transcript.json`,
+    );
     toast("已导出");
   } catch (err) {
     toast(err.message || "导出失败");
@@ -1702,16 +1639,13 @@ window.handleSseMessage = async function handleSseMessage(event) {
       if (data.status) run.status = data.status;
       run.tool_chain = data.tool_chain || {};
     }
-    if (
-      state.selectedAgentId === data.agent_id &&
-      state.selectedSessionId === data.task_id
-    ) {
-      const task = state.sessionTasks.find((item) => item.task_id === data.task_id);
-      if (task) {
-        if (data.status) task.status = data.status;
-        task.meta = { ...task.meta, tool_chain: data.tool_chain || {} };
-        if (state.detail?.task?.task_id === data.task_id) state.detail.task = task;
+    if (state.selectedAgentId === data.agent_id) {
+      const segments = state.agentTranscript?.runs || [];
+      const segment = segments.find((item) => item.task_id === data.task_id);
+      if (segment && data.tool_chain) {
+        segment.tool_chain = data.tool_chain;
       }
+      state.transcriptRunTrace[data.task_id] = data.tool_chain || null;
       const feed = $("#chatFeed");
       const autoScroll = isAtBottom(feed);
       renderChatFeed();
@@ -1720,59 +1654,6 @@ window.handleSseMessage = async function handleSseMessage(event) {
       updateSessionList();
     }
     return;
-  }
-
-  if (data.type === "task" && data.task) {
-    const alreadyInSession = state.sessionTasks.some(
-      (task) => task.task_id === data.task.task_id,
-    );
-    mergeTask(data.task);
-    updateKnownUmos();
-    renderUmoSwitcher();
-    updateSessionList();
-    const belongsToSession =
-      state.selectedSessionId &&
-      (data.task.task_id === state.selectedSessionId ||
-        data.task.parent_task_id === state.selectedSessionId);
-    if (!belongsToSession) return;
-
-    if (alreadyInSession) {
-      // mergeTask 更新的是同一对象引用，sessionTasks 已是最新，
-      // meta.tool_chain / status 的变化只需本地重绘，避免每个 step 全量重拉 events。
-      if (state.detail?.task?.task_id === data.task.task_id) {
-        Object.assign(state.detail.task, data.task);
-      }
-      const feed = $("#chatFeed");
-      const autoScroll = isAtBottom(feed);
-      renderChatFeed();
-      if (autoScroll) scrollToBottom(feed);
-      renderInspector();
-      return;
-    }
-
-    await loadSession(state.selectedSessionId, { scrollMode: "preserve" });
-    return;
-  }
-
-  if (data.type === "event" && data.event) {
-    const eventTask = state.tasks.find((task) => task.task_id === data.event.task_id);
-    const rootId = getTaskRootId(eventTask);
-    if (rootId === state.selectedSessionId) {
-      if (!state.sessionEvents[data.event.task_id]) state.sessionEvents[data.event.task_id] = [];
-      state.sessionEvents[data.event.task_id].push(data.event);
-      const feed = $("#chatFeed");
-      const autoScroll = isAtBottom(feed);
-      renderChatFeed();
-      if (autoScroll) scrollToBottom(feed);
-      renderInspector();
-    }
-    return;
-  }
-
-  if (data.type === "action" && data.action && state.detail?.task?.task_id === data.action.task_id) {
-    state.detail.actions = state.detail.actions || [];
-    state.detail.actions.push(data.action);
-    renderInspector();
   }
 };
 
@@ -1829,7 +1710,7 @@ function bindEvents() {
   });
 
   $("#newChatButton")?.addEventListener("click", () => {
-    loadSession("");
+    loadAgent("");
   });
 
   const sessionList = $("#sessionList");
@@ -1838,8 +1719,7 @@ function bindEvents() {
     if (!target) return;
     const item = target.closest(".session-item");
     if (!item) return;
-    const taskId = item.dataset.id;
-    const runtimeAgentId = item.dataset.runtimeAgent;
+    const agentId = item.dataset.id;
     const menuButton = target.closest("[data-menu-kind]");
 
     if (menuButton) {
@@ -1849,19 +1729,14 @@ function bindEvents() {
       if (alreadyOpen && item.classList.contains("menu-open")) return;
       openSessionMenu(menuButton, item, {
         kind: menuButton.dataset.menuKind,
-        taskId,
-        agentId: runtimeAgentId || "",
+        agentId,
       });
       return;
     }
 
     closeSessionMenu();
     closeMobileSidebar();
-    if (runtimeAgentId) {
-      await loadRuntimeRun(runtimeAgentId, taskId);
-    } else {
-      await loadSession(taskId);
-    }
+    await loadAgent(agentId);
   });
 
   $("#sessionMenu")?.addEventListener("click", async (event) => {
@@ -1870,11 +1745,11 @@ function bindEvents() {
     if (!button || button.disabled) return;
     const menu = $("#sessionMenu");
     const action = button.dataset.action;
-    const taskId = menu?.dataset.taskId || "";
+    const taskId = button.dataset.taskId || "";
     const agentId = menu?.dataset.agentId || "";
     closeSessionMenu();
-    if (action === "stop") await stopRuntimeRun(taskId);
-    if (action === "result") await readRuntimeResult(agentId, taskId);
+    if (action === "stop" && taskId) await stopRuntimeRun(taskId);
+    if (action === "result" && taskId) await readRuntimeResult(agentId, taskId);
     if (action === "delete-agent") requestDeleteRuntimeAgent(agentId);
   });
 
@@ -1928,7 +1803,7 @@ function bindEvents() {
     $("#umoModal")?.classList.add("hidden");
     renderUmoSwitcher();
     updateSessionList();
-    loadSession("");
+    loadAgent("");
   });
 
   $("#newUmoForm")?.addEventListener("submit", (event) => {
@@ -1945,7 +1820,7 @@ function bindEvents() {
     $("#umoModal")?.classList.add("hidden");
     renderUmoSwitcher();
     updateSessionList();
-    loadSession("");
+    loadAgent("");
   });
 
   const promptText = $("#promptText");
@@ -2006,6 +1881,11 @@ function bindEvents() {
     } catch {
       /* storage unavailable in sandboxed iframe: state is session-only */
     }
+  });
+
+  $("#runSelector")?.addEventListener("change", (event) => {
+    state.selectedViewRunId = event.target.value || "";
+    renderInspector();
   });
 
   $$(".tab").forEach((button) => {

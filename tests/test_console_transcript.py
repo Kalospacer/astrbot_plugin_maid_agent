@@ -55,14 +55,76 @@ def test_transcript_splits_two_runs_in_order() -> None:
 
     assert [run["task_id"] for run in payload["runs"]] == [TASK_1, TASK_2]
     first, second = payload["runs"]
-    assert first["user_text"] == "【大小姐请求】\nfirst task"
-    assert second["user_text"] == "【大小姐请求】\nsecond task"
+    # 无结构化字段的历史记录经兜底解析：【大小姐请求】块拆入 mistress_text，
+    # 无【对方原话】块时 user_text 为空。
+    assert first["user_text"] == ""
+    assert first["mistress_text"] == "first task"
+    assert second["user_text"] == ""
+    assert second["mistress_text"] == "second task"
     assert first["steers"] == []
     # 第一段有一条 assistant 输出，第二段没有。
     first_kinds = [entry["kind"] for entry in first["tool_chain"]["entries"]]
     second_kinds = [entry["kind"] for entry in second["tool_chain"]["entries"]]
     assert first_kinds == ["assistant"]
     assert second_kinds == []
+
+
+def test_transcript_structured_fields_split_user_and_mistress() -> None:
+    # 新数据：结构化字段为真源，绝不把 dispatch 模板正文带进大小姐气泡。
+    records = [
+        _control(CTRL_RUN_START, TASK_1),
+        {
+            "role": "user",
+            "content": "【对方原话】\nhello\n\n【大小姐请求】\nsummarize it\n\n你是MuiceMaid……",
+            "task_id": TASK_1,
+            "user_input": "hello",
+            "mistress_request": "summarize it",
+        },
+        _control(CTRL_RUN_END, TASK_1),
+    ]
+
+    payload = _build(records)
+
+    run = payload["runs"][0]
+    assert run["user_text"] == "hello"
+    assert run["mistress_text"] == "summarize it"
+
+
+def test_transcript_marker_fallback_without_structured_fields() -> None:
+    # 历史 transcript：无结构化字段，从拼接 content 兜底解析出两块纯文本。
+    records = [
+        _control(CTRL_RUN_START, TASK_1),
+        _message("user", "【对方原话】\nhello\n\n【大小姐请求】\nsummarize it\n\n", TASK_1),
+        _control(CTRL_RUN_END, TASK_1),
+    ]
+
+    payload = _build(records)
+
+    run = payload["runs"][0]
+    assert run["user_text"] == "hello"
+    assert run["mistress_text"] == "summarize it"
+
+
+def test_transcript_mistress_only_leaves_user_text_empty() -> None:
+    # 仅有大小姐请求（无对方原话）：user_text 空 → 前端跳过 user 气泡，
+    # 只出大小姐气泡，避免同一句在两处重复显示。
+    records = [
+        _control(CTRL_RUN_START, TASK_1),
+        {
+            "role": "user",
+            "content": "【大小姐请求】\ndo it",
+            "task_id": TASK_1,
+            "user_input": "",
+            "mistress_request": "do it",
+        },
+        _control(CTRL_RUN_END, TASK_1),
+    ]
+
+    payload = _build(records)
+
+    run = payload["runs"][0]
+    assert run["user_text"] == ""
+    assert run["mistress_text"] == "do it"
 
 
 def test_transcript_steer_attaches_to_open_segment() -> None:
@@ -220,6 +282,8 @@ def test_console_agent_transcript_route_returns_payload() -> None:
     assert len(runs) == 1
     assert runs[0]["task_id"] == TASK_1
     assert runs[0]["user_text"] == "task"
+    # 无 context 的路由测试桩 → 人格名回退为空串（前端据此省略标签）。
+    assert response["data"]["mistress_name"] == ""
 
 
 def test_console_agent_transcript_route_missing_agent_returns_404() -> None:
@@ -247,3 +311,23 @@ def test_console_agent_transcript_route_invalid_id_returns_400() -> None:
 
     assert response["status_code"] == 400
     assert "非法 agent_id" in response["error"]
+
+
+def test_resolve_mistress_name_uses_default_persona() -> None:
+    plugin = object.__new__(MaidAgent)
+    plugin.context = SimpleNamespace(
+        persona_manager=SimpleNamespace(default_persona="沐雪")
+    )
+    assert plugin._resolve_mistress_name() == "沐雪"
+
+
+def test_resolve_mistress_name_blank_when_unnamed_or_no_context() -> None:
+    # 未命名占位 "default" → 空串。
+    unnamed = object.__new__(MaidAgent)
+    unnamed.context = SimpleNamespace(
+        persona_manager=SimpleNamespace(default_persona="default")
+    )
+    assert unnamed._resolve_mistress_name() == ""
+    # 无 context / 无 persona_manager → 空串，不抛异常。
+    bare = object.__new__(MaidAgent)
+    assert bare._resolve_mistress_name() == ""

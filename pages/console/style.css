@@ -522,6 +522,23 @@ textarea { resize: none; }
 .chat-message.maid .bubble.markdown-body {
   white-space: normal;
 }
+.chat-message.mistress .chat-message-inner {
+  align-items: flex-start;
+}
+.chat-message.mistress .mistress-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--accent);
+  margin-bottom: 4px;
+}
+.chat-message.mistress .bubble {
+  background: color-mix(in srgb, var(--accent) 6%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent) 25%, transparent);
+  color: var(--text-main);
+  border-radius: 1rem;
+  padding: 10px 16px;
+  max-width: min(32rem, 72%);
+}
 .assistant-flow { flex: 1; min-width: 0; }
 .error-text { color: var(--err); }
 

@@ -1,5 +1,25 @@
 # Changelog
 
+## 1.4.1 - 2026-07-19
+
+Console 对话流补齐第三方角色「大小姐（主人格）」：主模型派给女仆的请求此前混入用户气泡并被前端过滤丢弃，现改为独立角色气泡，时间线呈现 用户 → 大小姐 → 女仆 三方对话。
+
+### 新增
+
+- **Console「大小姐」角色气泡**：女仆运行轨迹在用户气泡与女仆气泡之间新增大小姐气泡（左对齐、accent 描边浅底），承载主模型派给女仆的 `【大小姐请求】`。气泡名称取全局默认人格名（`provider_settings.default_personality`），未命名（`default` 占位）或不可用时省略名称标签；头像统一使用 AstrBot 星标 `✦`。
+- **transcript 结构化派活字段**：女仆首条 `user` 消息在保留完整 `content` 的同时，附带 `user_input`（对方原话）与 `mistress_request`（大小姐请求）两个结构化真源字段；`_build_agent_transcript_payload` 据此产出干净拆分的 `user_text` 与新增 `mistress_text`，transcript 与导出接口额外返回 `mistress_name`，前端无需解析拼接串。
+- **测试**：覆盖结构化字段拆分、旧 transcript 的 `【…】` 标记兜底解析、仅大小姐请求（`user_text` 为空、不重复显示）、默认人格名解析与回退。
+
+### 修复
+
+- **大小姐派活指令不再被吞**：此前 `dispatch_prompt` 把 `【对方原话】` 与 `【大小姐请求】` 拼进女仆首条 user 文本，前端 `displayUserText` 只取首块（对方原话）导致大小姐请求被整段丢弃；现拆为独立 `mistress_text` 字段单独成泡，不再丢失。
+
+### 变更
+
+- **`user_text` 语义收敛**：`user_text` 现仅含人类原话（`【对方原话】`），不再夹带大小姐请求。`_build_agent_transcript_payload` 优先读结构化字段，缺失时对旧 transcript 按 `【…】` 标记兜底解析（历史记录的大小姐块可能带模板尾巴，属可接受降级）；context 访问收敛在路由层，纯 payload builder 保持无副作用可测。
+- 抽出 `USER_INPUT_BLOCK_LABEL` / `MISTRESS_REQUEST_BLOCK_LABEL` 常量，dispatch 拼接与兜底解析共用同一份，消除魔法串重复。
+- metadata.yaml / pyproject.toml / `__version__` 升至 1.4.1（一并修正 pyproject.toml 遗留的 1.3.0）。
+
 ## 1.4.0 - 2026-07-16
 
 彻底移除 1.2 遗留引擎与兼容层，Console 前端重构为 Claude Desktop 风格。

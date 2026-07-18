@@ -887,6 +887,7 @@ function renderChatFeed() {
   const agent = getSelectedAgent();
   const runs = getSelectedRuns();
   const segments = state.agentTranscript?.runs || [];
+  const mistressName = (state.agentTranscript?.mistress_name || "").trim();
 
   segments.forEach((segment, segmentIndex) => {
     const run = runs.find((item) => item.task_id === segment.task_id) || null;
@@ -908,6 +909,24 @@ function renderChatFeed() {
         <div class="chat-message user">
           <div class="chat-message-inner">
             <div class="bubble" title="${escapeHtml(segment.user_text)}">${escapeHtml(shown)}</div>
+          </div>
+        </div>
+      `;
+    }
+
+    if (segment.mistress_text) {
+      const shown = displayUserText(segment.mistress_text);
+      const label = mistressName
+        ? `<div class="mistress-label">${escapeHtml(mistressName)}</div>`
+        : "";
+      html += `
+        <div class="chat-message mistress">
+          <div class="chat-message-inner">
+            <div class="chat-avatar" aria-hidden="true">✦</div>
+            <div class="assistant-flow">
+              ${label}
+              <div class="bubble" title="${escapeHtml(segment.mistress_text)}">${escapeHtml(shown)}</div>
+            </div>
           </div>
         </div>
       `;

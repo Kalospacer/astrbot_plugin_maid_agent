@@ -40,9 +40,11 @@ from .constants import (
     MAID_NOTIFICATION_ID_META_KEY,
     MAID_NOTIFICATION_IDS_META_KEY,
     MAID_TASK_TOOL_NAME,
+    MISTRESS_REQUEST_BLOCK_LABEL,
     PLUGIN_DATA_DIR_NAME,
     RAW_INPUT_EXTRA_KEY,
     TRUE_USER_INPUT_EXTRA_KEY,
+    USER_INPUT_BLOCK_LABEL,
 )
 from .json_io import dump_json
 from .maid_dispatcher import (
@@ -519,8 +521,10 @@ class MaidAgent(Star):
         tool_call_timeout = _safe_int(provider_settings.get("tool_call_timeout", 60), 60)
         agent_max_step = _safe_int(provider_settings.get("max_agent_step", 30), 30)
         image_urls = await collect_child_image_urls(event, image_urls_raw)
-        user_input_block = f"【对方原话】\n{true_user_input}\n\n" if true_user_input.strip() else ""
-        maid_request_block = f"【大小姐请求】\n{request_text}\n\n"
+        user_input_block = (
+            f"【{USER_INPUT_BLOCK_LABEL}】\n{true_user_input}\n\n" if true_user_input.strip() else ""
+        )
+        maid_request_block = f"【{MISTRESS_REQUEST_BLOCK_LABEL}】\n{request_text}\n\n"
         dispatch_prompt = render_dispatch_prompt(
             self.maid_mode_config.dispatch_prompt_template,
             user_input_block=user_input_block,
@@ -584,7 +588,15 @@ class MaidAgent(Star):
             )
             await self.runtime_store.append_message(
                 run.agent_id,
-                {"role": "user", "content": dispatch_prompt, "task_id": run.task_id},
+                {
+                    "role": "user",
+                    "content": dispatch_prompt,
+                    "task_id": run.task_id,
+                    # 结构化真源：控制台据此拆出「大小姐」独立气泡，
+                    # 无需事后从拼接串里解析（模板正文紧跟大小姐请求块，解析不可靠）。
+                    "user_input": true_user_input,
+                    "mistress_request": request_text,
+                },
             )
             try:
                 step_count = 0
@@ -1566,6 +1578,50 @@ class MaidAgent(Star):
         except ValueError as exc:
             return self._console_error(str(exc))
 
+    @staticmethod
+    def _split_dispatch_blocks(content: str) -> tuple[str, str]:
+        """从旧版拼接 dispatch_prompt 中兜底解析出 ``(对方原话, 大小姐请求)``。
+
+        仅用于缺少结构化字段的历史 transcript；新数据直接走消息上的
+        ``user_input`` / ``mistress_request`` 字段。无任何标记时整串视作对方原话。
+
+        :param content: 女仆首条 user 消息的文本内容。
+        :returns: ``(user_text, mistress_text)``，缺失的一段为空串。
+        """
+        text = str(content or "")
+        user_marker = f"【{USER_INPUT_BLOCK_LABEL}】"
+        mistress_marker = f"【{MISTRESS_REQUEST_BLOCK_LABEL}】"
+        user_idx = text.find(user_marker)
+        mistress_idx = text.find(mistress_marker)
+        if user_idx == -1 and mistress_idx == -1:
+            return text.strip(), ""
+
+        def _block(start_idx: int, marker: str) -> str:
+            if start_idx == -1:
+                return ""
+            rest = text[start_idx + len(marker) :]
+            next_idx = rest.find("【")
+            return (rest if next_idx == -1 else rest[:next_idx]).strip()
+
+        return _block(user_idx, user_marker), _block(mistress_idx, mistress_marker)
+
+    def _extract_dispatch_texts(self, record: dict[str, Any]) -> tuple[str, str]:
+        """取女仆首条 user 消息的 ``(对方原话, 大小姐请求)`` 两段纯文本。
+
+        优先使用落库时写入的结构化字段（``user_input`` / ``mistress_request``）；
+        历史记录缺字段时回退到解析拼接 content。
+
+        :param record: 一条 ``role == "user"`` 的 transcript 记录。
+        :returns: ``(user_text, mistress_text)``。
+        """
+        if "mistress_request" in record or "user_input" in record:
+            user_text = str(record.get("user_input") or "").strip()
+            mistress_text = str(record.get("mistress_request") or "").strip()
+            return user_text, mistress_text
+        return self._split_dispatch_blocks(
+            self._message_content_to_text(record.get("content"))
+        )
+
     def _build_agent_transcript_payload(
         self,
         agent_id: str,
@@ -1585,9 +1641,11 @@ class MaidAgent(Star):
             segment = {
                 "task_id": task_id,
                 "user_text": "",
+                "mistress_text": "",
                 "steers": [],
                 "records": [],
                 "orphan_count": 0,
+                "_dispatch_captured": False,
             }
             segments[task_id] = segment
             order.append(task_id)
@@ -1640,8 +1698,11 @@ class MaidAgent(Star):
                 target["records"].append(record)
                 continue
             target["records"].append(record)
-            if not target["user_text"] and str(record.get("role") or "") == "user":
-                target["user_text"] = self._message_content_to_text(record.get("content"))
+            if not target.get("_dispatch_captured") and str(record.get("role") or "") == "user":
+                # 仅首条 user 记录承载派活内容；user_text 现在可能合法为空
+                # （没有对方原话），故用显式标志位而非 user_text 判空。
+                target["_dispatch_captured"] = True
+                target["user_text"], target["mistress_text"] = self._extract_dispatch_texts(record)
 
         # 把 run_start 之前的虚拟段并入第一个真实 segment（没有真实段则保留）。
         leading = segments.pop("", None)
@@ -1651,8 +1712,10 @@ class MaidAgent(Star):
                 first = segments[order[0]]
                 first["records"] = leading["records"] + first["records"]
                 first["orphan_count"] += leading["orphan_count"]
-                if not first["user_text"] and leading["user_text"]:
+                if not first.get("_dispatch_captured") and leading.get("_dispatch_captured"):
                     first["user_text"] = leading["user_text"]
+                    first["mistress_text"] = leading["mistress_text"]
+                    first["_dispatch_captured"] = True
             else:
                 order.append("")
                 segments[""] = leading
@@ -1664,12 +1727,28 @@ class MaidAgent(Star):
                 {
                     "task_id": segment["task_id"],
                     "user_text": segment["user_text"],
+                    "mistress_text": segment["mistress_text"],
                     "steers": segment["steers"],
                     "tool_chain": self._build_runtime_tool_chain_payload(segment["records"]),
                     "orphan_count": segment["orphan_count"],
                 }
             )
         return {"agent_id": agent_id, "runs": runs}
+
+    def _resolve_mistress_name(self) -> str:
+        """控制台「大小姐」气泡的显示名 = 全局默认人格名。
+
+        取 ``provider_settings.default_personality``；未命名（``default`` 占位）
+        或 context 不可用时返回空串，由前端决定是否省略名称标签。
+
+        :returns: 默认人格名，或空串。
+        """
+        try:
+            manager = getattr(getattr(self, "context", None), "persona_manager", None)
+            name = str(getattr(manager, "default_persona", "") or "").strip()
+        except Exception:
+            return ""
+        return "" if name == "default" else name
 
     async def console_agent_transcript(self, agent_id: str):
         try:
@@ -1678,6 +1757,7 @@ class MaidAgent(Star):
                 return self._console_error("agent 不存在。", status_code=404)
             records = await self.runtime_store.load_transcript(agent_id)
             payload = self._build_agent_transcript_payload(meta.agent_id, records)
+            payload["mistress_name"] = self._resolve_mistress_name()
         except ValueError as exc:
             return self._console_error(str(exc), status_code=400)
         return self._console_ok(payload)
@@ -1689,6 +1769,7 @@ class MaidAgent(Star):
                 return self._console_error("agent 不存在。", status_code=404)
             records = await self.runtime_store.load_transcript(agent_id)
             payload = self._build_agent_transcript_payload(meta.agent_id, records)
+            payload["mistress_name"] = self._resolve_mistress_name()
             payload["agent"] = meta.to_dict()
             payload["runs_meta"] = [
                 run.to_dict() for run in await self.runtime_store.list_runs(meta.agent_id)

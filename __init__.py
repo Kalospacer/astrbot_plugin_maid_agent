@@ -6,6 +6,6 @@
 
 from .main import MaidAgent
 
-__version__ = "1.4.0"
+__version__ = "1.4.1"
 
 __all__ = ["MaidAgent", "__version__"]

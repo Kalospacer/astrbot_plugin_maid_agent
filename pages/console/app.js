@@ -1729,7 +1729,28 @@ function bindEvents() {
   });
 
   $("#newChatButton")?.addEventListener("click", () => {
+    setDocsMode(false);
     loadAgent("");
+  });
+
+  // 文档视图切换
+  function setDocsMode(on) {
+    const docs = $("#docsView");
+    const feed = $("#chatFeed");
+    const footer = document.querySelector(".chat-footer");
+    if (docs) docs.hidden = !on;
+    if (feed) feed.hidden = on;
+    if (footer) footer.hidden = on;
+    const title = $("#chatTitle");
+    if (title && on) title.textContent = "使用文档";
+    const btn = $("#docsViewButton");
+    if (btn) btn.classList.toggle("active", on);
+    window.__docsMode = on;
+  }
+  window.setDocsMode = setDocsMode;
+
+  $("#docsViewButton")?.addEventListener("click", () => {
+    setDocsMode(!window.__docsMode);
   });
 
   const sessionList = $("#sessionList");

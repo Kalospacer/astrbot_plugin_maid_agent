@@ -1,0 +1,460 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>代理女仆 · 插件文档</title>
+<style>
+:root{
+  --purple:#533afd; --purple-hover:#4434d4; --purple-light:#b9b9f9;
+  --navy:#061b31; --label:#273951; --body:#64748d; --border:#e5edf5;
+  --bg:#ffffff; --bg-soft:#f6f9fc; --code-bg:#0d253d; --code-bg2:#1c1e54;
+  --green:#15be53; --green-text:#108c3d; --red:#ea2261;
+  --shadow: rgba(50,50,93,0.25) 0px 30px 45px -30px, rgba(0,0,0,0.1) 0px 18px 36px -18px;
+  --radius:6px;
+  --mono: "SourceCodePro","SFMono-Regular",ui-monospace,Menlo,Consolas,monospace;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html{scroll-behavior:smooth}
+body{
+  font-family:sohne-var,"SF Pro Display",-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;
+  color:var(--body); background:var(--bg); line-height:1.6;
+  font-feature-settings:"ss01"; -webkit-font-smoothing:antialiased;
+}
+h1,h2,h3,h4{color:var(--navy);font-weight:300;letter-spacing:-0.02em;line-height:1.15}
+a{color:var(--purple);text-decoration:none}
+a:hover{color:var(--purple-hover)}
+code{font-family:var(--mono);font-size:.86em;background:var(--bg-soft);padding:2px 6px;border-radius:4px;color:var(--navy)}
+
+.layout{display:grid;grid-template-columns:250px minmax(0,1fr) 400px;min-height:100dvh}
+/* 左栏 */
+.sidenav{position:sticky;top:0;height:100dvh;overflow-y:auto;border-right:1px solid var(--border);padding:32px 20px 60px;background:var(--bg)}
+.brand{padding:0 8px 24px;border-bottom:1px solid var(--border);margin-bottom:20px}
+.brand .logo{font-size:19px;color:var(--navy);font-weight:400;letter-spacing:-0.02em}
+.brand .sub{font-size:12px;color:var(--body);margin-top:4px}
+.nav-group{margin-bottom:22px}
+.nav-group>.gtitle{font-size:11px;text-transform:uppercase;letter-spacing:.08em;color:var(--label);font-weight:400;padding:0 8px 8px}
+.nav-link{display:block;padding:7px 8px;font-size:14px;color:var(--body);border-radius:var(--radius);border-left:2px solid transparent;cursor:pointer;transition:all .15s}
+.nav-link:hover{color:var(--navy);background:var(--bg-soft)}
+.nav-link.active{color:var(--purple);border-left-color:var(--purple);background:rgba(83,58,253,0.06);font-weight:400}
+.nav-link.sub{padding-left:22px;font-size:13.5px}
+
+/* 中栏 */
+.doc{padding:48px 56px 120px;max-width:760px}
+.doc section{margin-bottom:72px;scroll-margin-top:24px}
+.doc h1{font-size:38px;margin-bottom:12px}
+.doc h2{font-size:27px;margin-bottom:16px;padding-bottom:10px;border-bottom:1px solid var(--border)}
+.doc h3{font-size:19px;margin:32px 0 12px;font-weight:400}
+.doc p{margin-bottom:14px;font-size:15.5px}
+.doc ul,.doc ol{margin:0 0 14px 22px;font-size:15.5px}
+.doc li{margin-bottom:7px}
+.lede{font-size:18px;color:var(--label);font-weight:300;margin-bottom:24px}
+.callout{border:1px solid var(--border);border-left:3px solid var(--purple);background:var(--bg-soft);border-radius:var(--radius);padding:14px 18px;margin:18px 0;font-size:14.5px}
+.callout.warn{border-left-color:var(--red);background:rgba(234,34,97,0.04)}
+.callout b{color:var(--navy);font-weight:400}
+
+.api-card{border:1px solid var(--border);border-radius:8px;background:var(--bg);margin:20px 0;overflow:hidden;box-shadow:0 1px 2px rgba(6,27,49,0.04)}
+.api-head{display:flex;align-items:center;gap:12px;padding:16px 20px;border-bottom:1px solid var(--border);background:var(--bg-soft);flex-wrap:wrap}
+.badge{font-family:var(--mono);font-size:11px;font-weight:500;letter-spacing:.04em;padding:3px 9px;border-radius:4px;text-transform:uppercase}
+.badge.tool{background:rgba(83,58,253,0.12);color:var(--purple);border:1px solid rgba(83,58,253,0.3)}
+.badge.cmd{background:rgba(21,190,83,0.14);color:var(--green-text);border:1px solid rgba(21,190,83,0.35)}
+.badge.cfg{background:rgba(39,57,81,0.08);color:var(--label);border:1px solid var(--border)}
+.api-path{font-family:var(--mono);font-size:14px;color:var(--navy);font-weight:500}
+.api-body{padding:18px 20px}
+.api-body>p{font-size:14.5px;margin-bottom:14px}
+
+.ptable{width:100%;border-collapse:collapse;font-size:13.5px;margin-top:6px}
+.ptable th{text-align:left;font-weight:400;color:var(--label);font-size:12px;text-transform:uppercase;letter-spacing:.05em;padding:8px 10px;border-bottom:1px solid var(--border)}
+.ptable td{padding:9px 10px;border-bottom:1px solid var(--bg-soft);vertical-align:top;color:var(--body)}
+.ptable tr:last-child td{border-bottom:none}
+.ptable .pname{font-family:var(--mono);color:var(--navy);font-size:13px;white-space:nowrap}
+.ptable .ptype{font-family:var(--mono);font-size:12px;color:var(--purple)}
+.req{font-size:11px;font-weight:400;padding:1px 6px;border-radius:4px;background:rgba(234,34,97,0.1);color:var(--red);white-space:nowrap}
+.opt{font-size:11px;font-weight:400;padding:1px 6px;border-radius:4px;background:var(--bg-soft);color:var(--body);white-space:nowrap}
+
+/* 右栏 */
+.codepane{position:sticky;top:0;height:100dvh;overflow-y:auto;background:var(--code-bg);color:#c8d6e5;padding:28px 22px 60px}
+.codepane .cp-title{color:#fff;font-size:15px;font-weight:400;margin-bottom:4px;letter-spacing:-0.01em}
+.codepane .cp-sub{font-size:12px;color:#7a8ba0;margin-bottom:18px}
+.lang-tabs{display:flex;gap:4px;background:rgba(255,255,255,0.05);padding:4px;border-radius:6px;margin-bottom:18px;flex-wrap:wrap}
+.lang-tab{flex:1;min-width:60px;text-align:center;font-family:var(--mono);font-size:12px;padding:6px 4px;border-radius:4px;color:#8fa3ba;cursor:pointer;border:none;background:transparent;transition:all .15s}
+.lang-tab:hover{color:#fff}
+.lang-tab.active{background:var(--purple);color:#fff;font-weight:500}
+.code-block{display:none}
+.code-block.active{display:block}
+.cb-item{margin-bottom:22px}
+.cb-label{font-family:var(--mono);font-size:10.5px;text-transform:uppercase;letter-spacing:.06em;color:#7a8ba0;margin-bottom:7px;display:flex;justify-content:space-between;align-items:center}
+.copy-btn{font-family:var(--mono);font-size:10.5px;color:#8fa3ba;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.1);border-radius:4px;padding:2px 8px;cursor:pointer;text-transform:none;letter-spacing:0}
+.copy-btn:hover{color:#fff;border-color:var(--purple)}
+.copy-btn.done{color:var(--green);border-color:var(--green)}
+pre{background:rgba(0,0,0,0.28);border:1px solid rgba(255,255,255,0.06);border-radius:6px;padding:13px 15px;overflow-x:auto;font-family:var(--mono);font-size:12px;line-height:1.85}
+pre code{background:none;padding:0;color:#e2ecff;font-size:12px}
+.tk-k{color:#c792ea}.tk-s{color:#c3e88d}.tk-c{color:#5d7290;font-style:italic}.tk-m{color:#f78c6c}
+.tk-f{color:#82aaff}.tk-p{color:#89ddff}.tk-n{color:#e2ecff}
+
+.menu-toggle{display:none}
+@media (max-width:1180px){
+  .layout{grid-template-columns:230px minmax(0,1fr)}
+  .codepane{position:static;height:auto;grid-column:1/-1;order:3}
+  .doc{padding:40px 36px 80px}
+}
+@media (max-width:760px){
+  .layout{grid-template-columns:1fr}
+  .sidenav{position:fixed;top:0;left:0;bottom:0;width:270px;height:100dvh;transform:translateX(-100%);transition:transform .25s;z-index:50;box-shadow:var(--shadow)}
+  .sidenav.open{transform:translateX(0)}
+  .doc{padding:28px 20px 80px}
+  .doc h1{font-size:30px}
+  .menu-toggle{display:block;position:fixed;top:14px;left:14px;z-index:60;background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:8px 11px;cursor:pointer;color:var(--navy);box-shadow:0 1px 3px rgba(6,27,49,0.1);font-size:15px}
+}
+</style>
+</head>
+<body>
+<button class="menu-toggle" id="menuToggle" aria-label="菜单">☰</button>
+<div class="layout">
+
+  <!-- 左栏导航 -->
+  <nav class="sidenav" id="sidenav">
+    <div class="brand">
+      <div class="logo">代理女仆</div>
+      <div class="sub">大小姐 + 管家 双代理 · v1.4</div>
+    </div>
+    <div class="nav-group">
+      <div class="gtitle">开始</div>
+      <a class="nav-link" href="#overview">概览</a>
+      <a class="nav-link" href="#prereq">运行前提</a>
+      <a class="nav-link" href="#quickstart">快速开始</a>
+    </div>
+    <div class="nav-group">
+      <div class="gtitle">工具 API</div>
+      <a class="nav-link sub" href="#tool-call">call_maid</a>
+      <a class="nav-link sub" href="#tool-task">maid_task</a>
+    </div>
+    <div class="nav-group">
+      <div class="gtitle">用户命令</div>
+      <a class="nav-link sub" href="#cmd-status">/maid status</a>
+      <a class="nav-link sub" href="#cmd-stop">/maid stop</a>
+    </div>
+    <div class="nav-group">
+      <div class="gtitle">机制</div>
+      <a class="nav-link" href="#flow">执行流程</a>
+      <a class="nav-link" href="#runtime">Agent 与 Run</a>
+    </div>
+    <div class="nav-group">
+      <div class="gtitle">参考</div>
+      <a class="nav-link" href="#config">配置参考</a>
+      <a class="nav-link" href="#subagent">SubAgent 配置</a>
+    </div>
+  </nav>
+
+  <!-- 中栏文档 -->
+  <main class="doc" id="doc">
+
+    <section id="overview">
+      <h1>代理女仆</h1>
+      <p class="lede">一个 AstrBot 双代理插件。主模型（大小姐）专注陪用户聊天，管家（子代理）在幕后调用工具执行任务，让角色扮演既沉浸又能真正做事。</p>
+      <p>传统角色扮演 Agent 会把大量函数调用的系统提示词注入主模型，导致模型说话像刻板的 AI 助手。本插件把「聊天」与「做事」拆成两个角色：大小姐只保留纯净对话，需要做事时通过 <code>call_maid</code> 派给管家；管家接管全部工具能力，执行完再回报给大小姐转告用户。</p>
+    </section>
+
+    <section id="prereq">
+      <h2>运行前提</h2>
+      <ul>
+        <li>AstrBot <code>&gt;= 4.20.0</code>。</li>
+        <li>已在 AstrBot 启用 <b style="color:var(--navy);font-weight:400">SubAgent（子代理编排）</b> 功能，并至少配置一个可用 SubAgent。</li>
+        <li>插件配置中的 <code>default_agent_name</code> 填成你那个 SubAgent 的名称。</li>
+      </ul>
+    </section>
+
+    <section id="quickstart">
+      <h2>快速开始</h2>
+      <ol>
+        <li>在 AstrBot 配置一个 SubAgent（可参考「SubAgent 配置」一节）。</li>
+        <li>启用本插件，在插件配置页填好默认管家名称。</li>
+        <li>正常聊天。大小姐需要做事时会自动调用 <code>call_maid</code>，管家在后台执行并回报。</li>
+      </ol>
+    </section>
+
+    <!-- 工具 API -->
+    <section id="tool-call">
+      <h2>工具 API</h2>
+      <p>以下两个工具由插件注册给大模型，通过 function calling 调用，<b style="color:var(--navy);font-weight:400">用户通常无需手动触发</b>。</p>
+
+      <div class="api-card">
+        <div class="api-head">
+          <span class="badge tool">工具</span>
+          <span class="api-path">call_maid</span>
+        </div>
+        <div class="api-body">
+          <p>调度管家执行任务。默认前台同步等待（最多 <code>foreground_timeout_seconds</code> 秒），短任务当场返回结果；超时自动转后台并返回任务句柄。</p>
+          <table class="ptable">
+            <thead><tr><th>名称</th><th>类型</th><th>必填</th><th>描述</th></tr></thead>
+            <tbody>
+              <tr><td class="pname">request_text</td><td class="ptype">string</td><td><span class="req">必填</span></td><td>交给管家的任务要求（自包含背景/约束/目标）。</td></tr>
+              <tr><td class="pname">agent_name</td><td class="ptype">string</td><td><span class="opt">可选</span></td><td>目标管家名称，留空用默认管家。仅新建 agent 生效。</td></tr>
+              <tr><td class="pname">resume_agent_id</td><td class="ptype">string</td><td><span class="opt">可选</span></td><td>恢复已有 agent；running 时等价 steer，终态时新建 task 后台执行。</td></tr>
+              <tr><td class="pname">run_in_background</td><td class="ptype">bool</td><td><span class="opt">可选</span></td><td><code>true</code> 立即转后台返回句柄；默认 <code>false</code> 前台等待。</td></tr>
+              <tr><td class="pname">tasks</td><td class="ptype">array</td><td><span class="opt">可选</span></td><td>批量任务，每项 <code>{request_text, agent_name?, run_in_background?}</code>，最多 5 项。仅新建 agent。</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <section id="tool-task">
+      <div class="api-card">
+        <div class="api-head">
+          <span class="badge tool">工具</span>
+          <span class="api-path">maid_task</span>
+        </div>
+        <div class="api-body">
+          <p>查询与控制后台任务，对齐 Claude TaskOutput 语义。</p>
+          <table class="ptable">
+            <thead><tr><th>名称</th><th>类型</th><th>必填</th><th>描述</th></tr></thead>
+            <tbody>
+              <tr><td class="pname">action</td><td class="ptype">string</td><td><span class="req">必填</span></td><td><code>status</code> 查状态 / <code>result</code> 等终态 / <code>stop</code> 停止 / <code>steer</code> 补充要求。</td></tr>
+              <tr><td class="pname">task_id</td><td class="ptype">string</td><td><span class="opt">按动作</span></td><td><code>status</code>/<code>result</code>/<code>stop</code> 时填写。</td></tr>
+              <tr><td class="pname">agent_id</td><td class="ptype">string</td><td><span class="opt">按动作</span></td><td><code>steer</code> 必填；<code>result</code> 可选用于归属校验。</td></tr>
+              <tr><td class="pname">message</td><td class="ptype">string</td><td><span class="opt">steer 必填</span></td><td><code>steer</code> 时补充的要求文本。</td></tr>
+              <tr><td class="pname">block</td><td class="ptype">bool</td><td><span class="opt">可选</span></td><td><code>result</code> 是否阻塞等待，默认 <code>true</code>。</td></tr>
+              <tr><td class="pname">timeout_ms</td><td class="ptype">int</td><td><span class="opt">可选</span></td><td><code>result</code> 阻塞超时毫秒，默认 <code>30000</code>，最大 <code>600000</code>。</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- 用户命令 -->
+    <section id="cmd-status">
+      <h2>用户命令</h2>
+      <p>在聊天里直接输入，管理后台管家任务。</p>
+      <div class="api-card">
+        <div class="api-head">
+          <span class="badge cmd">命令</span>
+          <span class="api-path">/maid status</span>
+        </div>
+        <div class="api-body">
+          <p>查看当前后台管家任务状态；若为批量任务，会展示各子任务明细。</p>
+        </div>
+      </div>
+    </section>
+
+    <section id="cmd-stop">
+      <div class="api-card">
+        <div class="api-head">
+          <span class="badge cmd">命令</span>
+          <span class="api-path">/maid stop</span>
+        </div>
+        <div class="api-body">
+          <p>请求停止当前后台管家任务；若为批量任务，会停止整批。</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- 机制 -->
+    <section id="flow">
+      <h2>执行流程</h2>
+      <ol>
+        <li>用户发消息，大小姐判断需要做事时调用 <code>call_maid</code>。</li>
+        <li>短任务在当前 tool turn 内直接返回结果；超过前台阈值后同一执行器原地转后台。</li>
+        <li>后台任务结束后写入 notification outbox，并唤醒大小姐整理结果转告用户。</li>
+        <li>期间可用 <code>maid_task(status/result/stop/steer)</code> 按 task/agent ID 查询或控制。</li>
+      </ol>
+    </section>
+
+    <section id="runtime">
+      <h2>Agent 与 Run 模型</h2>
+      <ul>
+        <li>每次新 dispatch 创建新 agent；只有显式 <code>resume_agent_id</code> 才恢复稳定身份。</li>
+        <li>每个 agent 同时最多一个活跃 run；每个会话可并发多个不同 agent。</li>
+        <li>每个会话最多 5 个活跃 run，全局最多 20，超限立即拒绝。</li>
+      </ul>
+      <div class="callout">
+        <b>数据存储：</b><code>data/plugin_data/astrbot_plugin_maid_agent/agents/&lt;agent_id&gt;/</code>，含 <code>agent.json</code>、<code>transcript.jsonl</code>、<code>runs/&lt;task_id&gt;.json</code>、<code>outputs/&lt;task_id&gt;.txt</code>。元数据按 <code>retention_days</code> 清理（不删 memory）。
+      </div>
+    </section>
+
+    <!-- 配置 -->
+    <section id="config">
+      <h2>配置参考</h2>
+      <p>配置全部在 AstrBot 插件配置页管理。</p>
+      <div class="api-card">
+        <div class="api-head">
+          <span class="badge cfg">字段</span>
+          <span class="api-path">插件配置</span>
+        </div>
+        <div class="api-body">
+          <table class="ptable">
+            <thead><tr><th>配置项</th><th>默认</th><th>说明</th></tr></thead>
+            <tbody>
+              <tr><td class="pname">default_agent_name</td><td class="ptype">muiceagent</td><td>默认被调度的 SubAgent 名称。</td></tr>
+              <tr><td class="pname">allowed_agent_names</td><td class="ptype">[muiceagent]</td><td><code>call_maid</code> 可显式指定的 Agent 白名单。</td></tr>
+              <tr><td class="pname">hide_native_tools</td><td class="ptype">true</td><td>隐藏主模型可见的原生工具，只保留 <code>call_maid</code> 与 <code>maid_task</code>。</td></tr>
+              <tr><td class="pname">hide_transfer_tools</td><td class="ptype">true</td><td><code>hide_native_tools=false</code> 时额外隐藏全部 <code>transfer_to_*</code>。</td></tr>
+              <tr><td class="pname">include_raw_user_input</td><td class="ptype">true</td><td>把真实用户原话一并透传给管家。</td></tr>
+              <tr><td class="pname">foreground_timeout_seconds</td><td class="ptype">50</td><td>前台等待阈值（秒），超时转后台。</td></tr>
+              <tr><td class="pname">memory_agent_names</td><td class="ptype">[]</td><td>启用持久记忆与原生 Read/Write/Edit 的 agent 名称列表。</td></tr>
+              <tr><td class="pname">max_active_per_umo</td><td class="ptype">5</td><td>每会话活跃 run 上限。</td></tr>
+              <tr><td class="pname">max_active_global</td><td class="ptype">20</td><td>全局活跃 run 上限。</td></tr>
+              <tr><td class="pname">retention_days</td><td class="ptype">30</td><td>元数据/run/transcript/output 保留天数（不删 memory）。</td></tr>
+              <tr><td class="pname">dispatch_prompt_template</td><td class="ptype">内置</td><td>发送给管家的中继调度系统提示词模板。</td></tr>
+            </tbody>
+          </table>
+          <p style="margin-top:14px;font-size:13.5px">调度模板支持占位符：<code>{user_input_block}</code>（用户原话块）、<code>{maid_request_block}</code>（自包含任务需求块）。</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- SubAgent 配置 -->
+    <section id="subagent">
+      <h2>SubAgent 配置示例</h2>
+      <p>在 AstrBot 全局配置或管理面板中配置一个 SubAgent。<code>name</code> 与插件配置一致即可，插件对名称做大小写适配，匹配不到时回退到第一个可用 SubAgent。</p>
+      <p>右栏「配置」标签页提供可复制的最小化 yaml 示例。</p>
+    </section>
+
+  </main>
+
+  <!-- 右栏代码面板 -->
+  <aside class="codepane">
+    <div class="cp-title">调用示例</div>
+    <div class="cp-sub">工具与命令的使用方式</div>
+    <div class="lang-tabs" id="langTabs">
+      <button class="lang-tab active" data-lang="chat">聊天</button>
+      <button class="lang-tab" data-lang="tool">工具调用</button>
+      <button class="lang-tab" data-lang="config">配置</button>
+    </div>
+
+    <div class="code-block active" data-lang="chat">
+      <div class="cb-item">
+        <div class="cb-label"><span>查看后台任务状态</span><button class="copy-btn">复制</button></div>
+        <pre><code><span class="tk-n">/maid status</span></code></pre>
+      </div>
+      <div class="cb-item">
+        <div class="cb-label"><span>停止后台任务</span><button class="copy-btn">复制</button></div>
+        <pre><code><span class="tk-n">/maid stop</span></code></pre>
+      </div>
+    </div>
+
+    <div class="code-block" data-lang="tool">
+      <div class="cb-item">
+        <div class="cb-label"><span>call_maid 发起任务</span><button class="copy-btn">复制</button></div>
+        <pre><code><span class="tk-p">{</span>
+  <span class="tk-s">"name"</span><span class="tk-p">:</span> <span class="tk-s">"call_maid"</span><span class="tk-p">,</span>
+  <span class="tk-s">"arguments"</span><span class="tk-p">:</span> <span class="tk-p">{</span>
+    <span class="tk-s">"request_text"</span><span class="tk-p">:</span> <span class="tk-s">"帮我查一下今天深圳的天气并总结"</span><span class="tk-p">,</span>
+    <span class="tk-s">"agent_name"</span><span class="tk-p">:</span> <span class="tk-s">"muiceagent"</span>
+  <span class="tk-p">}</span>
+<span class="tk-p">}</span></code></pre>
+      </div>
+      <div class="cb-item">
+        <div class="cb-label"><span>call_maid 批量任务</span><button class="copy-btn">复制</button></div>
+        <pre><code><span class="tk-p">{</span>
+  <span class="tk-s">"name"</span><span class="tk-p">:</span> <span class="tk-s">"call_maid"</span><span class="tk-p">,</span>
+  <span class="tk-s">"arguments"</span><span class="tk-p">:</span> <span class="tk-p">{</span>
+    <span class="tk-s">"tasks"</span><span class="tk-p">:</span> <span class="tk-p">[</span>
+      <span class="tk-p">{</span><span class="tk-s">"request_text"</span><span class="tk-p">:</span> <span class="tk-s">"整理下载目录"</span><span class="tk-p">}</span><span class="tk-p">,</span>
+      <span class="tk-p">{</span><span class="tk-s">"request_text"</span><span class="tk-p">:</span> <span class="tk-s">"汇总本周日程"</span><span class="tk-p">,</span> <span class="tk-s">"run_in_background"</span><span class="tk-p">:</span> <span class="tk-k">true</span><span class="tk-p">}</span>
+    <span class="tk-p">]</span>
+  <span class="tk-p">}</span>
+<span class="tk-p">}</span></code></pre>
+      </div>
+      <div class="cb-item">
+        <div class="cb-label"><span>maid_task 读取结果</span><button class="copy-btn">复制</button></div>
+        <pre><code><span class="tk-p">{</span>
+  <span class="tk-s">"name"</span><span class="tk-p">:</span> <span class="tk-s">"maid_task"</span><span class="tk-p">,</span>
+  <span class="tk-s">"arguments"</span><span class="tk-p">:</span> <span class="tk-p">{</span>
+    <span class="tk-s">"action"</span><span class="tk-p">:</span> <span class="tk-s">"result"</span><span class="tk-p">,</span>
+    <span class="tk-s">"task_id"</span><span class="tk-p">:</span> <span class="tk-s">"task-xxxx"</span><span class="tk-p">,</span>
+    <span class="tk-s">"block"</span><span class="tk-p">:</span> <span class="tk-k">true</span><span class="tk-p">,</span>
+    <span class="tk-s">"timeout_ms"</span><span class="tk-p">:</span> <span class="tk-m">30000</span>
+  <span class="tk-p">}</span>
+<span class="tk-p">}</span></code></pre>
+      </div>
+    </div>
+
+    <div class="code-block" data-lang="config">
+      <div class="cb-item">
+        <div class="cb-label"><span>插件配置 config</span><button class="copy-btn">复制</button></div>
+        <pre><code><span class="tk-f">default_agent_name</span><span class="tk-p">:</span> <span class="tk-s">"muiceagent"</span>
+<span class="tk-f">allowed_agent_names</span><span class="tk-p">:</span> <span class="tk-p">[</span><span class="tk-s">"muiceagent"</span><span class="tk-p">]</span>
+<span class="tk-f">hide_native_tools</span><span class="tk-p">:</span> <span class="tk-k">true</span>
+<span class="tk-f">hide_transfer_tools</span><span class="tk-p">:</span> <span class="tk-k">true</span>
+<span class="tk-f">include_raw_user_input</span><span class="tk-p">:</span> <span class="tk-k">true</span>
+<span class="tk-f">foreground_timeout_seconds</span><span class="tk-p">:</span> <span class="tk-m">50</span>
+<span class="tk-f">memory_agent_names</span><span class="tk-p">:</span> <span class="tk-p">[]</span>
+<span class="tk-f">max_active_per_umo</span><span class="tk-p">:</span> <span class="tk-m">5</span>
+<span class="tk-f">max_active_global</span><span class="tk-p">:</span> <span class="tk-m">20</span>
+<span class="tk-f">retention_days</span><span class="tk-p">:</span> <span class="tk-m">30</span></code></pre>
+      </div>
+      <div class="cb-item">
+        <div class="cb-label"><span>SubAgent 配置示例</span><button class="copy-btn">复制</button></div>
+        <pre><code><span class="tk-f">subagent_orchestrator</span><span class="tk-p">:</span>
+  <span class="tk-f">agents</span><span class="tk-p">:</span>
+    <span class="tk-p">-</span> <span class="tk-f">name</span><span class="tk-p">:</span> <span class="tk-s">muiceagent</span>
+      <span class="tk-f">enabled</span><span class="tk-p">:</span> <span class="tk-k">true</span>
+      <span class="tk-f">system_prompt</span><span class="tk-p">:</span> <span class="tk-p">|</span>
+        <span class="tk-n">你是运行在 AstrBot 中的 MuiceAgent，</span>
+        <span class="tk-n">作为子代理接收主代理指令并实际执行。</span>
+        <span class="tk-n">零上下文启动，严格遵循 task 描述，</span>
+        <span class="tk-n">主动决策，结果导向。</span></code></pre>
+      </div>
+    </div>
+  </aside>
+</div>
+
+<script>
+(function(){
+  var tabs = document.querySelectorAll('.lang-tab');
+  var blocks = document.querySelectorAll('.code-block');
+  function setLang(lang){
+    tabs.forEach(function(t){ t.classList.toggle('active', t.dataset.lang===lang); });
+    blocks.forEach(function(b){ b.classList.toggle('active', b.dataset.lang===lang); });
+    try{ localStorage.setItem('maid_doc_lang', lang); }catch(e){}
+  }
+  tabs.forEach(function(t){ t.addEventListener('click', function(){ setLang(t.dataset.lang); }); });
+  try{ var saved = localStorage.getItem('maid_doc_lang'); if(saved){ setLang(saved); } }catch(e){}
+
+  document.querySelectorAll('.copy-btn').forEach(function(btn){
+    btn.addEventListener('click', function(){
+      var pre = btn.closest('.cb-item').querySelector('pre');
+      var text = pre ? pre.innerText : '';
+      function done(){ btn.textContent='已复制'; btn.classList.add('done'); setTimeout(function(){ btn.textContent='复制'; btn.classList.remove('done'); },1600); }
+      if(navigator.clipboard && navigator.clipboard.writeText){
+        navigator.clipboard.writeText(text).then(done).catch(function(){ fallback(); });
+      } else { fallback(); }
+      function fallback(){
+        var ta=document.createElement('textarea'); ta.value=text; document.body.appendChild(ta);
+        ta.select(); try{ document.execCommand('copy'); }catch(e){} document.body.removeChild(ta); done();
+      }
+    });
+  });
+
+  var links = Array.prototype.slice.call(document.querySelectorAll('.nav-link'));
+  var map = {};
+  links.forEach(function(l){ var id=l.getAttribute('href').slice(1); if(id) map[id]=l; });
+  var sections = Object.keys(map).map(function(id){ return document.getElementById(id); }).filter(Boolean);
+  function onScroll(){
+    var pos = window.scrollY + 120, current=null;
+    sections.forEach(function(s){ if(s.offsetTop<=pos) current=s.id; });
+    links.forEach(function(l){ l.classList.remove('active'); });
+    if(current && map[current]) map[current].classList.add('active');
+  }
+  window.addEventListener('scroll', onScroll, {passive:true});
+  onScroll();
+
+  links.forEach(function(l){
+    l.addEventListener('click', function(e){
+      var id=l.getAttribute('href').slice(1); var el=document.getElementById(id);
+      if(el){ e.preventDefault(); window.scrollTo({top: el.offsetTop-20, behavior:'smooth'}); closeNav(); }
+    });
+  });
+
+  var sidenav=document.getElementById('sidenav');
+  var toggle=document.getElementById('menuToggle');
+  function closeNav(){ sidenav.classList.remove('open'); }
+  if(toggle){ toggle.addEventListener('click', function(){ sidenav.classList.toggle('open'); }); }
+  document.addEventListener('click', function(e){
+    if(window.innerWidth<=760 && sidenav.classList.contains('open') && !sidenav.contains(e.target) && e.target!==toggle){ closeNav(); }
+  });
+})();
+</script>
+</body>
+</html>

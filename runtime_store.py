@@ -75,6 +75,16 @@ def _new_task_id() -> str:
     return uuid.uuid4().hex
 
 
+def build_fallback_title(request_text: str, max_length: int = 48) -> str:
+    """Build a compact local title while the optional LLM title is pending."""
+    title = " ".join(str(request_text or "").split())
+    if not title:
+        return "未命名任务"
+    if len(title) <= max_length:
+        return title
+    return f"{title[: max_length - 1].rstrip()}…"
+
+
 def _validate_hex_id(value: str, label: str) -> str:
     normalized = (value or "").strip().casefold()
     if not _AGENT_ID_RE.fullmatch(normalized):
@@ -238,6 +248,7 @@ class AgentMeta:
     unified_msg_origin: str
     agent_name: str
     sender_id: str
+    title: str = ""
     created_at: str = field(default_factory=iso_now)
     updated_at: str = field(default_factory=iso_now)
     active_task_id: str = ""
@@ -254,6 +265,7 @@ class AgentMeta:
             unified_msg_origin=str(data.get("unified_msg_origin") or ""),
             agent_name=str(data.get("agent_name") or ""),
             sender_id=str(data.get("sender_id") or ""),
+            title=str(data.get("title") or ""),
             created_at=str(data.get("created_at") or iso_now()),
             updated_at=str(data.get("updated_at") or iso_now()),
             active_task_id=str(data.get("active_task_id") or ""),
@@ -315,6 +327,7 @@ class RuntimeStore:
         unified_msg_origin: str,
         agent_name: str,
         sender_id: str,
+        title: str = "",
     ) -> AgentMeta:
         agent_id = _new_agent_id()
         meta = AgentMeta(
@@ -322,6 +335,7 @@ class RuntimeStore:
             unified_msg_origin=unified_msg_origin,
             agent_name=agent_name,
             sender_id=sender_id,
+            title=title,
         )
         async with self._lock:
             self._agent_dir(agent_id).mkdir(parents=True, exist_ok=True)
@@ -344,6 +358,20 @@ class RuntimeStore:
         async with self._lock:
             _atomic_write_json(self._agent_meta_path(meta.agent_id), meta.to_dict())
         return meta
+
+    async def update_agent_title(self, agent_id: str, title: str) -> AgentMeta | None:
+        """Persist display metadata without changing the activity timestamp."""
+        normalized = " ".join(str(title or "").split()).strip()
+        if not normalized:
+            return await self.load_agent(agent_id)
+        async with self._lock:
+            data = _read_json(self._agent_meta_path(agent_id))
+            if data is None:
+                return None
+            meta = AgentMeta.from_dict(data)
+            meta.title = normalized
+            _atomic_write_json(self._agent_meta_path(agent_id), meta.to_dict())
+            return meta
 
     async def write_agent_meta_raw(self, meta: AgentMeta) -> AgentMeta:
         """Write agent meta without refreshing updated_at (for backdating in
@@ -713,6 +741,7 @@ class RuntimeStore:
                 data = _read_json(entry)
                 if data is not None:
                     runs.append(RunMeta.from_dict(data))
+        runs.sort(key=lambda run: (run.created_at, run.task_id))
         return runs
 
     async def find_run(self, task_id: str) -> tuple[AgentMeta, RunMeta] | None:
@@ -844,6 +873,8 @@ class RuntimeStore:
                 if meta_data is None:
                     continue
                 meta = AgentMeta.from_dict(meta_data)
+                meta_changed = False
+                agent_reconciled: list[RunMeta] = []
                 runs_dir = self._runs_dir(agent_id)
                 if runs_dir.exists():
                     for entry in runs_dir.iterdir():
@@ -865,6 +896,7 @@ class RuntimeStore:
                         run.notification = None
                         _atomic_write_json(entry, run.to_dict())
                         reconciled.append(run)
+                        agent_reconciled.append(run)
                 if meta.active_task_id:
                     active_data = _read_json(
                         self._run_meta_path(agent_id, meta.active_task_id)
@@ -872,14 +904,16 @@ class RuntimeStore:
                     active_run = RunMeta.from_dict(active_data) if active_data else None
                     if active_run is None or active_run.status not in ACTIVE_RUN_STATUSES:
                         meta.active_task_id = ""
-                if any(run.agent_id == agent_id for run in reconciled):
+                        meta_changed = True
+                if agent_reconciled:
                     meta.active_task_id = ""
                     meta.last_status = "interrupted"
-                    meta.last_task_id = next(
-                        run.task_id for run in reversed(reconciled) if run.agent_id == agent_id
-                    )
-                meta.updated_at = iso_now()
-                _atomic_write_json(self._agent_meta_path(agent_id), meta.to_dict())
+                    latest = max(agent_reconciled, key=lambda run: (run.updated_at, run.task_id))
+                    meta.last_task_id = latest.task_id
+                    meta.updated_at = latest.updated_at
+                    meta_changed = True
+                if meta_changed:
+                    _atomic_write_json(self._agent_meta_path(agent_id), meta.to_dict())
         if reconciled:
             logger.warning(
                 "[大小姐模式] 启动时收敛 %d 个遗留 runtime run 为 interrupted: %s",

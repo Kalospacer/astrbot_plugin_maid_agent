@@ -11,7 +11,13 @@ from typing import TYPE_CHECKING, Any, Protocol
 
 from astrbot.api import logger
 
-from .runtime_store import AgentMeta, RunMeta, RuntimeStore, _new_task_id
+from .runtime_store import (
+    AgentMeta,
+    RunMeta,
+    RuntimeStore,
+    _new_task_id,
+    build_fallback_title,
+)
 
 if TYPE_CHECKING:
     from astrbot.api.event import AstrMessageEvent
@@ -119,6 +125,7 @@ class _ChildRunner(Protocol):
 
 RunnerFactory = Callable[[RunMeta, "AstrMessageEvent", dict[str, Any]], Awaitable[_ChildRunner]]
 TerminalCallback = Callable[[RunMeta], Awaitable[None]]
+AgentCreatedCallback = Callable[[AgentMeta, str], None]
 
 
 class RuntimeOrchestrator:
@@ -135,6 +142,7 @@ class RuntimeOrchestrator:
         self.config = config
         self._runner_factory = runner_factory
         self._terminal_callback: TerminalCallback | None = None
+        self._agent_created_callback: AgentCreatedCallback | None = None
         self._lock = asyncio.Lock()
         self._active_tasks: dict[str, asyncio.Task[RunMeta | None]] = {}
         self._active_task_ids: dict[str, str] = {}
@@ -150,6 +158,21 @@ class RuntimeOrchestrator:
 
     def set_terminal_callback(self, callback: TerminalCallback) -> None:
         self._terminal_callback = callback
+
+    def set_agent_created_callback(self, callback: AgentCreatedCallback) -> None:
+        self._agent_created_callback = callback
+
+    def _notify_agent_created(self, agent: AgentMeta, request_text: str) -> None:
+        if self._agent_created_callback is None:
+            return
+        try:
+            self._agent_created_callback(agent, request_text)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "[大小姐模式] 调度任务标题生成失败: agent_id=%s err=%s",
+                agent.agent_id,
+                exc,
+            )
 
     @property
     def max_active_per_umo(self) -> int:
@@ -294,6 +317,7 @@ class RuntimeOrchestrator:
                         unified_msg_origin=umo,
                         agent_name=request.agent_name,
                         sender_id=sender_id,
+                        title=build_fallback_title(request.request_text),
                     )
                     created_agent_ids.append(agent.agent_id)
                     mode = MODE_BACKGROUND if request.run_in_background else MODE_FOREGROUND
@@ -328,6 +352,8 @@ class RuntimeOrchestrator:
                 self._release_reservation_unlocked(umo, len(normalized))
                 raise
 
+        for agent, _run, request in created:
+            self._notify_agent_created(agent, request.request_text)
         started = [
             await self._start_execution(agent, run, event, runner_payload or {})
             for agent, run, _ in created
@@ -364,6 +390,7 @@ class RuntimeOrchestrator:
                     unified_msg_origin=umo,
                     agent_name=agent_name,
                     sender_id=sender_id,
+                    title=build_fallback_title(request_text),
                 )
                 mode = MODE_BACKGROUND if run_in_background else MODE_FOREGROUND
                 run = await self.store.create_run(
@@ -382,6 +409,7 @@ class RuntimeOrchestrator:
                     )
                 )
                 await self.store.set_active_task(agent.agent_id, run.task_id, STATUS_STARTING)
+                self._notify_agent_created(agent, request_text)
             except Exception:
                 self._release_reservation_unlocked(umo)
                 raise

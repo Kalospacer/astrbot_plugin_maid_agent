@@ -494,6 +494,11 @@ function getSelectedAgent() {
   return state.runtimeAgents.find((agent) => agent.agent_id === state.selectedAgentId) || null;
 }
 
+function displayAgentTitle(agent) {
+  if (!agent) return "";
+  return agent.title || `${aliasForAgentId(agent.agent_id)} · ${agent.agent_name}`;
+}
+
 function getSelectedRuns() {
   if (!state.selectedAgentId) return [];
   return [...(state.runtimeRuns[state.selectedAgentId] || [])].sort(
@@ -747,8 +752,10 @@ function buildSessionListFingerprint() {
       [
         agent.agent_id,
         agent.agent_name,
+        agent.title,
         agent.last_status,
         agent.updated_at,
+        agent.last_run_at,
         agent.run_count,
         agent.pending_notification ? 1 : 0,
         agent.active_task_id,
@@ -797,7 +804,10 @@ function updateSessionList() {
 
   const runtimeAgents = state.runtimeAgents
     .filter((agent) => agent.unified_msg_origin === state.selectedUmo)
-    .sort((a, b) => new Date(b.updated_at) - new Date(a.updated_at));
+    .sort(
+      (a, b) =>
+        new Date(b.last_run_at || b.updated_at) - new Date(a.last_run_at || a.updated_at),
+    );
 
   if (runtimeAgents.length === 0) {
     list.innerHTML = `<div class="empty-state">暂无 Agent 会话</div>`;
@@ -812,9 +822,10 @@ function updateSessionList() {
       const runCountLabel = agent.run_count > 1 ? `${agent.run_count} runs` : `${agent.run_count || 0} run`;
       const pendingLabel = agent.pending_notification ? " · 待通知" : "";
       const subtitle = [
+        agent.agent_name,
         agent.last_status || "unknown",
         runCountLabel,
-        formatTime(agent.updated_at),
+        formatTime(agent.last_run_at || agent.updated_at),
       ]
         .filter(Boolean)
         .join(" · ");
@@ -822,7 +833,7 @@ function updateSessionList() {
         <div class="session-item ${agent.agent_id === state.selectedAgentId ? "active" : ""} ${deleting ? "delete-armed" : ""}"
              data-id="${escapeHtml(agent.agent_id)}">
           <div class="session-copy">
-            <div class="session-title">${escapeHtml(aliasForAgentId(agent.agent_id))} · ${escapeHtml(agent.agent_name)}</div>
+            <div class="session-title">${escapeHtml(displayAgentTitle(agent))}</div>
             <small><span class="status-dot status-${escapeHtml(agent.last_status || "")}"></span>${escapeHtml(subtitle)}${escapeHtml(pendingLabel)}</small>
           </div>
           <div class="session-actions">
@@ -855,9 +866,7 @@ function renderChatHeader() {
   const node = $("#chatTitle");
   if (!node) return;
   const agent = getSelectedAgent();
-  node.textContent = agent
-    ? `${aliasForAgentId(agent.agent_id)} · ${agent.agent_name}`
-    : "";
+  node.textContent = displayAgentTitle(agent);
 }
 
 function renderChatFeed() {
@@ -1298,15 +1307,13 @@ function renderInspector() {
   }
 
   if (!agent || !task) {
-    $("#inspectorTitle").textContent = agent
-      ? `${aliasForAgentId(agent.agent_id)} · ${agent.agent_name}`
-      : "未选择";
+    $("#inspectorTitle").textContent = displayAgentTitle(agent) || "未选择";
     $("#taskFacts").innerHTML = agent
       ? `
-        <dt>Agent</dt><dd>${escapeHtml(aliasForAgentId(agent.agent_id))} · ${escapeHtml(agent.agent_name)}</dd>
+        <dt>Agent</dt><dd>${escapeHtml(displayAgentTitle(agent))}</dd>
         <dt>来源 UMO</dt><dd>${escapeHtml(agent.unified_msg_origin)}</dd>
         <dt>Run 数</dt><dd>${escapeHtml(agent.run_count ?? runs.length)}</dd>
-        <dt>更新时间</dt><dd>${escapeHtml(formatTime(agent.updated_at))}</dd>
+        <dt>任务时间</dt><dd>${escapeHtml(formatTime(agent.last_run_at || agent.updated_at))}</dd>
       `
       : "";
     $("#rawRequest").textContent = "";
@@ -1317,14 +1324,16 @@ function renderInspector() {
   }
 
   $("#inspectorTitle").textContent = compactId(task.task_id);
+  const taskTimeLabel = task.ended_at ? "完成时间" : "更新时间";
+  const taskTime = task.ended_at || task.updated_at;
   $("#taskFacts").innerHTML = `
     <dt>状态</dt><dd>${escapeHtml(task.status)}</dd>
     <dt>类型</dt><dd>run</dd>
-    <dt>Agent</dt><dd>${escapeHtml(aliasForAgentId(task.agent_id || agent.agent_id))} · ${escapeHtml(task.agent_name || agent.agent_name)}</dd>
+    <dt>Agent</dt><dd>${escapeHtml(displayAgentTitle(agent))}</dd>
     <dt>模式</dt><dd>${escapeHtml(task.mode || "")}</dd>
     <dt>通知</dt><dd>${escapeHtml(task.notification?.notification_id || "-")}</dd>
     <dt>来源 UMO</dt><dd>${escapeHtml(task.unified_msg_origin || agent.unified_msg_origin)}</dd>
-    <dt>更新时间</dt><dd>${escapeHtml(formatTime(task.updated_at))}</dd>
+    <dt>${taskTimeLabel}</dt><dd>${escapeHtml(formatTime(taskTime))}</dd>
   `;
   if ($("#stopButton")) {
     $("#stopButton").disabled = !["starting", "running"].includes(task.status);
@@ -1647,6 +1656,15 @@ window.handleSseMessage = async function handleSseMessage(event) {
 
   if (data.type === "reset") {
     await refreshConsole({ silent: true, keepSession: true });
+    return;
+  }
+
+  if (data.type === "runtime_title" && data.agent_id) {
+    await loadRuntimeAgents({ force: true });
+    if (state.selectedAgentId === data.agent_id) {
+      renderChatHeader();
+      renderInspector();
+    }
     return;
   }
 

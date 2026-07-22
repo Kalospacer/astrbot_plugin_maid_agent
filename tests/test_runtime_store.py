@@ -101,6 +101,45 @@ def test_run_lifecycle_atomic_finalize_with_notification(tmp_path, monkeypatch):
     asyncio.run(_run_lifecycle(_make_store(tmp_path, monkeypatch)))
 
 
+async def _agent_title_persists_without_touching_activity(store):
+    agent = await store.create_agent(
+        unified_msg_origin="umo1",
+        agent_name="butler",
+        sender_id="u1",
+        title="原始任务要求",
+    )
+    original_updated_at = agent.updated_at
+    updated = await store.update_agent_title(agent.agent_id, "LLM 总结标题")
+    assert updated is not None
+    assert updated.title == "LLM 总结标题"
+    assert updated.updated_at == original_updated_at
+
+    reloaded = await store.load_agent(agent.agent_id)
+    assert reloaded is not None
+    assert reloaded.title == "LLM 总结标题"
+    assert reloaded.updated_at == original_updated_at
+
+
+def test_agent_title_persists_without_touching_activity(tmp_path, monkeypatch):
+    asyncio.run(_agent_title_persists_without_touching_activity(_make_store(tmp_path, monkeypatch)))
+
+
+async def _list_runs_uses_creation_time_not_random_task_id(store):
+    agent = await store.create_agent(
+        unified_msg_origin="umo1", agent_name="butler", sender_id="u1"
+    )
+    older = await store.create_run(_make_run(agent.agent_id, "f" * 32))
+    await asyncio.sleep(0.001)
+    newer = await store.create_run(_make_run(agent.agent_id, "0" * 32))
+
+    runs = await store.list_runs(agent.agent_id)
+    assert [run.task_id for run in runs] == [older.task_id, newer.task_id]
+
+
+def test_list_runs_uses_creation_time_not_random_task_id(tmp_path, monkeypatch):
+    asyncio.run(_list_runs_uses_creation_time_not_random_task_id(_make_store(tmp_path, monkeypatch)))
+
+
 async def _terminal_without_notification_is_not_refinalized(store):
     agent = await store.create_agent(
         unified_msg_origin="umo1", agent_name="butler", sender_id="u1"
@@ -290,6 +329,37 @@ async def _reconcile(store):
 
 def test_reconcile_on_restart_collapses_running_to_interrupted(tmp_path, monkeypatch):
     asyncio.run(_reconcile(_make_store(tmp_path, monkeypatch)))
+
+
+async def _reconcile_preserves_completed_timestamps(store):
+    agent = await store.create_agent(
+        unified_msg_origin="umo1", agent_name="butler", sender_id="u1"
+    )
+    run = await store.create_run(_make_run(agent.agent_id, "9" * 32))
+    await store.set_active_task(agent.agent_id, run.task_id, "starting")
+    finalized = await store.finalize_run(
+        agent.agent_id,
+        run.task_id,
+        status="completed",
+        result="done",
+    )
+    assert finalized is not None
+    before = await store.load_agent(agent.agent_id)
+    assert before is not None
+
+    await asyncio.sleep(0.001)
+    assert await store.reconcile_on_restart() == []
+
+    after = await store.load_agent(agent.agent_id)
+    reloaded_run = await store.load_run(agent.agent_id, run.task_id)
+    assert after is not None
+    assert reloaded_run is not None
+    assert after.updated_at == before.updated_at
+    assert reloaded_run.ended_at == finalized.ended_at
+
+
+def test_reconcile_preserves_completed_timestamps(tmp_path, monkeypatch):
+    asyncio.run(_reconcile_preserves_completed_timestamps(_make_store(tmp_path, monkeypatch)))
 
 
 async def _prune(store):

@@ -179,6 +179,41 @@ def test_explicit_background_returns_immediately(tmp_path, monkeypatch):
     asyncio.run(_explicit_background_returns_immediately(tmp_path, monkeypatch))
 
 
+async def _new_agent_persists_fallback_title_and_notifies(tmp_path, monkeypatch):
+    store = _make_store(tmp_path, monkeypatch)
+    runner = _ScriptedRunner(result="done")
+    orch = RuntimeOrchestrator(store, _FakeConfig(), runner_factory=None)
+    created: list[tuple[str, str]] = []
+
+    async def _factory(run, event, payload):
+        return runner
+
+    orch._runner_factory = _factory
+    orch.set_agent_created_callback(
+        lambda agent, request_text: created.append((agent.agent_id, request_text))
+    )
+    request_text = "分析并修复 WebUI 任务完成时间持久化问题"
+    outcome = await orch.dispatch_single(
+        event=_make_event(),
+        request=DispatchRequest(
+            request_text=request_text,
+            agent_name="butler",
+            run_in_background=True,
+        ),
+    )
+    meta = await store.load_agent(outcome.agent_id)
+    assert meta is not None
+    assert meta.title == request_text
+    assert created == [(outcome.agent_id, request_text)]
+
+    runner.release()
+    await orch.wait_for_idle()
+
+
+def test_new_agent_persists_fallback_title_and_notifies(tmp_path, monkeypatch):
+    asyncio.run(_new_agent_persists_fallback_title_and_notifies(tmp_path, monkeypatch))
+
+
 async def _immediate_background_completion_releases_capacity(tmp_path, monkeypatch):
     store = _make_store(tmp_path, monkeypatch)
     runner = _ScriptedRunner(result="instant")

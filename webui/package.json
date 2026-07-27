@@ -1,0 +1,19 @@
+{
+  "name": "maid-agent-console",
+  "private": true,
+  "version": "1.4.1",
+  "type": "module",
+  "description": "代理女仆 Console —— AstrBot 插件页前端源码，构建产物输出到 ../pages/console",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "vue": "^3.5.13"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-vue": "^5.2.1",
+    "vite": "^6.0.7"
+  }
+}

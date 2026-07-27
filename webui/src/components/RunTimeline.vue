@@ -10,7 +10,7 @@ const props = defineProps({
   agentId: { type: String, default: "" },
 });
 
-const emit = defineEmits(["stop", "rewind", "fork", "result", "inspect"]);
+const emit = defineEmits(["stop", "rewind", "fork", "inspect"]);
 
 const scroller = ref(null);
 const sentinel = ref(null);
@@ -64,7 +64,6 @@ defineExpose({ scrollToBottom });
           @stop="emit('stop', view)"
           @rewind="emit('rewind', view)"
           @fork="emit('fork', view)"
-          @result="emit('result', view)"
           @inspect="emit('inspect', view)"
         />
 

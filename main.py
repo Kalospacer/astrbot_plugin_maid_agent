@@ -955,6 +955,12 @@ class MaidAgent(Star):
                 "Rerun maid task from dashboard",
             ),
             (
+                f"{prefix}/actions/fork",
+                self.console_fork,
+                ["POST"],
+                "Fork an agent's transcript onto a fresh agent",
+            ),
+            (
                 f"{prefix}/actions/rewind",
                 self.console_rewind,
                 ["POST"],
@@ -1505,6 +1511,41 @@ class MaidAgent(Star):
             return self._console_ok({"outcome": outcome.to_dict()}, "已用该请求新建 Agent。")
         except Exception as exc:
             return self._console_error(str(exc))
+
+    async def console_fork(self):
+        """Fork an agent: copy its effective transcript onto a fresh agent.
+
+        对齐 Claude Code 的 Fork 语义——保留本轮及之前的对话，新开一个 Agent 继续。
+        后台只复制 transcript（已回溯的 run 不复制），不创建 run；fork 出来的 agent
+        空闲着，等用户在它身上发消息。
+        """
+        try:
+            body = await self._console_json_body()
+            agent_id = str(body.get("agent_id") or "").strip()
+            if not agent_id:
+                return self._console_error("需要 agent_id。")
+            source = await self.runtime_store.load_agent(agent_id)
+            if source is None:
+                return self._console_error("agent 不存在。", status_code=404)
+            event = self._create_dashboard_event(
+                unified_msg_origin=source.unified_msg_origin,
+                sender_id=source.sender_id,
+                message_text="",
+            )
+            forked = await self.orchestrator.fork_agent(
+                source_agent_id=agent_id,
+                event=event,
+            )
+        except ValueError as exc:
+            return self._console_error(str(exc), status_code=400)
+        except Exception as exc:  # noqa: BLE001
+            return self._console_error(str(exc))
+
+        await self.sse_hub.publish({"type": "reset", "reason": "fork"})
+        return self._console_ok(
+            {"outcome": {"agent_id": forked.agent_id}},
+            "已 Fork Agent。",
+        )
 
     async def console_rewind(self):
         """Rewind an agent to the state right before a given run.

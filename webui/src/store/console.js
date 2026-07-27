@@ -319,13 +319,13 @@ export async function stopRun(taskId) {
   }
 }
 
-export async function forkRun(taskId) {
+export async function forkRun(agentId) {
   try {
-    const res = await apiPost("console/actions/rerun", { task_id: taskId });
-    if (!res.outcome) throw new Error(res.error || "Fork 失败");
+    const res = await apiPost("console/actions/fork", { agent_id: agentId });
+    if (!res.outcome?.agent_id) throw new Error(res.error || "Fork 失败");
     await refresh({ silent: true, keepSession: false });
     await selectAgent(res.outcome.agent_id);
-    toast("已用该请求新建 Agent");
+    toast("已 Fork：复制当前对话到一个新 Agent");
     return res.outcome.agent_id;
   } catch (err) {
     toastError(err, "Fork 失败");
@@ -352,21 +352,6 @@ export async function rewindToRun(agentId, taskId) {
   } catch (err) {
     toastError(err, "回溯失败");
     return false;
-  }
-}
-
-export async function readRunResult(agentId, taskId) {
-  try {
-    const res = await apiPost("console/actions/result", {
-      agent_id: agentId,
-      task_id: taskId,
-      block: false,
-      timeout_ms: 0,
-    });
-    toast(res.outcome?.query_status || res.outcome?.status || "已查询");
-    await refresh({ silent: true, keepSession: true });
-  } catch (err) {
-    toastError(err, "读取结果失败");
   }
 }
 

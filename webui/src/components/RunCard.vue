@@ -1,9 +1,10 @@
 <script setup>
-import { computed, onBeforeUnmount, ref } from "vue";
+import { computed, ref } from "vue";
 
 import MarkdownBody from "@/components/MarkdownBody.vue";
 import TraceStep from "@/components/TraceStep.vue";
 import { useClock } from "@/composables/useClock";
+import { useTimedConfirm } from "@/composables/useTimedConfirm";
 import { copyText } from "@/composables/useCopy";
 import { displayUserText, formatDuration } from "@/utils/format";
 import { STOPPABLE_STATUSES, countToolSteps } from "@/utils/trace";
@@ -14,7 +15,7 @@ const props = defineProps({
   mistressName: { type: String, default: "" },
 });
 
-const emit = defineEmits(["stop", "rewind", "fork", "result", "inspect"]);
+const emit = defineEmits(["stop", "rewind", "fork", "inspect"]);
 
 const now = useClock();
 
@@ -37,10 +38,6 @@ const duration = computed(() =>
 );
 
 const canStop = computed(() => STOPPABLE_STATUSES.has(props.view.status));
-const pendingNotification = computed(() => {
-  const notification = props.view.run?.notification;
-  return Boolean(notification && !notification.delivered);
-});
 
 const requestFull = computed(() => String(props.view.userText || ""));
 const requestShown = computed(() =>
@@ -49,25 +46,8 @@ const requestShown = computed(() =>
 const requestTruncated = computed(() => requestShown.value !== requestFull.value);
 
 /* 回溯会改变下次 resume 的上下文，且没有反向操作，所以要求点两次确认。
-   与侧栏删除 Agent 用的是同一套「二次点击」约定。 */
-const rewindArmed = ref(false);
-let rewindArmTimer = 0;
-
-function onRewindClick() {
-  if (!rewindArmed.value) {
-    rewindArmed.value = true;
-    window.clearTimeout(rewindArmTimer);
-    rewindArmTimer = window.setTimeout(() => {
-      rewindArmed.value = false;
-    }, 3200);
-    return;
-  }
-  window.clearTimeout(rewindArmTimer);
-  rewindArmed.value = false;
-  emit("rewind");
-}
-
-onBeforeUnmount(() => window.clearTimeout(rewindArmTimer));
+   与侧栏删除 Agent 用的是同一套「两次点击 + 超时取消」约定（useTimedConfirm）。 */
+const { armed: rewindArmed, trigger: rewindTrigger } = useTimedConfirm();
 </script>
 
 <template>
@@ -90,9 +70,6 @@ onBeforeUnmount(() => window.clearTimeout(rewindArmTimer));
       <div class="run-actions">
         <button v-if="canStop" class="chip-btn is-danger" type="button" @click="emit('stop')">
           停止
-        </button>
-        <button v-if="pendingNotification" class="chip-btn" type="button" @click="emit('result')">
-          读取结果
         </button>
 
         <button
@@ -119,7 +96,7 @@ onBeforeUnmount(() => window.clearTimeout(rewindArmTimer));
               ? '运行中无法回溯，请先停止'
               : '丢弃本轮及之后的上下文，回到本轮开始前的状态'
           "
-          @click="onRewindClick"
+          @click="rewindTrigger() && emit('rewind')"
         >
           {{ rewindArmed ? "确认回溯" : "回溯到这里" }}
         </button>

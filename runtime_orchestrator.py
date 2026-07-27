@@ -276,6 +276,47 @@ class RuntimeOrchestrator:
             runner_payload=runner_payload or {},
         )
 
+    async def fork_agent(
+        self,
+        *,
+        source_agent_id: str,
+        event: AstrMessageEvent,
+    ) -> AgentMeta:
+        """Fork an agent: clone its effective transcript onto a fresh agent.
+
+        The new agent gets a new ``agent_id``, inherits ``unified_msg_origin`` /
+        ``agent_name`` / ``sender_id`` / ``title`` from the source, and its transcript
+        starts as a copy of the source's *effective* history (already-rewound runs
+        dropped). No run is created — the fork sits idle until the user sends a
+        message, which dispatches as a normal resume on the new agent.
+        """
+        normalized = (source_agent_id or "").strip().casefold()
+        if not normalized:
+            raise ValueError("source_agent_id 不能为空。")
+        umo = event.unified_msg_origin
+        async with self._lock:
+            source = await self.store.load_agent(normalized)
+            if source is None:
+                raise RunNotFoundError(f"未找到 agent: {normalized}")
+            if source.active_task_id:
+                raise AgentBusyError("源 Agent 仍有活跃 Run，请先停止后再 Fork。")
+            self._reserve_capacity_unlocked(umo, 1)
+            try:
+                forked = await self.store.create_agent(
+                    unified_msg_origin=umo,
+                    agent_name=source.agent_name,
+                    sender_id=source.sender_id,
+                    title=source.title or build_fallback_title(""),
+                )
+                await self.store.clone_transcript(
+                    source_agent_id=source.agent_id,
+                    target_agent_id=forked.agent_id,
+                )
+            except Exception:
+                self._release_reservation_unlocked(umo)
+                raise
+        return forked
+
     async def dispatch_batch(
         self,
         *,

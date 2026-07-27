@@ -717,6 +717,40 @@ class RuntimeStore:
             self._touch_agent_unlocked(agent_id)
             return after[len(before) :]
 
+    async def clone_transcript(
+        self,
+        *,
+        source_agent_id: str,
+        target_agent_id: str,
+    ) -> None:
+        """Copy a source agent's effective transcript onto a fresh agent.
+
+        Fork 的存储半边：读源 agent 的 transcript，按 rewind 折叠掉已回溯的部分，
+        把剩下的记录原样追加到目标 agent 的新 transcript。控制标记（run_start/run_end
+        等）一并复制，让目标 agent 的 resume 上下文与源 agent 当前有效状态一致。
+
+        目标 agent 目录必须已由 :meth:`create_agent` 建好。源 agent 不存在或无
+        transcript 时是 no-op，调用方决定是否报错。
+        """
+        normalized_source = _validate_hex_id(source_agent_id, "agent_id")
+        normalized_target = _validate_hex_id(target_agent_id, "agent_id")
+        if normalized_source == normalized_target:
+            raise ValueError("不能把 agent fork 到自身。")
+        async with self._lock:
+            source_path = self._transcript_path(normalized_source)
+            if not source_path.exists():
+                return
+            records, _ = fold_rewound_records(_read_jsonl(source_path))
+            if not records:
+                return
+            target_path = self._transcript_path(normalized_target)
+            target_path.parent.mkdir(parents=True, exist_ok=True)
+            # 一次性写空文件再逐条追加，复用 _append_jsonl 的换行/编码一致性。
+            target_path.write_text("", encoding="utf-8")
+            for record in records:
+                _append_jsonl(target_path, record)
+            self._touch_agent_unlocked(normalized_target)
+
     async def load_run_transcript(
         self,
         agent_id: str,

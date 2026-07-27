@@ -1,5 +1,36 @@
 # Changelog
 
+## 1.5.0 - 2026-07-27
+
+Console 前端从无构建的静态三件套重写为 Vue 3 + Vite 单页应用，修掉「停在某个焦点上会被自动刷新拽到底部」这类整页重绘导致的可用性问题；Run 操作按 Claude Code 语义重排为 复制 / 回溯 / Fork，并为「回溯」补上 append-only 的后端实现。
+
+### 新增
+
+- **Run 回溯（rewind）**：Run 卡片新增「回溯到这里」，把 Agent 退回该 Run 开始之前的状态——该 Run 及其之后的所有 Run 退出上下文，下次 resume 从更早的状态继续。实现是纯追加的：`rewind_to_run` 只往 `transcript.jsonl` 追加一条 `{"kind":"rewind","task_id":T}` 标记，折叠发生在读取时（`fold_rewound_records`），磁盘上一条记录都不删。因此被丢弃的 Run 仍可审计、回溯本身也能靠再追加一条标记撤销。被折叠的 Run 继续留在时间线上（虚线灰显 + 「已回溯」标签），但不再进入 `rebuild_contexts_for_resume`。新增 `POST console/actions/rewind`；Agent 有活跃 Run 时拒绝（409）。
+- **Vue 3 + Vite 前端工程**：源码位于 `webui/`，`npm run build` 产出到 `pages/console/`（构建产物入库，AstrBot 侧仍是零依赖静态托管）。`webui/dev/` 提供 mock bridge 与 fixtures，可在 AstrBot 之外直接 `npm run dev` 开发。
+- **Agent 任务标题**：新建 Agent 时先用请求文本生成本地兜底标题（`build_fallback_title`），随后 best-effort 调 LLM 生成简洁标题并经 SSE `runtime_title` 推送替换；LLM 不可用时保留兜底标题。标题持久化在 `agent.json` 的 `title` 字段。
+- **粘性滚动**：时间线只在用户本来就贴着底部时才自动跟随；上滑查看历史时新内容不再抢走视口，改为右下角「↓ N 条新内容」提示，点击才回到底部。
+
+### 修复
+
+- **插件在 Python 3.12 下 import 失败**：`main.py` 把 `AstrMessageEvent` 放在 `TYPE_CHECKING` 块里，而 AstrBot 的 `CommandFilter` 会对 handler 跑 `inspect.signature(..., eval_str=True)`（`astrbot/core/star/filter/command.py:68`），配合模块顶部的 `from __future__ import annotations` 直接 `NameError`，导致整个插件加载失败、`/maid status` 与 `/maid stop` 全部不可用。改为运行时别名 `AstrMessageEvent = CoreAstrMessageEvent`。
+- **焦点与滚动位置被轮询刷新打断**：旧前端每次同步都 `innerHTML` 全量重建对话流，展开的 trace 折叠回去、输入焦点丢失、视口被拽到底部。Vue 的 keyed 渲染只更新变化节点，上述状态不再受同步影响。
+
+### 变更
+
+- **Run 操作按 Claude Code 语义重排**：常驻 复制 / 回溯到这里 / Fork 三个操作。「复制」有结果时复制结果、否则复制请求；「Fork」用同一条请求新建 Agent（不带任何上下文，即原「重跑」的后端行为，仅更名）；「停止」与「读取结果」不再常驻，只在运行中 / 有待投递通知时出现。
+  - 原「重跑」名不副实：它调 `dispatch_single` 且不传 `resume_agent_id`，做的从来就是 fork 而非重跑。
+  - 「回溯」需连点两次确认（与侧栏删除 Agent 同一约定），运行中禁用。
+- `console/actions/rerun` 路由与请求/响应格式保持不变，仅前端展示改称 Fork。
+- transcript 与导出接口的每个 run 段新增 `rewound` 布尔字段。
+- metadata.yaml / pyproject.toml / webui/package.json / `__version__` 升至 1.5.0。
+
+### 不变
+
+- 不修改 AstrBot Core 任何文件。
+- `call_maid` / `maid_task` 的工具签名与语义不变。
+- 已有 `transcript.jsonl` 无需迁移：不含 rewind 标记的历史记录折叠后与原样一致。
+
 ## 1.4.1 - 2026-07-19
 
 Console 对话流补齐第三方角色「大小姐（主人格）」：主模型派给女仆的请求此前混入用户气泡并被前端过滤丢弃，现改为独立角色气泡，时间线呈现 用户 → 大小姐 → 女仆 三方对话。

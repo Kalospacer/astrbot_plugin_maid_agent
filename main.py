@@ -13,6 +13,7 @@ import asyncio
 import copy
 import json
 import uuid
+from collections.abc import Iterable
 from contextlib import suppress
 from dataclasses import asdict
 from inspect import isawaitable
@@ -68,6 +69,7 @@ from .runtime_orchestrator import (
     RuntimeOrchestrator,
 )
 from .runtime_store import (
+    CTRL_REWIND,
     CTRL_RUN_END,
     CTRL_RUN_START,
     CTRL_STEER,
@@ -75,6 +77,7 @@ from .runtime_store import (
     RunMeta,
     RuntimeStore,
     build_fallback_title,
+    fold_rewound_records,
 )
 from .sse_hub import SseHub
 from .toolset_adapter import (
@@ -947,6 +950,12 @@ class MaidAgent(Star):
                 "Rerun maid task from dashboard",
             ),
             (
+                f"{prefix}/actions/rewind",
+                self.console_rewind,
+                ["POST"],
+                "Rewind an agent to the state before a given run",
+            ),
+            (
                 f"{prefix}/actions/resume",
                 self.console_resume,
                 ["POST"],
@@ -1488,9 +1497,45 @@ class MaidAgent(Star):
                 ),
                 runner_payload={"true_user_input": run.request_text, "image_urls_raw": None},
             )
-            return self._console_ok({"outcome": outcome.to_dict()}, "已重新派发。")
+            return self._console_ok({"outcome": outcome.to_dict()}, "已用该请求新建 Agent。")
         except Exception as exc:
             return self._console_error(str(exc))
+
+    async def console_rewind(self):
+        """Rewind an agent to the state right before a given run.
+
+        Appends a rewind marker to the append-only transcript; the run and every
+        later one stop feeding the resume context but stay on disk for audit.
+        """
+        try:
+            body = await self._console_json_body()
+            agent_id = str(body.get("agent_id") or "").strip()
+            task_id = str(body.get("task_id") or "").strip()
+            if not agent_id or not task_id:
+                return self._console_error("需要 agent_id 和 task_id。")
+
+            meta = await self.runtime_store.load_agent(agent_id)
+            if meta is None:
+                return self._console_error("agent 不存在。", status_code=404)
+            if meta.active_task_id:
+                return self._console_error(
+                    "Agent 仍有活跃 Run，请先停止后再回溯。",
+                    status_code=409,
+                )
+            if await self.runtime_store.load_run(agent_id, task_id) is None:
+                return self._console_error("任务不存在。", status_code=404)
+
+            rewound = await self.runtime_store.rewind_to_run(agent_id, task_id)
+        except ValueError as exc:
+            return self._console_error(str(exc), status_code=400)
+        except Exception as exc:  # noqa: BLE001
+            return self._console_error(str(exc))
+
+        await self.sse_hub.publish({"type": "reset", "reason": "rewind", "agent_id": agent_id})
+        return self._console_ok(
+            {"agent_id": agent_id, "task_id": task_id, "rewound_task_ids": rewound},
+            f"已回溯：{len(rewound)} 个 Run 退出上下文。",
+        )
 
     async def console_settings_get(self):
         return self._console_ok(
@@ -1688,13 +1733,19 @@ class MaidAgent(Star):
         self,
         agent_id: str,
         records: list[dict[str, Any]],
+        rewound_task_ids: Iterable[str] = (),
     ) -> dict[str, Any]:
         """Split the agent's full transcript into per-run conversation segments.
 
         Records are attributed by, in order: the record's own ``task_id``, the
         currently open ``run_start`` segment, or the most recent segment.
         ``steer`` control records become user-side bubbles of their segment.
+
+        Rewound runs stay in the payload — the console greys them out rather
+        than making them vanish — but carry ``rewound: true`` so the frontend
+        knows they no longer feed the resume context.
         """
+        rewound = {str(task_id).strip().casefold() for task_id in rewound_task_ids}
         segments: dict[str, dict[str, Any]] = {}
         order: list[str] = []
         current_id = ""
@@ -1737,6 +1788,9 @@ class MaidAgent(Star):
                     target = _fallback_segment()
                     if text and target is not None:
                         target["steers"].append(text)
+                    continue
+                if kind == CTRL_REWIND:
+                    # 回溯标记本身不属于任何 run，别喂给工具链解析。
                     continue
                 # tool_start / tool_end 等其他控制记录按归属进段，
                 # 交由 _build_runtime_tool_chain_payload 消费。
@@ -1793,6 +1847,7 @@ class MaidAgent(Star):
                     "steers": segment["steers"],
                     "tool_chain": self._build_runtime_tool_chain_payload(segment["records"]),
                     "orphan_count": segment["orphan_count"],
+                    "rewound": segment["task_id"] in rewound,
                 }
             )
         return {"agent_id": agent_id, "runs": runs}
@@ -1818,7 +1873,10 @@ class MaidAgent(Star):
             if meta is None:
                 return self._console_error("agent 不存在。", status_code=404)
             records = await self.runtime_store.load_transcript(agent_id)
-            payload = self._build_agent_transcript_payload(meta.agent_id, records)
+            _, rewound = fold_rewound_records(records)
+            payload = self._build_agent_transcript_payload(
+                meta.agent_id, records, rewound_task_ids=rewound
+            )
             payload["mistress_name"] = self._resolve_mistress_name()
         except ValueError as exc:
             return self._console_error(str(exc), status_code=400)
@@ -1830,7 +1888,10 @@ class MaidAgent(Star):
             if meta is None:
                 return self._console_error("agent 不存在。", status_code=404)
             records = await self.runtime_store.load_transcript(agent_id)
-            payload = self._build_agent_transcript_payload(meta.agent_id, records)
+            _, rewound = fold_rewound_records(records)
+            payload = self._build_agent_transcript_payload(
+                meta.agent_id, records, rewound_task_ids=rewound
+            )
             payload["mistress_name"] = self._resolve_mistress_name()
             payload["agent"] = meta.to_dict()
             payload["runs_meta"] = [

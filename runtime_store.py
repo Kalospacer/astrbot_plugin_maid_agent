@@ -54,6 +54,7 @@ CTRL_STOP = "stop"
 CTRL_RESUME = "resume"
 CTRL_TOOL_START = "tool_start"
 CTRL_TOOL_END = "tool_end"
+CTRL_REWIND = "rewind"
 
 # Persistence finalize/notification terminals. Does NOT include interrupted —
 # those are written via mark_interrupted / reconcile_on_restart, not finalize_run.
@@ -272,6 +273,52 @@ class AgentMeta:
             last_status=str(data.get("last_status") or "starting"),
             last_task_id=str(data.get("last_task_id") or ""),
         )
+
+
+def fold_rewound_records(
+    records: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """Apply ``rewind`` control markers to an append-only transcript.
+
+    A marker ``{"_control": True, "kind": "rewind", "task_id": T}`` means "the
+    agent goes back to the state right before run ``T`` started": run ``T`` and
+    everything appended after it drop out of the effective history.
+
+    The file on disk is never rewritten — folding happens on read. That keeps
+    the append-only guarantee, keeps the discarded runs auditable, and makes a
+    rewind itself undoable by appending another marker later.
+
+    :param records: raw transcript records, in append order.
+    :returns: ``(kept_records, rewound_task_ids)``, where ``rewound_task_ids``
+        lists every run folded away in the order it was dropped.
+    """
+    kept: list[dict[str, Any]] = []
+    run_starts: dict[str, int] = {}
+    rewound: list[str] = []
+
+    for record in records:
+        if record.get("_control"):
+            kind = str(record.get("kind") or "")
+            task_id = str(record.get("task_id") or "").strip().casefold()
+
+            if kind == CTRL_REWIND:
+                cut = run_starts.get(task_id)
+                if cut is None:
+                    # 目标 run 已被更早的 rewind 折叠掉，或从未开始过：忽略。
+                    continue
+                for dropped, position in sorted(run_starts.items(), key=lambda item: item[1]):
+                    if position >= cut:
+                        rewound.append(dropped)
+                        del run_starts[dropped]
+                del kept[cut:]
+                continue
+
+            if kind == CTRL_RUN_START and task_id:
+                run_starts[task_id] = len(kept)
+
+        kept.append(record)
+
+    return kept, rewound
 
 
 class RuntimeStore:
@@ -630,6 +677,46 @@ class RuntimeStore:
         async with self._lock:
             return _read_jsonl(self._transcript_path(agent_id))
 
+    async def rewind_to_run(self, agent_id: str, task_id: str) -> list[str]:
+        """Rewind an agent to the state right before ``task_id`` started.
+
+        Appends a ``rewind`` control marker; nothing is deleted from disk. The
+        folded-away runs keep showing in the console (greyed out) but stop
+        feeding :meth:`rebuild_contexts_for_resume`, so the next resume starts
+        from the earlier state.
+
+        :param agent_id: target agent.
+        :param task_id: the run to rewind *to* — it and every later run drop out.
+        :raises ValueError: on malformed ids, or when the run is not part of the
+            agent's effective history (unknown, or already rewound).
+        :returns: task_ids folded away by this call.
+        """
+        normalized_task_id = _validate_hex_id(task_id, "task_id")
+        async with self._lock:
+            path = self._transcript_path(agent_id)
+            records = _read_jsonl(path)
+            kept, before = fold_rewound_records(records)
+
+            live_runs = {
+                str(record.get("task_id") or "").strip().casefold()
+                for record in kept
+                if record.get("_control") and str(record.get("kind") or "") == CTRL_RUN_START
+            }
+            if normalized_task_id not in live_runs:
+                raise ValueError("该 run 不在这个 agent 的有效历史里，无法回溯。")
+
+            marker = {
+                "_control": True,
+                "kind": CTRL_REWIND,
+                "ts": iso_now(),
+                "task_id": normalized_task_id,
+            }
+            # 折叠是确定性的且保持追加顺序，所以新增部分就是本次丢弃的 run。
+            _, after = fold_rewound_records([*records, marker])
+            _append_jsonl(path, marker)
+            self._touch_agent_unlocked(agent_id)
+            return after[len(before) :]
+
     async def load_run_transcript(
         self,
         agent_id: str,
@@ -666,10 +753,13 @@ class RuntimeStore:
     ) -> list[dict[str, Any]]:
         """Rebuild openai-format contexts from the transcript for resume.
 
-        Drops the corrupted tail (handled in _read_jsonl) and truncates any
-        trailing assistant message whose tool_calls lack matching tool results.
+        Rewound runs are folded out first (see :func:`fold_rewound_records`), so
+        a rewind actually changes what the subagent sees next time. Then the
+        corrupted tail is dropped (handled in ``_read_jsonl``) and any trailing
+        assistant message whose tool_calls lack matching tool results is cut.
         """
-        records = await self.load_transcript(agent_id)
+        raw = await self.load_transcript(agent_id)
+        records, _ = fold_rewound_records(raw)
         contexts: list[dict[str, Any]] = []
         pending_tool_call_positions: dict[str, int] = {}
         for record in records:

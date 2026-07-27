@@ -44,3 +44,7 @@ logs/
 
 # Local AstrBot runtime data when imports/tests run from this directory
 data/
+
+# WebUI 源码构建依赖（产物 pages/console/ 需提交）
+webui/node_modules/
+webui/.vite/

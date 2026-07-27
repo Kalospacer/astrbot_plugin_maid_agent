@@ -94,9 +94,14 @@ from .toolset_adapter import (
 )
 
 if TYPE_CHECKING:
-    from astrbot.api.event import AstrMessageEvent
     from astrbot.api.provider import LLMResponse, ProviderRequest
     from astrbot.api.star import Context
+
+# 命令处理器的 event 注解必须在运行时可解析：AstrBot 的 CommandFilter 会对 handler
+# 跑 inspect.signature(..., eval_str=True)（astrbot/core/star/filter/command.py:68），
+# 配合本模块的 `from __future__ import annotations`，把这个名字留在 TYPE_CHECKING
+# 里会让整个插件 import 失败。
+AstrMessageEvent = CoreAstrMessageEvent
 
 _EMPTY_REASONING_PLACEHOLDER = " "
 _CONSOLE_IMAGE_MAX_BYTES = 10 * 1024 * 1024

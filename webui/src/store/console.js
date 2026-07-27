@@ -110,6 +110,8 @@ function buildRunView(segment, run) {
     status,
     active: ACTIVE_STATUSES.has(status),
     failed: FAILED_STATUSES.has(status),
+    // 被回溯折叠：仍然展示（灰掉），但已退出下次 resume 的上下文。
+    rewound: Boolean(segment.rewound),
     userText: segment.user_text || "",
     mistressText: segment.mistress_text || "",
     steers: segment.steers || [],
@@ -317,17 +319,39 @@ export async function stopRun(taskId) {
   }
 }
 
-export async function rerunRun(taskId) {
+export async function forkRun(taskId) {
   try {
     const res = await apiPost("console/actions/rerun", { task_id: taskId });
-    if (!res.outcome) throw new Error(res.error || "重跑失败");
+    if (!res.outcome) throw new Error(res.error || "Fork 失败");
     await refresh({ silent: true, keepSession: false });
     await selectAgent(res.outcome.agent_id);
-    toast("已重新派发");
+    toast("已用该请求新建 Agent");
     return res.outcome.agent_id;
   } catch (err) {
-    toastError(err, "重跑失败");
+    toastError(err, "Fork 失败");
     return "";
+  }
+}
+
+/**
+ * 回溯到某个 Run 之前的状态。
+ *
+ * 后端只追加一条 rewind 标记，磁盘上什么都不删；被折叠的 Run 仍会返回，
+ * 但带 rewound 标志，且不再进入下次 resume 的上下文。
+ */
+export async function rewindToRun(agentId, taskId) {
+  try {
+    const res = await apiPost("console/actions/rewind", {
+      agent_id: agentId,
+      task_id: taskId,
+    });
+    await refresh({ silent: true, keepSession: true });
+    const count = res.rewound_task_ids?.length ?? 0;
+    toast(count > 1 ? `已回溯，${count} 个 Run 退出上下文` : "已回溯到该 Run 之前");
+    return true;
+  } catch (err) {
+    toastError(err, "回溯失败");
+    return false;
   }
 }
 

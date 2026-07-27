@@ -10,7 +10,7 @@ const props = defineProps({
   agentId: { type: String, default: "" },
 });
 
-const emit = defineEmits(["stop", "rerun", "result", "inspect"]);
+const emit = defineEmits(["stop", "rewind", "fork", "result", "inspect"]);
 
 const scroller = ref(null);
 const sentinel = ref(null);
@@ -62,7 +62,8 @@ defineExpose({ scrollToBottom });
           :ordinal="view.ordinal"
           :mistress-name="mistressName"
           @stop="emit('stop', view)"
-          @rerun="emit('rerun', view)"
+          @rewind="emit('rewind', view)"
+          @fork="emit('fork', view)"
           @result="emit('result', view)"
           @inspect="emit('inspect', view)"
         />

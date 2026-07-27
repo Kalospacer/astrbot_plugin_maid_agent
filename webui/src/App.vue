@@ -19,11 +19,12 @@ import {
   agentNames,
   deleteAgent,
   exportTranscript,
+  forkRun,
   loadRunTrace,
   mistressName,
   readRunResult,
   refresh,
-  rerunRun,
+  rewindToRun,
   runViews,
   saveSettings,
   selectAgent,
@@ -116,12 +117,16 @@ function onInspect(view) {
   drawerOpen.value = true;
 }
 
-async function onRerun(view) {
-  const agentId = await rerunRun(view.taskId);
+async function onFork(view) {
+  const agentId = await forkRun(view.taskId);
   if (agentId) {
     await nextTick();
     timeline.value?.scrollToBottom({ smooth: false });
   }
+}
+
+async function onRewind(view) {
+  await rewindToRun(state.selectedAgentId, view.taskId);
 }
 
 function onSelectUmo(umo) {
@@ -301,7 +306,8 @@ onBeforeUnmount(() => {
           :mistress-name="mistressName"
           :agent-id="state.selectedAgentId"
           @stop="stopRun($event.taskId)"
-          @rerun="onRerun"
+          @rewind="onRewind"
+          @fork="onFork"
           @result="readRunResult(state.selectedAgentId, $event.taskId)"
           @inspect="onInspect"
         />

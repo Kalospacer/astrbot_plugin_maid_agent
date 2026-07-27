@@ -1,5 +1,5 @@
 <script setup>
-import { computed, ref } from "vue";
+import { computed, onBeforeUnmount, ref } from "vue";
 
 import MarkdownBody from "@/components/MarkdownBody.vue";
 import TraceStep from "@/components/TraceStep.vue";
@@ -14,7 +14,7 @@ const props = defineProps({
   mistressName: { type: String, default: "" },
 });
 
-const emit = defineEmits(["stop", "rerun", "result", "inspect"]);
+const emit = defineEmits(["stop", "rewind", "fork", "result", "inspect"]);
 
 const now = useClock();
 
@@ -47,16 +47,43 @@ const requestShown = computed(() =>
   showFullRequest.value ? requestFull.value : displayUserText(requestFull.value),
 );
 const requestTruncated = computed(() => requestShown.value !== requestFull.value);
+
+/* 回溯会改变下次 resume 的上下文，且没有反向操作，所以要求点两次确认。
+   与侧栏删除 Agent 用的是同一套「二次点击」约定。 */
+const rewindArmed = ref(false);
+let rewindArmTimer = 0;
+
+function onRewindClick() {
+  if (!rewindArmed.value) {
+    rewindArmed.value = true;
+    window.clearTimeout(rewindArmTimer);
+    rewindArmTimer = window.setTimeout(() => {
+      rewindArmed.value = false;
+    }, 3200);
+    return;
+  }
+  window.clearTimeout(rewindArmTimer);
+  rewindArmed.value = false;
+  emit("rewind");
+}
+
+onBeforeUnmount(() => window.clearTimeout(rewindArmTimer));
 </script>
 
 <template>
-  <article class="run-card" :class="{ 'is-active': view.active, 'is-failed': view.failed }">
+  <article
+    class="run-card"
+    :class="{ 'is-active': view.active, 'is-failed': view.failed, 'is-rewound': view.rewound }"
+  >
     <header class="run-head">
       <span class="run-no">RUN {{ ordinal }}</span>
       <span class="status-dot" :class="`is-${view.status}`" aria-hidden="true" />
       <span class="run-status">{{ view.active ? "运行中" : view.status }}</span>
       <span v-if="toolCount" class="run-meta">{{ toolCount }} 工具</span>
       <span v-if="duration" class="run-meta">{{ duration }}</span>
+      <span v-if="view.rewound" class="run-badge" title="已回溯：保留在记录里，但不再进入下次 resume 的上下文">
+        已回溯
+      </span>
 
       <span class="run-spacer" />
 
@@ -64,18 +91,48 @@ const requestTruncated = computed(() => requestShown.value !== requestFull.value
         <button v-if="canStop" class="chip-btn is-danger" type="button" @click="emit('stop')">
           停止
         </button>
-        <button v-else class="chip-btn" type="button" @click="emit('rerun')">重跑</button>
         <button v-if="pendingNotification" class="chip-btn" type="button" @click="emit('result')">
           读取结果
         </button>
+
         <button
-          v-if="view.result"
           class="chip-btn"
           type="button"
-          @click="copyText(view.result, '结果已复制')"
+          :disabled="!view.result && !requestFull"
+          :title="view.result ? '复制本轮结果' : '复制本轮请求'"
+          @click="
+            view.result
+              ? copyText(view.result, '结果已复制')
+              : copyText(requestFull, '请求已复制')
+          "
         >
           复制
         </button>
+        <button
+          v-if="!view.rewound"
+          class="chip-btn"
+          :class="{ 'is-danger': rewindArmed }"
+          type="button"
+          :disabled="view.active"
+          :title="
+            view.active
+              ? '运行中无法回溯，请先停止'
+              : '丢弃本轮及之后的上下文，回到本轮开始前的状态'
+          "
+          @click="onRewindClick"
+        >
+          {{ rewindArmed ? "确认回溯" : "回溯到这里" }}
+        </button>
+        <button
+          class="chip-btn"
+          type="button"
+          :disabled="!requestFull"
+          title="用同一条请求新建一个 Agent，不带任何上下文"
+          @click="emit('fork')"
+        >
+          Fork
+        </button>
+
         <button class="chip-btn" type="button" @click="emit('inspect')">详情</button>
       </div>
     </header>
@@ -146,6 +203,23 @@ const requestTruncated = computed(() => requestShown.value !== requestFull.value
 }
 .run-card.is-failed {
   border-color: color-mix(in srgb, var(--err) 40%, var(--line));
+}
+/* 已回溯：留在时间线上作为记录，但明显退到背景里。 */
+.run-card.is-rewound {
+  border-style: dashed;
+  opacity: 0.55;
+}
+.run-card.is-rewound:hover,
+.run-card.is-rewound:focus-within {
+  opacity: 1;
+}
+.run-badge {
+  padding: 1px 7px;
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  font-family: var(--font-mono);
+  font-size: var(--size-meta);
+  color: var(--text-muted);
 }
 
 .run-head {

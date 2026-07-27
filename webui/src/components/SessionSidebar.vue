@@ -3,6 +3,7 @@ import { computed, nextTick, ref, watch } from "vue";
 
 import { formatClock, formatTime } from "@/utils/format";
 import { displayAgentTitle } from "@/utils/alias";
+import { useTimedConfirm } from "@/composables/useTimedConfirm";
 
 const props = defineProps({
   sessions: { type: Array, default: () => [] },
@@ -32,7 +33,10 @@ const focusIndex = ref(0);
 
 const menuFor = ref("");
 const menuPos = ref({ top: 0, left: 0 });
-const menuConfirmDelete = ref(false);
+
+/** 删除确认。菜单关掉或切走时 disarm，避免下次打开仍处于 armed 态。 */
+const { armed: deleteArmed, trigger: deleteTrigger, disarm: deleteDisarm } =
+  useTimedConfirm();
 
 const STREAM_LABEL = {
   idle: "连接中",
@@ -86,7 +90,7 @@ function openMenu(event, agentId) {
     return;
   }
   menuFor.value = agentId;
-  menuConfirmDelete.value = false;
+  deleteDisarm();
   menuPos.value = {
     top: Math.min(rect.bottom + 4, window.innerHeight - 120),
     left: Math.min(rect.left, window.innerWidth - 190),
@@ -95,7 +99,7 @@ function openMenu(event, agentId) {
 
 function closeMenu() {
   menuFor.value = "";
-  menuConfirmDelete.value = false;
+  deleteDisarm();
 }
 
 const menuAgent = computed(
@@ -231,49 +235,39 @@ defineExpose({ closeMenu });
         role="menu"
         :style="{ top: `${menuPos.top}px`, left: `${menuPos.left}px` }"
       >
-        <template v-if="!menuConfirmDelete">
-          <button
-            class="menu-item"
-            type="button"
-            @click="
-              emit('export', menuAgent.agent_id);
-              closeMenu();
-            "
-          >
-            导出对话
-          </button>
-          <button
-            class="menu-item is-danger"
-            type="button"
-            :disabled="Boolean(menuAgent.active_task_id) || menuAgent.pending_notification"
-            :title="
-              menuAgent.active_task_id
-                ? 'Agent 仍在运行，请先停止'
-                : menuAgent.pending_notification
-                  ? '请先读取待通知结果'
-                  : ''
-            "
-            @click="menuConfirmDelete = true"
-          >
-            删除 Agent…
-          </button>
-        </template>
-        <template v-else>
-          <p class="menu-confirm">删除后该 Agent 的所有 Run 都不可恢复。</p>
-          <div class="menu-confirm-actions">
-            <button class="chip-btn" type="button" @click="menuConfirmDelete = false">取消</button>
-            <button
-              class="chip-btn is-danger"
-              type="button"
-              @click="
+        <button
+          class="menu-item"
+          type="button"
+          @click="
+            emit('export', menuAgent.agent_id);
+            closeMenu();
+          "
+        >
+          导出对话
+        </button>
+        <button
+          class="menu-item is-danger"
+          :class="{ 'is-armed': deleteArmed }"
+          type="button"
+          :disabled="Boolean(menuAgent.active_task_id) || menuAgent.pending_notification"
+          :title="
+            menuAgent.active_task_id
+              ? 'Agent 仍在运行，请先停止'
+              : menuAgent.pending_notification
+                ? '请先读取待通知结果'
+                : ''
+          "
+          @click="
+            if (!(menuAgent.active_task_id || menuAgent.pending_notification)) {
+              if (deleteTrigger()) {
                 emit('delete', menuAgent.agent_id);
                 closeMenu();
-              "
-            >
-              确认删除
-            </button>
-          </div>
-        </template>
+              }
+            }
+          "
+        >
+          {{ deleteArmed ? "再次点击确认删除" : "删除 Agent…" }}
+        </button>
       </div>
     </Teleport>
   </aside>
@@ -531,17 +525,8 @@ defineExpose({ closeMenu });
 .menu-popover .menu-item.is-danger {
   color: var(--err);
 }
-.menu-confirm {
-  margin: 0;
-  padding: 8px 9px 4px;
-  font-size: 12.5px;
-  line-height: 1.55;
-  color: var(--text-muted);
-}
-.menu-confirm-actions {
-  display: flex;
-  justify-content: flex-end;
-  gap: 6px;
-  padding: 4px 9px 6px;
+.menu-popover .menu-item.is-armed {
+  background: var(--err-soft);
+  color: var(--err);
 }
 </style>

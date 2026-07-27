@@ -22,7 +22,6 @@ import {
   forkRun,
   loadRunTrace,
   mistressName,
-  readRunResult,
   refresh,
   rewindToRun,
   runViews,
@@ -117,8 +116,8 @@ function onInspect(view) {
   drawerOpen.value = true;
 }
 
-async function onFork(view) {
-  const agentId = await forkRun(view.taskId);
+async function onFork() {
+  const agentId = await forkRun(state.selectedAgentId);
   if (agentId) {
     await nextTick();
     timeline.value?.scrollToBottom({ smooth: false });
@@ -308,7 +307,6 @@ onBeforeUnmount(() => {
           @stop="stopRun($event.taskId)"
           @rewind="onRewind"
           @fork="onFork"
-          @result="readRunResult(state.selectedAgentId, $event.taskId)"
           @inspect="onInspect"
         />
 

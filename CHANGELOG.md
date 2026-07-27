@@ -15,11 +15,12 @@ Console 前端从无构建的静态三件套重写为 Vue 3 + Vite 单页应用�
 
 - **插件在 Python 3.12 下 import 失败**：`main.py` 把 `AstrMessageEvent` 放在 `TYPE_CHECKING` 块里，而 AstrBot 的 `CommandFilter` 会对 handler 跑 `inspect.signature(..., eval_str=True)`（`astrbot/core/star/filter/command.py:68`），配合模块顶部的 `from __future__ import annotations` 直接 `NameError`，导致整个插件加载失败、`/maid status` 与 `/maid stop` 全部不可用。改为运行时别名 `AstrMessageEvent = CoreAstrMessageEvent`。
 - **焦点与滚动位置被轮询刷新打断**：旧前端每次同步都 `innerHTML` 全量重建对话流，展开的 trace 折叠回去、输入焦点丢失、视口被拽到底部。Vue 的 keyed 渲染只更新变化节点，上述状态不再受同步影响。
+- **Console 一直停在“正在连接 AstrBot…”**：初始数据刷新完成后不再等待 SSE bridge 订阅请求返回。订阅成功时同步状态切换为 `live`；请求无响应或连接失败时继续使用已经启动的 5 秒轮询，不再阻塞 `booting` 收尾和整个界面。
 
 ### 变更
 
-- **Run 操作按 Claude Code 语义重排**：常驻 复制 / 回溯到这里 / Fork 三个操作。「复制」有结果时复制结果、否则复制请求；「Fork」用同一条请求新建 Agent（不带任何上下文，即原「重跑」的后端行为，仅更名）；「停止」与「读取结果」不再常驻，只在运行中 / 有待投递通知时出现。
-  - 原「重跑」名不副实：它调 `dispatch_single` 且不传 `resume_agent_id`，做的从来就是 fork 而非重跑。
+- **Run 操作按 Claude Code 语义重排**：常驻 复制 / 回溯到这里 / Fork 三个操作。「复制」有结果时复制结果、否则复制请求；「Fork」通过 `console/actions/fork` 复制当前 Agent 经 rewind 折叠后的有效 transcript 到新 Agent，不立即创建 Run，等待用户从副本继续；「停止」只在运行中出现，「读取结果」按钮已移除。
+  - 原 `console/actions/rerun` 只会用同一条请求新建空 Agent，并不具备 Fork 的上下文复制语义；前端不再调用该入口。
   - 「回溯」需连点两次确认（与侧栏删除 Agent 同一约定），运行中禁用。
 - `console/actions/rerun` 路由与请求/响应格式保持不变，仅前端展示改称 Fork。
 - transcript 与导出接口的每个 run 段新增 `rewound` 布尔字段。

@@ -195,7 +195,7 @@ onMounted(async () => {
   try {
     await ready();
     await refresh({ silent: true, keepSession: false });
-    await sync.start();
+    void sync.start();
   } catch (err) {
     state.streamState = "error";
     toastError(err, "启动失败");

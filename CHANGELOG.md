@@ -1,5 +1,19 @@
 # Changelog
 
+## 1.5.1 - 2026-08-03
+
+### 新增
+
+- **Agent Fork（`console/actions/fork`）**：可将当前 Agent 经 rewind 折叠后的有效 transcript 复制到新 Agent（`RuntimeOrchestrator.fork_agent` + `RuntimeStore.clone_transcript`），不立即创建 Run，等待从副本继续。Run 卡片与侧栏接入 Fork 操作，新增 `useTimedConfirm` 组合式函数统一管理需二次确认的动作，移除未使用的 `readRunResult`。
+
+### 修复
+
+- **未处理的 Promise rejection**：`sync.start` 以 `void` 操作符包裹，避免未捕获的 Promise rejection 触发前端告警。
+
+### 变更
+
+- metadata.yaml / pyproject.toml / webui/package.json / `__version__` 升至 1.5.1。
+
 ## 1.5.0 - 2026-07-27
 
 Console 前端从无构建的静态三件套重写为 Vue 3 + Vite 单页应用，修掉「停在某个焦点上会被自动刷新拽到底部」这类整页重绘导致的可用性问题；Run 操作按 Claude Code 语义重排为 复制 / 回溯 / Fork，并为「回溯」补上 append-only 的后端实现。

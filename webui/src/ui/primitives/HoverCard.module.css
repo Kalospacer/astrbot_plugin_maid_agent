@@ -5,20 +5,19 @@
   display: block;
 }
 
-/* Preview card (figma session hover card): 244 wide, r12, pad 12/16, the
- * menu card's elevation. Surface is #2C2C2E in both themes (figma value,
- * light/dark identical), so a component-level variable, not a theme token.
+/* Preview card: 244 wide, r12, pad 12/16, the menu card's elevation.
+ * 卡面跟主题令牌走（亮色下深色卡面会让令牌文字不可读）。
  * Hit-testable on purpose: resting the pointer on the card holds it open
  * (HoverCard's grace close), which a `pointer-events: none` card cannot do. */
 .card {
-  --maid-hovercard-bg: #2C2C2E;
   position: fixed;
   z-index: 100;
   box-sizing: border-box;
   width: 244px;
   padding: 12px 16px;
+  border: 1px solid var(--maid-alias-border-l2);
   border-radius: 12px;
-  background: var(--maid-hovercard-bg);
+  background: var(--maid-alias-bg-layer-2);
   box-shadow: var(--maid-shadow-lv3);
 }
 
@@ -38,7 +37,7 @@
 }
 
 .copied {
-  color: #FFFFFF;
+  color: var(--maid-alias-label-primary);
   font-size: 14px;
   line-height: 20px;
   text-align: center;

@@ -14,7 +14,7 @@ export function App() {
   const current = useApp((s) => s.current);
   const sessionState = useApp((s) => (s.current ? s.byId.get(s.current) : undefined));
   const [settingsOpen, setSettingsOpen] = useState(false);
-  // 详情列默认关闭，从输入条右端按钮打开
+  // 详情列默认关闭，从对话列右上角按钮打开
   const [detailsOpen, setDetailsOpen] = useState(false);
 
   const hasActiveSession = Boolean(current && sessionState && !sessionState.summary.blank);

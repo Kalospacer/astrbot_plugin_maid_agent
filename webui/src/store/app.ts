@@ -30,6 +30,12 @@ export interface SessionState {
   queue: QueuedInboxItem[];
   historyLoaded: boolean;
   hasMore: boolean;
+  models: SessionModels | null; // session.models RPC（composer 模型芯片）
+}
+
+export interface SessionModels {
+  current: { provider: string; model: string; override: boolean };
+  providers: { id: string; model: string; type: string }[];
 }
 
 export interface AppState {
@@ -109,6 +115,7 @@ function ensureSession(sessionId: SessionId): SessionState {
       queue: [],
       historyLoaded: false,
       hasMore: false,
+      models: null,
     };
     state.byId.set(sessionId, session);
   }
@@ -251,14 +258,18 @@ export async function createSession(agentPreset?: string): Promise<SessionId> {
   return sessionId;
 }
 
+const LEGACY_WEBID_UMO = "dashboard:WebId:dashboard"; // 2.0 初版的非法默认值（MessageType 无 WebId）
+export const DEFAULT_UMO = "dashboard:FriendMessage:dashboard";
+
 let umoChoice = "";
 try {
   umoChoice = localStorage.getItem("maid-umo") ?? "";
+  if (umoChoice === LEGACY_WEBID_UMO) umoChoice = "";
 } catch {
   /* sandboxed iframe */
 }
 export function currentUmo(): string {
-  return umoChoice || "dashboard:WebId:dashboard";
+  return umoChoice || DEFAULT_UMO;
 }
 export function setUmo(umo: string): void {
   umoChoice = umo.trim();
@@ -266,6 +277,11 @@ export function setUmo(umo: string): void {
     localStorage.setItem("maid-umo", umoChoice);
   } catch {
     /* sandboxed iframe */
+  }
+  // 切换来源后，不属于该来源的当前会话一并收起（发送即落到新来源的新会话）
+  const currentSummary = state.current ? state.sessions.get(state.current) : undefined;
+  if (currentSummary && (currentSummary.umo || DEFAULT_UMO) !== currentUmo()) {
+    state.current = undefined;
   }
   emit();
 }
@@ -329,10 +345,11 @@ export async function loadAttachmentImage(
 /** 远端内容搜索（session.search）：标题匹配在组件渲染期本地合并。 */
 export async function searchSessions(
   query: string,
+  umo?: string,
 ): Promise<{ sessionId: SessionId; snippet?: string }[]> {
   const { items } = await call<{ items: { sessionId: SessionId; snippet?: string }[] }>(
     "session.search",
-    { query },
+    { query, umo: umo || currentUmo() },
   );
   return items;
 }
@@ -354,6 +371,21 @@ export async function refreshSettings(): Promise<void> {
   const described = await call<{ namespaces: SettingsNamespaceView[] }>("settings.describe", {});
   state.settings = described.namespaces[0] ?? null;
   emit();
+}
+
+/* ---------------------------------------------------------------- 模型 */
+
+export async function loadModels(sessionId: SessionId): Promise<void> {
+  const models = await call<SessionModels>("session.models", { sessionId });
+  const session = ensureSession(sessionId);
+  session.models = models;
+  emit();
+}
+
+/** provider 传空串 = 清除会话级覆盖（跟随 subagent 配置 / umo 当前 provider）。 */
+export async function selectModel(sessionId: SessionId, provider: string): Promise<void> {
+  await call("session.selectModel", { sessionId, provider });
+  await loadModels(sessionId);
 }
 
 export async function saveSettings(patch: Record<string, unknown>): Promise<void> {

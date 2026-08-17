@@ -202,6 +202,34 @@
   background: var(--maid-alias-interactive-bg-hover-solid);
 }
 
+/* 模型芯片：本会话 subagent 的 AstrBot provider 选择，静止透明、hover 才填充。 */
+.modelChip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 200px;
+  min-height: 24px;
+  padding: 0 8px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--maid-alias-label-secondary);
+  font-size: 12px;
+  line-height: 18px;
+  cursor: pointer;
+}
+
+.modelChip:not(:disabled):hover,
+.modelChip[aria-expanded='true'] {
+  background: var(--maid-alias-interactive-bg-hover);
+}
+
+.modelChipLabel {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .add:disabled {
   opacity: 0.5;
   cursor: default;

@@ -3,11 +3,12 @@ import { useState } from "react";
 import {
   DiffBlock,
   DisclosureRow,
-  JsonBlock,
   ReadBlock,
   TerminalBlock,
 } from "@/ui/primitives";
 import type { ToolNode } from "@/store/conversation";
+
+const PARAMS_MAX_CHARS = 20_000;
 
 /** 工具节点：按视图词表（terminal/read/diff/generic）渲染卡片。 */
 export function ToolNodeView(props: { node: ToolNode }) {
@@ -78,7 +79,14 @@ function ToolBody(props: { node: ToolNode }) {
   }
   return (
     <div className="tool-card-body">
-      {node.arguments ? <JsonBlock label="参数" payload={parseJson(node.arguments)} /> : null}
+      {node.arguments ? (
+        <>
+          <div className="muted" style={{ fontSize: 12 }}>参数</div>
+          <pre style={{ margin: "2px 0 0", whiteSpace: "pre-wrap", wordBreak: "break-word", fontSize: 12 }}>
+            {formatArguments(node.arguments)}
+          </pre>
+        </>
+      ) : null}
       {node.resultText !== undefined ? (
         <pre style={{ margin: "6px 0 0", whiteSpace: "pre-wrap", wordBreak: "break-word", fontSize: 12 }}>
           {node.resultText}
@@ -88,10 +96,15 @@ function ToolBody(props: { node: ToolNode }) {
   );
 }
 
-function parseJson(raw: string): unknown {
+/** 参数内联展示：外层工具卡本身已是一层折叠，参数不再套第二层折叠块。 */
+function formatArguments(raw: string): string {
+  let text = raw;
   try {
-    return JSON.parse(raw);
+    text = JSON.stringify(JSON.parse(raw), null, 2);
   } catch {
-    return raw;
+    /* 非 JSON 原样展示 */
   }
+  return text.length > PARAMS_MAX_CHARS
+    ? `${text.slice(0, PARAMS_MAX_CHARS)}\n… 已截断，共 ${text.length} 字符`
+    : text;
 }

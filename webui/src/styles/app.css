@@ -73,6 +73,15 @@ body {
   color: var(--maid-alias-state-warn-label);
 }
 
+/* agent 工作中标识：turn 开着但暂无流式文本时落在时间线末尾 */
+.working-line {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--maid-alias-label-tertiary);
+  font-size: 12px;
+}
+
 .tool-card {
   border: 1px solid var(--maid-alias-border-l2);
   border-radius: 10px;

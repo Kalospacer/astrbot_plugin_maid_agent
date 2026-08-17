@@ -1,8 +1,8 @@
 import { useState } from "react";
 import clsx from "clsx";
 
-import { Menu } from "@/ui/primitives";
-import { IconAgentPresetOutline16, IconChevronDownOutline14 } from "@/ui/primitives/icons";
+import { Menu, Tooltip } from "@/ui/primitives";
+import { IconAgentPresetOutline16, IconChevronDownOutline14, IconPanelLeftOutline16 } from "@/ui/primitives/icons";
 import { useApp } from "@/hooks";
 import * as app from "@/store/app";
 import { ChatView } from "@/components/ChatView";
@@ -35,6 +35,22 @@ export function ConversationRoot(props: {
 
   return (
     <div className={css.root} data-phase={phase}>
+      {props.onToggleDetails ? (
+        <Tooltip label={props.detailsOpen ? "收起详情" : "会话详情"} side="bottom" delayMs={500}>
+          <button
+            type="button"
+            className={css.detailsToggle}
+            aria-label={props.detailsOpen ? "收起详情" : "会话详情"}
+            aria-pressed={props.detailsOpen}
+            onClick={props.onToggleDetails}
+          >
+            {/* 面板图标镜像朝右（详情列在右） */}
+            <span style={{ display: "inline-flex", transform: "scaleX(-1)" }}>
+              <IconPanelLeftOutline16 size={16} />
+            </span>
+          </button>
+        </Tooltip>
+      ) : null}
       <div className={css.scrollBody} data-conversation-scroll="">
         {!hero && !props.booting ? (
           <div className={css.viewArea}>
@@ -51,8 +67,6 @@ export function ConversationRoot(props: {
               variant={phase === "hero" ? "hero" : "composer"}
               running={running}
               disabled={props.booting}
-              detailsOpen={props.detailsOpen}
-              onToggleDetails={props.onToggleDetails}
             />
           </div>
         </div>

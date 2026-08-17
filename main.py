@@ -290,15 +290,20 @@ class MaidAgent(Star):
             finally:
                 await hub.unsubscribe(queue)
 
-        response = await make_response(
-            stream(),
-            {
-                "Content-Type": "text/event-stream",
-                "Cache-Control": "no-cache",
-                "Connection": "keep-alive",
-                "Transfer-Encoding": "chunked",
-            },
-        )
+        headers = {
+            "Content-Type": "text/event-stream",
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+        }
+        try:
+            from starlette.responses import StreamingResponse
+        except ImportError:  # Quart 原生旧版 dashboard
+            StreamingResponse = None
+        if StreamingResponse is not None:
+            # 适配层对 starlette Response 原样透传（真流式）；Quart Response 会被
+            # get_data() 全量缓冲，无限流的 SSE 永远发不出响应头。
+            return StreamingResponse(stream(), headers=headers)
+        response = await make_response(stream(), {**headers, "Transfer-Encoding": "chunked"})
         response.timeout = None  # type: ignore[attr-defined]
         return response
 

@@ -6,18 +6,20 @@ import uuid
 
 from astrbot.api.event import MessageChain
 from astrbot.core.platform.astr_message_event import AstrMessageEvent as CoreAstrMessageEvent
-from astrbot.core.platform.astrbot_message import AstrBotMessage, MessageMember
+from astrbot.core.platform.astrbot_message import AstrBotMessage, Group, MessageMember
 from astrbot.core.platform.message_session import MessageSession
 from astrbot.core.platform.platform_metadata import PlatformMetadata
 
 
 class DashboardMessage(AstrBotMessage):
     def __init__(self, *, text: str, sender_id: str, session: MessageSession) -> None:
+        super().__init__()  # 基类初始化 timestamp 和 group，缺了下游访问 .group 会 AttributeError
         self.type = None  # 由 platform_meta 决定；占位
         self.self_id = "dashboard"
         self.session_id = session.session_id
         self.message_id = f"dashboard_{uuid.uuid4().hex}"
-        self.group_id = session.session_id if session.message_type.value == "GroupMessage" else ""
+        if session.message_type.value == "GroupMessage":
+            self.group = Group(group_id=session.session_id)
         self.sender = MessageMember(user_id=sender_id, nickname="Dashboard")
         self.message = []
         self.message_str = text

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 
-import { DisclosureRow, MarkdownText, Pill } from "@/ui/primitives";
+import { DisclosureRow, MarkdownText, Pill, StateDot } from "@/ui/primitives";
 import { IconThinkOutline14 } from "@/ui/primitives/icons";
 import { useApp } from "@/hooks";
 import * as app from "@/store/app";
@@ -36,6 +36,12 @@ export function ChatView() {
   // hero 相位（无会话/空会话）由 ConversationRoot 持有，这里只渲染消息流
   if (!session) return null;
 
+  // 工作中标识：turn 开着（或宿主上报运行中）且末尾不是正在流式的 assistant 块
+  // （流式块自带"生成中…"），在时间线末尾补一个 "正在工作…" 行。
+  const lastNode = folded.nodes[folded.nodes.length - 1];
+  const working =
+    (folded.running || session.summary.running) && lastNode?.kind !== "assistant-partial";
+
   return (
     <div className="chat-inner" ref={innerRef}>
       {session.hasMore && (
@@ -51,6 +57,12 @@ export function ChatView() {
       {folded.nodes.map((node) => (
         <ChatNodeView key={node.key} node={node} sessionId={session.sessionId} />
       ))}
+      {working ? (
+        <div className="working-line" role="status">
+          <StateDot state="ongoing" />
+          <span>正在工作…</span>
+        </div>
+      ) : null}
     </div>
   );
 }

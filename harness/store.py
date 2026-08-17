@@ -15,6 +15,7 @@ import time
 import uuid
 from pathlib import Path
 
+from ..constants import normalize_umo
 from .contracts import now_ms
 from .event_log import SessionLog
 from .history import derive_surface, visible_events
@@ -147,7 +148,7 @@ class SessionStore:
             "blank": not has_turn,
         }
         if meta.get("umo"):
-            item["umo"] = meta["umo"]
+            item["umo"] = normalize_umo(meta["umo"])
         if header.get("parentSession"):
             item["parentSessionId"] = header["parentSession"]
         if header.get("origin"):

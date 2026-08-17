@@ -21,3 +21,17 @@ MISTRESS_REQUEST_BLOCK_LABEL = "大小姐请求"
 # (a list) is always set. Both are scanned for dedup.
 MAID_NOTIFICATION_ID_META_KEY = "_maid_notification_id"
 MAID_NOTIFICATION_IDS_META_KEY = "_maid_notification_ids"
+
+# 控制台默认消息来源。MessageType 必须是合法枚举值
+# （MessageSession.from_str 会 MessageType(...) 强转，非法值直接 ValueError）。
+DEFAULT_UMO = "dashboard:FriendMessage:dashboard"
+_LEGACY_WEBID_UMO = "dashboard:WebId:dashboard"
+
+
+def normalize_umo(umo: str | None) -> str:
+    """空值落到控制台默认来源；2.0 初版写出的 WebId 来源非法，归一到默认值。"""
+    value = (umo or "").strip()
+    if not value or value == _LEGACY_WEBID_UMO:
+        return DEFAULT_UMO
+    return value
+

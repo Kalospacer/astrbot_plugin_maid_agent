@@ -13,6 +13,7 @@ from typing import Any
 
 from ._log import logger
 
+from ..constants import normalize_umo
 from . import contracts as c
 from . import tools_view
 from .history import derive_surface, history_page, visible_events
@@ -101,9 +102,12 @@ class ApiProxy:
         query = str(payload.get("query") or "").strip().lower()
         if not query:
             return {"items": [], "hasMore": False}
+        umo_filter = str(payload.get("umo") or "").strip()
         items = []
         for sid in self.store.list_session_ids():
             log = self.store.log(sid)
+            if umo_filter and normalize_umo(log.load_meta().get("umo")) != umo_filter:
+                continue
             best = ""
             for event in derive_surface(log.read_events()):
                 data = event.get("data", {})
@@ -128,7 +132,7 @@ class ApiProxy:
         preset = str(payload.get("agentPreset") or "").strip()
         if not preset:
             preset = self.config_holder.default_agent_name()
-        umo = str(payload.get("umo") or "").strip() or "dashboard:WebId:dashboard"
+        umo = normalize_umo(payload.get("umo"))
         sender_id = str(payload.get("senderId") or "").strip() or "dashboard"
         log = self.store.create_session(agent_preset=preset, meta={"umo": umo, "senderId": sender_id, "agentName": preset})
         driver = self.registry.attach(str(log.session_id))
@@ -175,24 +179,63 @@ class ApiProxy:
 
     async def session_models(self, payload: dict) -> dict:
         session_id = str(payload.get("sessionId") or "")
-        self._require_session(session_id)
+        log = self._require_session(session_id)
+        meta = log.load_meta()
+        override = str(meta.get("providerId") or "").strip()
+
+        handoff_provider = ""
+        driver = self.registry.drivers.get(session_id)
+        agent_name = (driver.agent_name if driver else "") or str(meta.get("agentName") or "")
+        try:
+            handoff, _ = self.registry.resolve_handoff(
+                agent_name or self.registry.default_agent_name
+            )
+            handoff_provider = str(getattr(handoff, "provider_id", None) or "")
+        except Exception:  # noqa: BLE001
+            pass
+
+        umo = normalize_umo(meta.get("umo"))
+        effective = (
+            override
+            or handoff_provider
+            or await self.registry.context.get_current_chat_provider_id(umo)
+        )
+        providers = []
+        current_model = ""
+        for provider in self.registry.context.get_all_providers():
+            pmeta = provider.meta()
+            providers.append({"id": pmeta.id, "model": pmeta.model or "", "type": pmeta.type})
+            if pmeta.id == effective:
+                current_model = pmeta.model or ""
         return {
-            "current": {"provider": self.registry.fallback_provider_name, "model": "astrbot-subagent"},
-            "routable": True,
-            "groups": [],
-            "failures": [],
+            "current": {"provider": effective, "model": current_model, "override": bool(override)},
+            "providers": providers,
         }
 
     async def session_select_model(self, payload: dict) -> dict:
         session_id = str(payload.get("sessionId") or "")
-        self._require_session(session_id)
-        selected = {
-            "provider": str(payload.get("provider") or self.registry.fallback_provider_name),
-            "model": str(payload.get("model") or ""),
-        }
-        if payload.get("reasoningEffort"):
-            selected["reasoningEffort"] = str(payload["reasoningEffort"])
-        return {"selected": selected}
+        log = self._require_session(session_id)
+        provider_id = str(payload.get("provider") or "").strip()
+        if provider_id:
+            chat_provider_ids = {
+                p.meta().id for p in self.registry.context.get_all_providers()
+            }
+            if provider_id not in chat_provider_ids:
+                raise RpcError(
+                    "provider-not-found",
+                    f"未找到聊天 provider: {provider_id}",
+                    {"sessionId": session_id},
+                )
+        # 空 provider = 清除会话级覆盖，回到 subagent 配置 / umo 当前 provider
+        log.update_meta(providerId=provider_id)
+        driver = self.registry.drivers.get(session_id)
+        if driver is not None:
+            driver.provider_id = provider_id
+        model = ""
+        if provider_id:
+            provider = self.registry.context.get_provider_by_id(provider_id)
+            model = str(provider.meta().model or "") if provider is not None else ""
+        return {"selected": {"provider": provider_id, "model": model}}
 
     async def session_rename(self, payload: dict) -> dict:
         session_id = str(payload.get("sessionId") or "")

@@ -4,6 +4,7 @@
    （历史回放中，座位不可见以免闪烁）。composer 常驻同一棵树位。 */
 
 .root {
+  position: relative;
   display: flex;
   flex-direction: column;
   height: 100%;
@@ -15,6 +16,31 @@
   --maid-composer-card-max-width: calc(var(--maid-chat-content-width) + 32px);
   --maid-composer-side-clearance: 16px;
   --maid-composer-dock-inset: 8px;
+}
+
+/* 会话详情开关：钉在对话列右上角（从输入条工具行挪出），静止透明、hover 才有填充。 */
+.detailsToggle {
+  position: absolute;
+  top: 10px;
+  right: 12px;
+  z-index: 5;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--maid-alias-label-secondary);
+  cursor: pointer;
+}
+
+.detailsToggle:not(:disabled):hover,
+.detailsToggle[aria-pressed='true'] {
+  background: var(--maid-alias-interactive-bg-hover);
+  color: var(--maid-alias-label-primary);
 }
 
 .root[data-phase='active'] {

@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING, Any
 from astrbot.api import logger
 from astrbot.core.agent.hooks import BaseAgentRunHooks
 
+from ..constants import normalize_umo
 from . import contracts as c
 from . import tools_view
 from .history import visible_events
@@ -238,7 +239,8 @@ class SessionDriver:
         self._stop_fn = None
         self._turn_result_waiters: list[asyncio.Future] = []
         meta = self.log.load_meta()
-        self.umo = str(meta.get("umo") or "")
+        self.umo = normalize_umo(meta.get("umo"))
+        self.provider_id = str(meta.get("providerId") or "")  # 会话级模型覆盖（控制台模型选择块）
         self.agent_name = str(meta.get("agentName") or "")
         self.sender_id = str(meta.get("senderId") or "")
         self._stop_requested = False
@@ -433,7 +435,11 @@ class SessionDriver:
         handoff, resolved_name = self.registry.resolve_handoff(agent_name)
         child_event = self.registry.build_child_event(umo, self.sender_id)
 
-        provider_id = getattr(handoff, "provider_id", None) or await context.get_current_chat_provider_id(umo)
+        provider_id = (
+            self.provider_id
+            or getattr(handoff, "provider_id", None)
+            or await context.get_current_chat_provider_id(umo)
+        )
         provider = context.get_provider_by_id(provider_id)
         if provider is None:
             reason = c.reason_error(f"未找到子 agent provider: {provider_id}")
@@ -647,8 +653,9 @@ class SessionDriver:
         """
         messages = getattr(getattr(runner, "run_context", None), "messages", []) or []
         provider = getattr(runner, "_provider", None)
-        provider_name = str(getattr(getattr(provider, "meta", None), "id", "") or self.registry.fallback_provider_name)
-        model_name = str(getattr(getattr(provider, "meta", None), "model", "") or "")
+        provider_meta = provider.meta() if callable(getattr(provider, "meta", None)) else None
+        provider_name = str(getattr(provider_meta, "id", "") or self.registry.fallback_provider_name)
+        model_name = str(getattr(provider_meta, "model", "") or "")
         for message in messages[persisted:]:
             role = getattr(message, "role", "")
             if role in ("tool", "system"):
@@ -922,7 +929,7 @@ class DriverRegistry:
     def build_child_event(self, umo: str, sender_id: str):
         from .events_shim import DashboardMaidEvent
 
-        return DashboardMaidEvent(unified_msg_origin=umo or "dashboard:WebId:dashboard", sender_id=sender_id or "dashboard", message_text="")
+        return DashboardMaidEvent(unified_msg_origin=normalize_umo(umo), sender_id=sender_id or "dashboard", message_text="")
 
     def build_toolset(self, *, handoff, umo: str, agent_name: str):
         from ..toolset_adapter import build_child_toolset

@@ -1,11 +1,11 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import clsx from "clsx";
 
-import { Tooltip } from "@/ui/primitives";
-import { IconCloseFill14, IconPanelLeftOutline16, IconPlusOutline16 } from "@/ui/primitives/icons";
+import { Menu, Tooltip } from "@/ui/primitives";
+import { IconChevronDownOutline14, IconCloseFill14, IconPlusOutline16 } from "@/ui/primitives/icons";
 import { useApp } from "@/hooks";
 import * as app from "@/store/app";
-import type { PromptContentPart } from "@/types";
+import type { PromptContentPart, SessionId } from "@/types";
 import css from "./Composer.module.css";
 
 const EMPTY_QUEUE: never[] = [];
@@ -17,14 +17,12 @@ interface PendingImage {
   preview: string;
 }
 
-/** 输入条：附件轨 + 文本 + 工具行（+ 附件，发送/停止）。
+/** 输入条：附件轨 + 文本 + 工具行（+ 附件，模型芯片，发送/停止）。
  *  常驻同一树位：hero（空会话居中）与 composer（吸附底部）只是 variant 之差。 */
 export function Composer(props: {
   variant: "hero" | "composer";
   running: boolean;
   disabled?: boolean;
-  detailsOpen?: boolean;
-  onToggleDetails?: () => void;
 }) {
   const current = useApp((s) => s.current);
   const busy = useApp((s) => s.busy);
@@ -140,24 +138,9 @@ export function Composer(props: {
               hidden
               onChange={(e) => void onPickImages(e.target.files)}
             />
+            {current ? <ModelChip sessionId={current} /> : null}
           </div>
           <div className={css.trailing}>
-            {props.onToggleDetails ? (
-              <Tooltip label={props.detailsOpen ? "收起详情" : "会话详情"} side="top" delayMs={500}>
-                <button
-                  type="button"
-                  className={css.add}
-                  aria-label={props.detailsOpen ? "收起详情" : "会话详情"}
-                  aria-pressed={props.detailsOpen}
-                  onClick={props.onToggleDetails}
-                >
-                  {/* 面板图标镜像朝右（详情列在右） */}
-                  <span style={{ display: "inline-flex", transform: "scaleX(-1)" }}>
-                    <IconPanelLeftOutline16 size={16} />
-                  </span>
-                </button>
-              </Tooltip>
-            ) : null}
             {props.running && current ? (
               <Tooltip label="停止" side="top" delayMs={500}>
                 <button
@@ -202,4 +185,55 @@ function fileToBase64(file: File): Promise<string> {
     reader.onerror = () => reject(reader.error);
     reader.readAsDataURL(file);
   });
+}
+
+/** 模型选择芯片：本会话 subagent 使用的 AstrBot 聊天 provider。
+ *  选中项写进会话 meta（providerId 覆盖），下一 turn 生效；选"默认"清除覆盖。 */
+function ModelChip(props: { sessionId: SessionId }) {
+  const models = useApp((s) => s.byId.get(props.sessionId)?.models ?? null);
+  const [open, setOpen] = useState(false);
+
+  useEffect(() => {
+    void app.loadModels(props.sessionId).catch(() => undefined);
+  }, [props.sessionId]);
+
+  if (!models || models.providers.length === 0) return null;
+  const label = models.current.model || models.current.provider || "选择模型";
+
+  return (
+    <Menu
+      open={open}
+      onClose={() => setOpen(false)}
+      portal
+      side="top"
+      anchor={
+        <Tooltip label="本会话 subagent 模型" side="top" delayMs={500}>
+          <button
+            type="button"
+            className={css.modelChip}
+            aria-label="选择模型"
+            aria-haspopup="menu"
+            aria-expanded={open}
+            onClick={() => setOpen((v) => !v)}
+          >
+            <span className={css.modelChipLabel}>{label}</span>
+            <IconChevronDownOutline14 size={12} />
+          </button>
+        </Tooltip>
+      }
+      items={[
+        { id: "__default", label: "默认（跟随子代理配置）" },
+        { type: "separator" as const, id: "sep" },
+        ...models.providers.map((p) => ({
+          id: p.id,
+          label: p.model ? `${p.model}（${p.id}）` : p.id,
+        })),
+      ]}
+      selectedId={models.current.override ? models.current.provider : "__default"}
+      onSelect={(id) => {
+        setOpen(false);
+        void app.selectModel(props.sessionId, id === "__default" ? "" : id).catch(() => undefined);
+      }}
+    />
+  );
 }

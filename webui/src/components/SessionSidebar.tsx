@@ -262,6 +262,7 @@ function SessionBrowser(props: { wide: boolean; expandSidebar: () => void }) {
   const { wide } = props;
   const sessionMap = useApp((s) => s.sessions);
   const current = useApp((s) => s.current);
+  const umo = app.currentUmo(); // useApp 版本订阅已保证 setUmo 后此处重渲染
 
   // 查询比输入框活得久（宽栏专属）：收起不打断进行中的过滤。
   const [query, setQuery] = useState("");
@@ -301,7 +302,7 @@ function SessionBrowser(props: { wide: boolean; expandSidebar: () => void }) {
     return () => document.removeEventListener("click", onClick);
   }, [normalizedQuery, wide, searchExpanded]);
 
-  // 远程内容搜索（防抖 250ms）；本地标题匹配在渲染期合并。
+  // 远程内容搜索（防抖 250ms），只搜当前来源的会话；本地标题匹配在渲染期合并。
   useEffect(() => {
     if (normalizedQuery === "") {
       setRemote({ query: "", status: "idle", items: [] });
@@ -311,7 +312,7 @@ function SessionBrowser(props: { wide: boolean; expandSidebar: () => void }) {
     setRemote({ query: normalizedQuery, status: "loading", items: [] });
     const timer = window.setTimeout(() => {
       app
-        .searchSessions(normalizedQuery)
+        .searchSessions(normalizedQuery, umo)
         .then((items) => {
           if (controller.aborted) return;
           setRemote({ query: normalizedQuery, status: "ready", items });
@@ -325,9 +326,11 @@ function SessionBrowser(props: { wide: boolean; expandSidebar: () => void }) {
       controller.aborted = true;
       window.clearTimeout(timer);
     };
-  }, [normalizedQuery]);
+  }, [normalizedQuery, umo]);
 
-  const sessions = [...sessionMap.values()].sort((a, b) => b.updatedAt - a.updatedAt);
+  const sessions = [...sessionMap.values()]
+    .filter((s) => (s.umo || app.DEFAULT_UMO) === umo)
+    .sort((a, b) => b.updatedAt - a.updatedAt);
   const now = Date.now();
 
   return (

@@ -87,7 +87,7 @@
 
 1. 用户发消息，大小姐判断需要做事时调用 `call_maid`。
 2. 短任务在当前 tool turn 内直接返回结果；超过前台阈值后同一执行器原地转后台。
-3. 后台任务结束后写入 notification outbox，并唤醒大小姐整理结果转告用户。
+3. 后台任务结束后唤醒大小姐，由她整理结果转告用户。
 4. 期间可用 `maid_task(status/result/stop/steer)` 按 task/agent ID 查询或控制。
 
 **Agent 与 Run 模型**
@@ -96,7 +96,13 @@
 - 每个 agent 同时最多一个活跃 run；每个会话可并发多个不同 agent。
 - 每个会话最多 5 个活跃 run，全局最多 20，超限立即拒绝。
 
-**数据存储**：`data/plugin_data/astrbot_plugin_maid_agent/agents/<agent_id>/`，含 `agent.json`、`transcript.jsonl`、`runs/<task_id>.json`、`outputs/<task_id>.txt`。元数据按 `retention_days` 清理（不删 memory）。
+**数据存储**：`data/plugin_data/astrbot_plugin_maid_agent/sessions/<session_id>/`，含 `header.json`、`meta.json`、`events.jsonl`（按顺序记录会话内每个事件的日志）；图片附件在 `attachments/<session_id>/`。元数据按 `retention_days` 清理（不删 memory）。
+
+---
+
+## 控制台
+
+插件页提供一个聊天式控制台（AstrBot 面板 → 插件 → 代理女仆 → 控制台）：可以新建会话直接给管家派任务、看流式回复与工具调用卡片、查看每步 token 消耗，左侧管理历史会话（搜索、重命名、删除、Fork），右上角设置弹窗可改插件配置与主题。
 
 ---
 

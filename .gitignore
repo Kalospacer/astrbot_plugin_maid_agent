@@ -48,3 +48,6 @@ data/
 # WebUI 源码构建依赖（产物 pages/console/ 需提交）
 webui/node_modules/
 webui/.vite/
+
+# KaTeX 字体由后端启动时从 dashboard dist 物化，不进 git/zip
+pages/console/assets/fonts/

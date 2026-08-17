@@ -1,0 +1,73 @@
+/* 设置弹窗：宽表单卡；内容区滚动、底栏固定。 */
+
+.dialog {
+  width: min(520px, 100%);
+  max-height: 100%;
+}
+
+.scroll {
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.form {
+  display: grid;
+  gap: 14px;
+}
+
+.field {
+  display: grid;
+  gap: 6px;
+}
+
+.label {
+  font-size: 12.5px;
+  line-height: 18px;
+  color: var(--maid-alias-label-secondary);
+}
+
+/* 布尔项：标签左、开关右的单行。 */
+.checkRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 28px;
+  font-size: 13px;
+  line-height: 20px;
+  cursor: pointer;
+}
+
+.checkbox {
+  flex: none;
+  width: 15px;
+  height: 15px;
+  margin: 0;
+  accent-color: var(--maid-alias-state-business-primary);
+  cursor: pointer;
+}
+
+/* 多行框。 */
+.textarea {
+  box-sizing: border-box;
+  width: 100%;
+  padding: 5px 8px;
+  border: 1px solid var(--maid-alias-border-l2);
+  border-radius: 8px;
+  outline: none;
+  background: var(--maid-alias-bg-layer-1);
+  color: var(--maid-alias-label-primary);
+  font-family: var(--app-font);
+  font-size: 13px;
+  line-height: 20px;
+  resize: vertical;
+}
+
+.textarea:focus {
+  border-color: var(--maid-alias-brand-primary);
+}
+
+.themeRow {
+  display: flex;
+  gap: 8px;
+}

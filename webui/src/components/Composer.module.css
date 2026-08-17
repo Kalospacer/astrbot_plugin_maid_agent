@@ -1,0 +1,236 @@
+/* 输入条（几何逐值与参考实现对齐）。
+   浮动胶囊卡：textarea 在上、动作行在下、主操作在右下。hero 变体是同一
+   张卡在空态居中 —— 两个状态之间只是同一组件的位置移动。
+   自动长高用 mirror 机制（隐藏镜像在普通流里撑出全文高度，
+   textarea 绝对定位骑在它上面）；chip/backdrop 装饰层我们没有，裁掉。 */
+
+.root {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  /* 侧垫骑共享净距；底部渐隐遮罩由消息滚动层持有。 */
+  padding: 0 var(--maid-composer-side-clearance) 8px;
+}
+
+.hero {
+  /* 居中 hero 没有底垫，但侧净距必须保留：窄视口下 hero 包装满宽，
+     这层 padding 是唯一让卡不贴边的东西。 */
+  padding: 0 var(--maid-composer-side-clearance);
+}
+
+.notice {
+  width: 100%;
+  max-width: var(--maid-composer-card-max-width);
+  margin-bottom: 6px;
+  padding: 4px 8px;
+  border-radius: 8px;
+  background: var(--maid-alias-interactive-bg-hover);
+  color: var(--maid-alias-label-secondary);
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.card {
+  box-sizing: border-box;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  /* figma Input 75:8208: 文本区与按钮行之间 12px；卡顶 10px。 */
+  gap: 12px;
+  width: 100%;
+  max-width: var(--maid-composer-card-max-width);
+  padding-top: 10px;
+  /* 描边比按钮弱一档（l2-darkmode-thin）；填充用输入面令牌（暗色抬升）。 */
+  border: 1px solid var(--maid-alias-border-l2-darkmode-thin);
+  border-radius: 22px;
+  background: var(--maid-specific-input-major);
+  box-shadow: var(--maid-shadow-lv2);
+  font-size: 16px;
+  line-height: 24px;
+  /* 暗色下的抬升面：草稿滚动条的 thumb 用 l2 组。 */
+  --maid-scrollbar-thumb: var(--maid-alias-scrollbar-bg-l2);
+  --maid-scrollbar-thumb-hover: var(--maid-alias-scrollbar-hover-l2);
+}
+
+/* 附件轨座位：卡顶 10px + 这里 4px；下方间距由卡的 12px flex gap 持有。 */
+.attachments {
+  min-width: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 4px 12px 0;
+}
+
+.chip {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 220px;
+  padding: 4px 8px;
+  border: 1px solid var(--maid-alias-border-l2);
+  border-radius: 8px;
+  background: var(--maid-alias-bg-layer-1);
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.chip img {
+  width: 22px;
+  height: 22px;
+  border-radius: 4px;
+  object-fit: cover;
+}
+
+.chipName {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chipRemove {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: none;
+  background: none;
+  color: inherit;
+  cursor: pointer;
+}
+
+/* 草稿的滚动口，也是 composer 里唯一滚动的盒子；14 行上限住在这里。 */
+.scroll {
+  max-height: var(--maid-composer-text-max-height);
+  overflow-y: auto;
+}
+
+.grow {
+  position: relative;
+}
+
+.input {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  resize: none;
+  /* 自己永远不滚：它和草稿一样高，没有可持有的滚动偏移。 */
+  overflow: hidden;
+  border: none;
+  outline: none;
+  background: transparent;
+  color: var(--maid-alias-label-primary);
+}
+
+.input,
+.mirror {
+  /* textarea 默认 content-box：不设 border-box 的话 padding 会撑到卡外。 */
+  box-sizing: border-box;
+  /* figma .InputText 34:10434: pl 16 / pr 12 / pt 4。两层必须共享这些
+     度量，否则高度分叉。 */
+  padding: 4px 12px 0 16px;
+  font-family: inherit;
+  font-size: inherit;
+  line-height: inherit;
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+}
+
+.input::placeholder {
+  color: var(--maid-alias-label-caption);
+  user-select: none;
+}
+
+.input:disabled {
+  color: var(--maid-alias-label-tertiary);
+  cursor: not-allowed;
+}
+
+.mirror {
+  visibility: hidden;
+  pointer-events: none;
+}
+
+/* hero 保持两行地板（figma min-h 52 ≈ 2×24 行 + 4pt）；停靠态收到底稿高度。 */
+.hero .mirror {
+  min-height: 52px;
+}
+
+/* 工具行：左侧 + 附件；右侧 发送/停止。 */
+.row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  /* 2px 从底垫挪到顶垫：整行控件在卡里坐低 2px。 */
+  padding: 2px 8px 6px;
+  min-width: 0;
+}
+
+.tools,
+.trailing {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
+
+.tools {
+  gap: 16px;
+}
+
+.trailing {
+  flex: none;
+  gap: 12px;
+}
+
+/* + 圆钮（figma + 控件）：28px，selector 填充，主色 glyph。 */
+.add {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 28px;
+  height: 28px;
+  border: none;
+  border-radius: 999px;
+  background: var(--maid-specific-selector);
+  color: var(--maid-alias-label-primary);
+  cursor: pointer;
+}
+
+.add:hover:not(:disabled) {
+  background: var(--maid-alias-interactive-bg-hover-solid);
+}
+
+.add:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* 主发送钮（figma IconButton 34:10465）：34px 圆，info 填充对（亮 #3964FE /
+   暗 #679EFE），白色 glyph；空文本 = 0.4 透明度。 */
+.primary {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 34px;
+  height: 34px;
+  border: none;
+  border-radius: 999px;
+  background: var(--maid-alias-button-info-fill);
+  /* 静态白：两个主题里箭头都在蓝底上保持白色。 */
+  color: #fff;
+  cursor: pointer;
+  transition: background-color 100ms ease;
+  /* 不参与整行的 2px 下移：发送圆保持自己的座位。 */
+  transform: translateY(-2px);
+}
+
+.primary:hover:not(:disabled) {
+  background: var(--maid-alias-button-info-hover);
+}
+
+.primary:disabled {
+  opacity: 0.4;
+  cursor: default;
+}

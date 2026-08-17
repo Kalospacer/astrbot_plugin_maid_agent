@@ -1,0 +1,713 @@
+/* 侧栏（会话列表 + 底部工具区，
+   几何与动效值逐行照抄；工作区/拖拽/归档等插件无后端支撑的部分裁掉）。
+   收起 = 滑出 + 交叉淡入淡出：内容冻结在展开宽度原地淡出，滑动的列裁切它；
+   落定后宽栏内容卸载，上方控件从同一水平偏移进入 56px 轨道。 */
+
+.root {
+  --maid-sidebar-inline-padding: 12px;
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  padding: 6px var(--maid-sidebar-inline-padding);
+  box-sizing: border-box;
+  background: var(--maid-specific-sidebar-fill);
+  color: var(--maid-alias-label-primary);
+  font-size: 14px;
+  --maid-scrollbar-thumb: var(--maid-alias-scrollbar-bg-l2);
+  --maid-scrollbar-thumb-hover: var(--maid-alias-scrollbar-hover-l2);
+}
+
+/* 轨道几何（figma rail 规范）：56px 轨道内 36x36 控件盒、12px 垂直节奏。 */
+.root.collapsed {
+  padding: 18px 10px 6px;
+}
+
+/* 收起阶段 1：整个冻结宽度的内容 150ms 原地淡出；落定后子树卸载/切到轨道布局。 */
+.fading > * {
+  opacity: 0;
+  transition: opacity 150ms var(--maid-ease-in-out);
+}
+
+/* 展开时宽栏内容淡回。 */
+.wide {
+  animation: wide-in 200ms var(--maid-ease-in-out);
+}
+
+@keyframes wide-in {
+  from { opacity: 0; }
+}
+
+/* 轨道进入：只发生在真实收起过程；冷启动收起态静态渲染。 */
+.railIn .iconButton,
+.railIn .newSession,
+.railIn .regionArea {
+  animation: rail-in 150ms var(--maid-ease-in-out) backwards;
+}
+
+.railIn .footArea {
+  animation: rail-fade-in 150ms var(--maid-ease-in-out) backwards;
+}
+
+@keyframes rail-in {
+  from {
+    opacity: 0;
+    transform: translateX(49px);
+  }
+}
+
+@keyframes rail-fade-in {
+  from { opacity: 0; }
+}
+
+/* Logo 行：展开时面板开关在右缘；收起时所有控件共用同一左锚点。 */
+.logoRow {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  height: 60px;
+  padding: 8px 0 8px 4px;
+  margin-bottom: 8px;
+  box-sizing: border-box;
+  overflow: hidden;
+}
+
+.collapsed .logoRow {
+  height: 36px;
+  padding: 0;
+  margin-bottom: 12px;
+  justify-content: flex-start;
+}
+
+/* 品牌文字兼任新会话快捷键：只有指针光标这一个可供性。 */
+.brand {
+  flex: 1;
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  overflow: hidden;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+}
+
+.iconButton {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border: none;
+  border-radius: 50%;
+  padding: 0;
+  background: transparent;
+  cursor: pointer;
+  color: var(--maid-alias-label-secondary);
+}
+
+.iconButton:hover {
+  background: var(--maid-alias-interactive-bg-hover);
+}
+
+.collapsed .iconButton {
+  width: 36px;
+  height: 36px;
+  color: var(--maid-alias-label-primary);
+}
+
+/* 新会话：38px 条、12px 圆角；收起时渲染为轨道的纯图标控件。 */
+.newSession {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 38px;
+  padding: 8px 16px;
+  margin: 0 2px 8px;
+  box-sizing: border-box;
+  border: 1px solid var(--maid-alias-border-l2);
+  border-radius: 12px;
+  background: var(--maid-alias-button-elevated-fill);
+  color: var(--maid-alias-label-primary);
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 22px;
+  cursor: pointer;
+  overflow: hidden;
+}
+
+.newSession:hover {
+  background: var(--maid-alias-button-floating-hover);
+}
+
+.collapsed .newSession {
+  align-self: flex-start;
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  margin: 0 0 12px;
+  gap: 0;
+  border-color: transparent;
+  background: transparent;
+}
+
+.collapsed .newSession:hover {
+  background: var(--maid-alias-interactive-bg-hover);
+}
+
+.newSessionLabel {
+  max-width: 200px;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.collapsed .newSessionLabel {
+  max-width: 0;
+}
+
+/* 浏览区座：始终挂载，底部控件永不移动。 */
+.regionArea {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  margin-left: -4px;
+  margin-right: calc(-1 * var(--maid-sidebar-inline-padding));
+  padding-left: 4px;
+  overflow: hidden;
+}
+
+.collapsed .regionArea {
+  margin-left: 0;
+  margin-right: 0;
+  padding-left: 0;
+}
+
+.footArea {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+}
+
+.collapsed .footArea {
+  align-items: center;
+}
+
+/* 底部设置控件：宽栏整行、轨道 36px 圆钮。 */
+.settingsButton {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  height: 36px;
+  padding: 0 8px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--maid-alias-label-secondary);
+  font-size: 13px;
+  cursor: pointer;
+  box-sizing: border-box;
+}
+
+.settingsButton:hover {
+  background: var(--maid-alias-interactive-bg-hover);
+  color: var(--maid-alias-label-primary);
+}
+
+.collapsed .settingsButton {
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  justify-content: center;
+  border-radius: 50%;
+}
+
+/* ================= 浏览区（WorkspaceBrowser 搜索 + 列表，逐值照抄） ================= */
+
+.browser {
+  --maid-session-list-edge-inset: var(--maid-sidebar-inline-padding);
+  --maid-session-list-scrollbar-width: 8px;
+  --maid-session-list-scrollbar-offset: 2px;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  box-sizing: border-box;
+  padding-right: var(--maid-session-list-edge-inset);
+}
+
+.browser.rail {
+  padding-right: 0;
+}
+
+/* 区块头：标题 + 内联搜索控件；展开的搜索把标题和动作簇挤没。 */
+.sectionHeader {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 4px;
+  height: 36px;
+  padding-left: 4px;
+  margin-bottom: 4px;
+  box-sizing: border-box;
+  border-radius: 12px;
+  overflow: hidden;
+  color: var(--maid-alias-label-tertiary);
+}
+
+.browser:not(.rail) .sectionHeader {
+  margin-top: 2px;
+}
+
+.sectionLabel {
+  flex: none;
+  max-width: 45%;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  line-height: 20px;
+  opacity: 1;
+  visibility: visible;
+  transition:
+    max-width 180ms var(--maid-ease-in-out),
+    margin-right 180ms var(--maid-ease-in-out),
+    opacity 120ms var(--maid-ease-in-out),
+    transform 180ms var(--maid-ease-in-out),
+    visibility 0s linear;
+}
+
+.sectionLabelHidden {
+  max-width: 0;
+  margin-right: -4px;
+  opacity: 0;
+  transform: translateX(-4px);
+  visibility: hidden;
+  transition-delay: 0s, 0s, 0s, 0s, 180ms;
+}
+
+.searchSlot {
+  flex: 1;
+  max-width: 28px;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  margin-left: auto;
+  padding-left: 0;
+  box-sizing: border-box;
+  transition:
+    max-width 180ms var(--maid-ease-in-out),
+    padding-left 180ms var(--maid-ease-in-out);
+}
+
+.searchSlotExpanded {
+  max-width: 100%;
+  padding-left: 0;
+}
+
+.search {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 0;
+  width: 100%;
+  height: 28px;
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  cursor: text;
+  color: var(--maid-alias-label-secondary);
+  overflow: hidden;
+  transition:
+    width 180ms var(--maid-ease-in-out),
+    padding 180ms var(--maid-ease-in-out),
+    border-color 180ms var(--maid-ease-in-out),
+    background-color 180ms var(--maid-ease-in-out);
+}
+
+.searchExpanded {
+  width: 100%;
+  height: 30px;
+  padding: 0 4px 0 0;
+  border: 1px solid var(--maid-alias-border-l2);
+  border-radius: 10px;
+  background: transparent;
+  color: var(--maid-alias-label-caption);
+}
+
+.searchButton {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border: none;
+  border-radius: 50%;
+  padding: 0;
+  background: transparent;
+  cursor: pointer;
+  color: inherit;
+}
+
+.searchExpanded .searchButton {
+  width: 28px;
+  height: 30px;
+}
+
+.searchButton:hover {
+  background: var(--maid-alias-interactive-bg-hover);
+}
+
+.searchExpanded .searchButton:hover {
+  background: transparent;
+}
+
+.searchInput {
+  flex: 1;
+  width: 0;
+  min-width: 0;
+  border: none;
+  outline: none;
+  background: transparent;
+  opacity: 0;
+  pointer-events: none;
+  font-size: 13px;
+  line-height: 18px;
+  color: var(--maid-alias-label-primary);
+  transition: opacity 120ms var(--maid-ease-in-out);
+}
+
+.searchExpanded .searchInput {
+  margin-left: -2px;
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.searchInput::placeholder {
+  color: var(--maid-alias-label-tertiary);
+}
+
+.clearButton {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border: none;
+  border-radius: 50%;
+  padding: 0;
+  background: transparent;
+  cursor: pointer;
+  color: var(--maid-alias-label-secondary);
+}
+
+.clearButton:hover {
+  background: var(--maid-alias-interactive-bg-hover);
+}
+
+/* 轨道变体：搜索是独立的 36px 控件，与其他轨道控件同盒、同 12px 节奏。 */
+.rail .sectionHeader {
+  gap: 0;
+  padding-left: 0;
+  margin-bottom: 12px;
+  justify-content: flex-start;
+}
+
+.rail .iconButton {
+  width: 36px;
+  height: 36px;
+  color: var(--maid-alias-label-primary);
+}
+
+.rail .search {
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  margin: 0 0 12px;
+  gap: 0;
+  border-color: transparent;
+}
+
+.rail .searchButton {
+  width: 36px;
+  height: 36px;
+  color: var(--maid-alias-label-primary);
+}
+
+.rail .searchButton:hover {
+  background: var(--maid-alias-interactive-bg-hover);
+}
+
+.listArea {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  margin-left: -4px;
+  margin-right: calc(-1 * var(--maid-session-list-edge-inset));
+  padding-left: 4px;
+  overflow: visible;
+}
+
+.rail .listArea {
+  margin-left: 0;
+  margin-right: 0;
+  padding-left: 0;
+}
+
+.treeBody {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  position: relative;
+}
+
+.fade {
+  position: absolute;
+  left: 0;
+  right: var(--maid-session-list-edge-inset);
+  bottom: 0;
+  height: 24px;
+  background: linear-gradient(to bottom, transparent, var(--maid-specific-sidebar-fill));
+  pointer-events: none;
+}
+
+.list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  margin-left: -4px;
+  margin-right: var(--maid-session-list-scrollbar-offset);
+  padding-left: 4px;
+  padding-right: calc(
+    var(--maid-session-list-edge-inset)
+    - var(--maid-session-list-scrollbar-width)
+    - var(--maid-session-list-scrollbar-offset)
+  );
+  padding-bottom: 16px;
+  scrollbar-gutter: stable;
+}
+
+.list > * + * {
+  margin-top: 2px;
+}
+
+.empty {
+  padding: 16px 12px;
+  color: var(--maid-alias-label-tertiary);
+  font-size: 13px;
+}
+
+.searchStatus {
+  padding: 10px 12px;
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--maid-alias-label-tertiary);
+}
+
+/* ================= 会话行（Rows.module.css 逐值照抄） ================= */
+
+.sessionRow {
+  display: flex;
+  align-items: center;
+  height: 32px;
+  gap: 0;
+  border-radius: 8px;
+  padding: 0 8px;
+  cursor: pointer;
+  user-select: none;
+  color: var(--maid-alias-label-primary);
+  animation: row-in 150ms var(--maid-ease-in-out);
+}
+
+@keyframes row-in {
+  from { opacity: 0; }
+}
+
+.sessionRow:hover,
+.sessionRow.selected,
+.sessionRow.menuOpen {
+  background: var(--maid-alias-interactive-bg-hover);
+}
+
+.slot {
+  flex: none;
+  width: 16px;
+  height: 20px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--maid-alias-label-tertiary);
+}
+
+.rowTitle {
+  flex: 1;
+  min-width: 0;
+  margin: 0 6px 0 4px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 14px;
+  line-height: 20px;
+}
+
+.time {
+  flex: none;
+  font-size: 12px;
+  line-height: 20px;
+  color: var(--maid-alias-label-tertiary);
+}
+
+/* 悬停换显：时间 → 省略号按钮；菜单打开时钉住悬停态。 */
+.rowActions {
+  flex: none;
+  display: none;
+  align-items: center;
+  gap: 12px;
+}
+
+.sessionRow:hover .rowActions,
+.sessionRow.menuOpen .rowActions {
+  display: inline-flex;
+}
+
+.sessionRow:hover .time,
+.sessionRow.menuOpen .time {
+  display: none;
+}
+
+.rowIconButton {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border: none;
+  border-radius: 50%;
+  padding: 0;
+  background: transparent;
+  cursor: pointer;
+  color: var(--maid-alias-label-tertiary);
+}
+
+.rowIconButton:hover {
+  color: var(--maid-alias-label-primary);
+}
+
+/* 搜索结果行：标题 + 摘录两行。 */
+.searchResultRow {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  width: 100%;
+  min-height: 48px;
+  box-sizing: border-box;
+  border: none;
+  border-radius: 8px;
+  padding: 4px 8px;
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+  color: var(--maid-alias-label-primary);
+}
+
+.searchResultRow:hover,
+.searchResultRow.selected {
+  background: var(--maid-alias-interactive-bg-hover);
+}
+
+.searchResultHeading {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
+
+.searchResultTitle {
+  min-width: 0;
+  margin-left: 4px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 14px;
+  line-height: 20px;
+}
+
+.searchResultSnippet {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  line-height: 17px;
+  margin-left: 20px;
+  color: var(--maid-alias-label-secondary);
+}
+
+/* 重命名弹窗输入框。 */
+.renameInput {
+  box-sizing: border-box;
+  width: 100%;
+  height: 44px;
+  padding: 7px 14px;
+  border: 1px solid var(--maid-alias-border-l2);
+  border-radius: 22px;
+  outline: none;
+  background: var(--maid-alias-button-elevated-fill);
+  color: inherit;
+  font-size: 14px;
+}
+
+.hoverContent {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-width: 260px;
+}
+
+.hoverTitle {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--maid-alias-label-primary);
+}
+
+.hoverTime {
+  font-size: 12px;
+  color: var(--maid-alias-label-tertiary);
+}
+
+.hoverStatus {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--maid-alias-label-secondary);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .wide,
+  .fading > *,
+  .railIn .iconButton,
+  .railIn .newSession,
+  .railIn .footArea,
+  .railIn .regionArea,
+  .sessionRow {
+    transition: none;
+    animation: none;
+  }
+}

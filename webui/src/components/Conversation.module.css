@@ -1,0 +1,166 @@
+/* 对话列骨架（hero/active/settling 三相，
+   几何逐值照抄；header/tabs 与 heroGlow 按插件实际裁掉）。
+   相位机：hero（空会话，输入卡居中）/ active（输入卡吸附底部）/ settling
+   （历史回放中，座位不可见以免闪烁）。composer 常驻同一棵树位。 */
+
+.root {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-width: 0;
+  background: var(--maid-alias-bg-base);
+
+  /* 整列共享宽度轴：消息流 W，输入卡 W + 32px，两侧净距 16px。 */
+  --maid-chat-content-width: 748px;
+  --maid-composer-card-max-width: calc(var(--maid-chat-content-width) + 32px);
+  --maid-composer-side-clearance: 16px;
+  --maid-composer-dock-inset: 8px;
+}
+
+.root[data-phase='active'] {
+  overflow: hidden;
+}
+
+/* 列内唯一滚动轴：消息流与吸附的输入座位同在这个盒子里，滚轮扫过底栏
+   也推动消息流。 */
+.scrollBody {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  scrollbar-gutter: stable;
+}
+
+.root[data-phase='active'] .viewArea {
+  flex: 1 0 auto;
+  min-height: auto;
+}
+
+.viewArea {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+}
+
+/* composer 链的公共座位。 */
+.composerSeat {
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  /* 草稿滚动上限（14 行 × 24px），声明在座位上向下继承。 */
+  --maid-composer-text-max-height: 336px;
+}
+
+/* active：座位吸附底部；顶部 36px 固定渐隐带（px 停止值，草稿长高只
+   扩大实色区，渐隐带不拉伸）。 */
+.root[data-phase='active'] .composerSeat {
+  position: sticky;
+  bottom: 0;
+  z-index: 7;
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--maid-alias-bg-base) 0%, transparent) 0px,
+    var(--maid-alias-bg-base) 36px
+  );
+}
+
+.composerStack {
+  --maid-composer-stack-gap: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: var(--maid-composer-stack-gap);
+}
+
+/* hero：composer 栈（hero 标题 + 芯片行 + 卡）在列内 flex 居中。 */
+.composerHero {
+  position: relative;
+  align-self: center;
+  gap: 8px;
+  /* 居中盒内的脚底把栈稍微托离真正的中心。 */
+  padding-bottom: 32px;
+  /* 卡上限 + 两侧净距：hero 输入卡与停靠态在每个视口同宽。 */
+  width: min(calc(var(--maid-composer-card-max-width) + 2 * var(--maid-composer-side-clearance)), 100%);
+  z-index: 1;
+}
+
+.heroWorkspaceRow {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  min-width: 0;
+  margin-top: 4px;
+  padding-left: 20px;
+}
+
+.root[data-phase='hero'] .scrollBody {
+  justify-content: center;
+  overflow-y: auto;
+}
+
+.root[data-phase='settling'] .composerSeat {
+  visibility: hidden;
+}
+
+/* ================= Hero 标题 =================
+   居中大标题，26/32 wt500。 */
+.headline {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 0;
+  font-size: 26px;
+  line-height: 32px;
+  font-weight: 500;
+  color: var(--maid-alias-label-primary);
+}
+
+.headlineText {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 预设芯片：图标 + 名称 + 下拉尖角 —— 静止透明，hover/展开才有填充
+   （HeroShell .workspace 同规格）。 */
+.presetChip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: min(100%, 360px);
+  min-height: 28px;
+  padding: 0 8px;
+  border: none;
+  border-radius: 16px;
+  background: transparent;
+  color: var(--maid-alias-label-primary);
+  font-size: 13px;
+  line-height: 20px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.presetChip:not(:disabled):hover,
+.presetChip[aria-expanded='true'] {
+  background: var(--maid-alias-interactive-bg-hover);
+}
+
+.presetIcon {
+  flex: none;
+  display: inline-flex;
+  color: var(--maid-alias-label-primary);
+}
+
+.presetLabel {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.presetChevron {
+  flex: none;
+  display: inline-flex;
+  color: var(--maid-alias-label-caption);
+}

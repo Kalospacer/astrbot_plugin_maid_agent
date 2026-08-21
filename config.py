@@ -17,6 +17,7 @@ DEFAULT_FOREGROUND_TIMEOUT_SECONDS = 50
 DEFAULT_MAX_ACTIVE_PER_UMO = 5
 DEFAULT_MAX_ACTIVE_GLOBAL = 20
 DEFAULT_RETENTION_DAYS = 30
+DEFAULT_MAX_TURN_SECONDS = 1800
 DEFAULT_DISPATCH_PROMPT_TEMPLATE = (
     "{user_input_block}"
     "{maid_request_block}"
@@ -44,6 +45,7 @@ class MaidModeConfig:
     max_active_per_umo: int = DEFAULT_MAX_ACTIVE_PER_UMO
     max_active_global: int = DEFAULT_MAX_ACTIVE_GLOBAL
     retention_days: int = DEFAULT_RETENTION_DAYS
+    max_turn_seconds: int = DEFAULT_MAX_TURN_SECONDS
 
 
 def _render_default_dispatch_prompt(values: Mapping[str, str]) -> str:
@@ -204,6 +206,13 @@ def load_maid_mode_config(config: Mapping[str, Any] | None = None) -> MaidModeCo
     if retention_days < 0:
         retention_days = DEFAULT_RETENTION_DAYS
 
+    max_turn_seconds = _safe_int(
+        cfg.get("max_turn_seconds", DEFAULT_MAX_TURN_SECONDS),
+        DEFAULT_MAX_TURN_SECONDS,
+    )
+    if max_turn_seconds < 0:
+        max_turn_seconds = DEFAULT_MAX_TURN_SECONDS
+
     memory_agent_names_raw = cfg.get("memory_agent_names")
     memory_agent_names: list[str] | None = None
     if isinstance(memory_agent_names_raw, (list, tuple, set)):
@@ -231,4 +240,5 @@ def load_maid_mode_config(config: Mapping[str, Any] | None = None) -> MaidModeCo
         max_active_per_umo=max_active_per_umo,
         max_active_global=max_active_global,
         retention_days=retention_days,
+        max_turn_seconds=max_turn_seconds,
     )

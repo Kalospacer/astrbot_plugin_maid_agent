@@ -70,5 +70,11 @@
     "hint": "超过该天数无活动的 agent（含 transcript/runs/outputs）会被清理。memory 目录与旧 sessions 不受影响。",
     "type": "int",
     "default": 30
+  },
+  "max_turn_seconds": {
+    "description": "单 turn 看门狗超时（秒）",
+    "hint": "一个 turn 运行超过该秒数会被看门狗强制终止并标记为 interrupted（防止网络挂死/工具卡住导致 webui 永远显示工作中）。0 表示关闭看门狗。",
+    "type": "int",
+    "default": 1800
   }
 }

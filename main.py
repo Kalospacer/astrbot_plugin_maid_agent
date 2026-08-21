@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 import uuid
 from dataclasses import asdict
 from inspect import isawaitable
@@ -121,6 +122,7 @@ class MaidAgent(Star):
         self._register_web_apis()
         self._materialize_katex_fonts()
         self._schedule_retention_cleanup()
+        self._schedule_turn_watchdog()
         self._maybe_migrate_legacy()
         logger.info(
             "[MaidAgent] 已加载 (%s) | default_agent=%s | fg_timeout=%ss | capacity=%s/%s | retention=%dd",
@@ -182,6 +184,33 @@ class MaidAgent(Star):
                     logger.warning("[maid] retention 清理失败: %s", exc)
 
         self._track_background_task(asyncio.create_task(_loop(), name="maid-retention-loop"))
+
+    def _schedule_turn_watchdog(self) -> None:
+        """turn 看门狗：超时强制终止挂死的 turn，防止 webui 永远显示工作中。"""
+
+        async def _loop() -> None:
+            while True:
+                await asyncio.sleep(30)
+                try:
+                    limit = float(self.maid_mode_config.max_turn_seconds or 0)
+                    if limit <= 0:
+                        continue
+                    now = time.monotonic()
+                    for driver in list(self.registry.drivers.values()):
+                        started = driver.turn_started_at
+                        if driver.running and started is not None and now - started > limit:
+                            logger.warning(
+                                "[maid] 看门狗终止超时 turn (%.0fs): session=%s",
+                                now - started,
+                                driver.session_id[:8],
+                            )
+                            driver.watchdog_cancel()
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("[maid] turn 看门狗失败: %s", exc)
+
+        self._track_background_task(asyncio.create_task(_loop(), name="maid-turn-watchdog"))
 
     def _maybe_migrate_legacy(self) -> None:
         """一次性迁移旧 runtime 数据（存在旧 agents/ 目录且无标记时）。"""

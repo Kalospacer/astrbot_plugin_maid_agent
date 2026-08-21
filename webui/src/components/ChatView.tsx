@@ -36,11 +36,14 @@ export function ChatView() {
   // hero 相位（无会话/空会话）由 ConversationRoot 持有，这里只渲染消息流
   if (!session) return null;
 
-  // 工作中标识：turn 开着（或宿主上报运行中）且末尾不是正在流式的 assistant 块
+  // 工作中标识：turn 开着且宿主上报运行中（宿主是运行态的唯一事实源——历史里的
+  // 孤儿 turn/start 不再单独点亮），且末尾不是正在流式的 assistant 块
   // （流式块自带"生成中…"），在时间线末尾补一个 "正在工作…" 行。
   const lastNode = folded.nodes[folded.nodes.length - 1];
   const working =
-    (folded.running || session.summary.running) && lastNode?.kind !== "assistant-partial";
+    folded.running &&
+    session.summary.running &&
+    lastNode?.kind !== "assistant-partial";
 
   return (
     <div className="chat-inner" ref={innerRef}>

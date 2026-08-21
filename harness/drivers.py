@@ -16,10 +16,20 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from typing import TYPE_CHECKING, Any
 
-from astrbot.api import logger
-from astrbot.core.agent.hooks import BaseAgentRunHooks
+try:  # pragma: no cover - AstrBot 运行时
+    from astrbot.api import logger
+except ImportError:  # 测试/离线环境
+    from ._log import logger
+try:  # pragma: no cover - AstrBot 运行时
+    from astrbot.core.agent.hooks import BaseAgentRunHooks
+except ImportError:  # 测试/离线环境
+
+    class BaseAgentRunHooks:  # type: ignore[no-redef]
+        def __init__(self, *args, **kwargs):
+            pass
 
 from ..constants import normalize_umo
 from . import contracts as c
@@ -245,6 +255,7 @@ class SessionDriver:
         self.sender_id = str(meta.get("senderId") or "")
         self._stop_requested = False
         self._interrupted = False
+        self.turn_started_at: float | None = None  # 看门狗用：当前 turn 的 monotonic 起点
         self.last_turn: dict = {}  # {status, result, error, turn}
 
     # ------------------------------------------------------------ 基础
@@ -341,6 +352,46 @@ class SessionDriver:
         self._interrupted = True
         self.request_stop()
 
+    def watchdog_cancel(self) -> None:
+        """看门狗超时：取消当前 turn 任务（_pump 会补写终态并继续存活）。"""
+        if self._task is not None and not self._task.done():
+            self._task.cancel()
+
+    def heal_orphan_turn(self) -> bool:
+        """补写崩溃/硬中断遗留的孤儿 turn（最后一个 turn/start 无对应 turn/end）。
+
+        对齐 dsh「运行态不持久化」：进程重启后日志里不允许残留开着的 turn，
+        否则 webui 依据历史事件会永远显示「正在工作」。仅在新 driver 建立时
+        调用（本进程内运行中的 turn 必然已有常驻 driver，不会被误关）。
+        """
+        events = self.log.read_events()
+        last_start_seq = -1
+        closed = True
+        start_count = 0
+        for event in events:
+            etype = event.get("type")
+            if etype == "turn/start":
+                last_start_seq = int(event.get("seq", -1))
+                start_count += 1
+                closed = False
+            elif etype == "turn/end":
+                closed = True
+        if last_start_seq < 0 or closed:
+            return False
+        event = self.log.append(
+            "turn/end",
+            {"turn": start_count, "reason": c.reason_interrupted()},
+        )
+        self.registry.publish_event_frame(self.session_id, event)
+        self.registry.store.touch(self.session_id)
+        self.registry.push_projection_changes(self.session_id)
+        logger.info(
+            "[maid] 检测到中断遗留的孤儿 turn（seq=%d），已补写 interrupted 终态: session=%s",
+            last_start_seq,
+            self.session_id[:8],
+        )
+        return True
+
     # ------------------------------------------------------------ 循环
 
     def _kick(self) -> None:
@@ -360,6 +411,18 @@ class SessionDriver:
             self._publish_queue()
             try:
                 await self.run_turn(item["message"])
+            except asyncio.CancelledError:
+                if self._interrupted:
+                    raise  # 停用流程：让 pump 任务正常退出
+                # 看门狗超时取消：补写终态并继续存活（run_turn 的 finally 已复位
+                # state/host frame，但 turn/end 在取消路径不会落盘，这里兑底）
+                logger.warning("[maid] turn 被看门狗取消: session=%s", self.session_id[:8])
+                async with self.log.lock:
+                    await self._emit("turn/end", {"turn": self._count_turns(), "reason": c.reason_interrupted()})
+                self._settle_turn({"status": "interrupted", "error": "turn watchdog timeout", "result": ""})
+                for waiter in list(self._turn_result_waiters):
+                    if not waiter.done():
+                        waiter.set_result(dict(self.last_turn))
             except Exception as exc:  # noqa: BLE001
                 logger.error("[maid] turn 执行失败: session=%s err=%s", self.session_id[:8], exc, exc_info=True)
                 async with self.log.lock:
@@ -399,6 +462,7 @@ class SessionDriver:
         """执行一个 turn。返回 {status, result, error}。"""
         turn = self._count_turns() + 1
         self.state = "running"
+        self.turn_started_at = time.monotonic()
         self._stop_requested = False
         self.registry.publish_host_frame(
             c.frame_host_session_status(self.session_id, True)
@@ -417,6 +481,7 @@ class SessionDriver:
             self._settle_turn(result)
             return result
         finally:
+            self.turn_started_at = None
             self.state = "idle"
             self.registry.publish_host_frame(
                 c.frame_host_session_status(self.session_id, False)
@@ -861,6 +926,7 @@ class DriverRegistry:
         if not self.store.exists(session_id):
             return None
         driver = SessionDriver(self, session_id)
+        driver.heal_orphan_turn()
         self.drivers[session_id] = driver
         return driver
 

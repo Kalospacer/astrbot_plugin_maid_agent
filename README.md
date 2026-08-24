@@ -51,9 +51,9 @@
 | --- | --- | --- | --- |
 | `request_text` | string | 发起时必填 | 交给管家的任务要求（自包含，含背景/约束/目标）。 |
 | `agent_name` | string | 可选 | 目标管家名称，留空用默认管家。仅新建 agent 时生效。 |
-| `resume_agent_id` | string | 可选 | 恢复已有 agent。running 时等价于 steer；终态时新建 task 后台执行。 |
+| `resume_session_id` | string | 可选 | 恢复已有会话。running 时等价于 steer；终态时新建 task 后台执行。 |
 | `run_in_background` | bool | 可选 | `true` 立即转后台并返回句柄；默认 `false` 前台等待。 |
-| `tasks` | array | 可选 | 批量任务，每项 `{request_text, agent_name?, run_in_background?}`，最多 5 项。仅新建 agent。 |
+| `tasks` | array | 可选 | 批量任务，每项 `{request_text, agent_name?, run_in_background?}`，最多 5 项。各项独立会话、并发执行，结果保持输入顺序。仅新建会话。 |
 
 ### maid_task —— 查询与控制
 
@@ -92,8 +92,8 @@
 
 **Agent 与 Run 模型**
 
-- 每次新 dispatch 创建新 agent；只有显式 `resume_agent_id` 才恢复稳定身份。
-- 每个 agent 同时最多一个活跃 run；每个会话可并发多个不同 agent。
+- 每次新 dispatch 创建新会话；只有显式 `resume_session_id` 才恢复已有会话。
+- 每个会话同时最多一个活跃 run；每个会话可并发多个不同 agent。
 - 每个会话最多 5 个活跃 run，全局最多 20，超限立即拒绝。
 
 **数据存储**：`data/plugin_data/astrbot_plugin_maid_agent/sessions/<session_id>/`，含 `header.json`、`meta.json`、`events.jsonl`（按顺序记录会话内每个事件的日志）；图片附件在 `attachments/<session_id>/`。元数据按 `retention_days` 清理（不删 memory）。

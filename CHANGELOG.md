@@ -1,5 +1,27 @@
 # Changelog
 
+## 2.0.2 - 2026-08-24
+
+修复并发能力退化：`call_maid` 每次新 dispatch 不再复用旧会话，batch 从串行改并发执行。
+
+### 修复
+
+- **subagent 永远复用同一对话**：2.0.0 引入的 `_chat_session_for` 会按 `(umo, agent_name)` 扫描复用已有会话，导致所有后续任务追加进同一会话、上下文不断积累污染。现在不带 `resume_session_id` 时无条件创建新会话，恢复每次 dispatch 独立 agent 的设计。
+- **batch dispatch 串行退化**：`call_maid(tasks=[...])` 从 `for item: await` 串行等待改为 `asyncio.gather` 并发执行。5 项 batch 总耗时从 sum(单项) 降回 max(单项)。
+- **README 参数名不一致**：README 写 `resume_agent_id`，代码用 `resume_session_id`，模型按 README 调用时参数静默失效。已统一为 `resume_session_id`。
+
+### 变更
+
+- `call_maid` batch 路径新增批量容量预检：超额时整批拒绝且不创建任何会话，避免 `asyncio.gather` 并发派发时逐项检查全部通过后超限。
+- `_dispatch_chat_task` 新增 `skip_capacity_check` 参数：batch 路径预检已完成时跳过逐项检查，单次路径保持原有行为。
+- metadata.yaml / pyproject.toml / `__version__` / `__init__.py` 升至 2.0.2。
+
+### 不变
+
+- `call_maid` / `maid_task` 的工具签名与语义不变，`/maid status`、`/maid stop` 命令不变。
+- 控制台路径（`session.prompt`）不受影响，用户选定的会话仍复用同一 driver 串行消费。
+- 已有会话数据无需迁移，不修改 AstrBot Core 任何文件。
+
 ## 2.0.1 - 2026-08-21
 
 修掉「任务被外部因素打断后，控制台一直显示正在工作」的问题。三层防护，前后端一起上：进程崩溃/断电留下的未闭合 turn 会在重启后自动补终态；运行中的 turn 挂了超时看门狗兜底强制结束；前端工作标识改为以宿主上报的运行态为准，不再被历史数据误导。

@@ -51,7 +51,7 @@ from .harness.rpc import (
 from .harness.store import SessionStore
 from .katex_fonts import materialize_katex_fonts
 
-__version__ = "2.0.0"
+__version__ = "2.0.2"
 
 _SETTINGS_SCHEMA_CACHE: dict | None = None
 
@@ -400,18 +400,15 @@ class MaidAgent(Star):
                 return sid
         return ""
 
-    def _chat_session_for(self, umo: str, agent_name: str, session_id: str = "") -> object:
-        """按 resume_session_id 或 (umo, agentName) 复用/创建会话。"""
+    def _chat_session_for(self, umo: str, agent_name: str, session_id: str = "") -> str:
+        """Resume an existing session by id, or create a new one.
+
+        Never reuses by (umo, agent_name) — each call_maid dispatch without a
+        resume_session_id always creates a fresh session so tasks don't
+        accumulate context from unrelated prior tasks.
+        """
         if session_id and self.store.exists(session_id):
             return session_id
-        for sid in self.store.list_session_ids():
-            meta = self.store.log(sid).load_meta()
-            if (
-                meta.get("umo") == umo
-                and meta.get("agentName") == agent_name
-                and meta.get("chatOwned")
-            ):
-                return sid
         preset = agent_name or self.maid_mode_config.default_agent_name
         log = self.store.create_session(
             agent_preset=preset,
@@ -471,21 +468,42 @@ class MaidAgent(Star):
                 }
             )
 
-        results = []
-        for item in batch:
-            results.append(await self._dispatch_chat_task(event, umo, true_user_input, item))
+        # Batch path: run all items concurrently. Each item creates an
+        # independent session+driver so they execute in parallel.
+        # Batch capacity pre-check (atomic): if the whole batch would exceed
+        # per-umo or global limits, reject the entire batch without creating
+        # any sessions. This avoids the per-item race where gather dispatches
+        # all items before any pump has set state=running.
+        batch_size = len(batch)
+        per_umo_cap = _safe_int(getattr(self.maid_mode_config, "max_active_per_umo", 5), 5)
+        global_cap = _safe_int(getattr(self.maid_mode_config, "max_active_global", 20), 20)
+        if (
+            self.registry.running_count_for_umo(umo) + batch_size > per_umo_cap
+            or self.registry.running_count() + batch_size > global_cap
+        ):
+            return self._json_outcome(
+                {"status": "error", "error": "批量并发上限不足，整批拒绝。", "mode": "rejected"}
+            )
+        results = list(await asyncio.gather(
+            *(
+                self._dispatch_chat_task(event, umo, true_user_input, item, skip_capacity_check=True)
+                for item in batch
+            )
+        ))
         if len(results) == 1:
             return self._json_outcome(results[0])
         return self._json_outcome({"status": "batch", "results": results})
 
-    async def _dispatch_chat_task(self, event, umo: str, true_user_input: str, item: dict) -> dict:
+    async def _dispatch_chat_task(
+        self, event, umo: str, true_user_input: str, item: dict, *, skip_capacity_check: bool = False
+    ) -> dict:
         agent_name = item["agent_name"] or self.maid_mode_config.default_agent_name
         if (
             self.maid_mode_config.allowed_agent_names
             and agent_name not in self.maid_mode_config.allowed_agent_names
         ):
             return {"status": "error", "error": f"agent 不在允许列表: {agent_name}"}
-        if not self.registry.capacity_available(umo):
+        if not skip_capacity_check and not self.registry.capacity_available(umo):
             return {"status": "error", "error": "并发上限已满，稍后再试。"}
 
         session_id = self._chat_session_for(umo, agent_name, item.get("resume_session_id") or "")

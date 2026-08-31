@@ -3,11 +3,9 @@
   display: inline-flex;
 }
 
-/* Dropdown card (figma MenuDropdown 122:9481 / 419:16920): menu surface,
- * r12, inverted hairline border, shadow-lv3, 4px inset padding. */
 .list,
 .submenu {
-  /* min-widths below are the design's outer card widths — include the pad. */
+  
   box-sizing: border-box;
   padding: 4px;
   display: flex;
@@ -17,16 +15,11 @@
   border-radius: 12px;
   background: var(--maid-specific-menu);
   box-shadow: var(--maid-shadow-lv3);
-  /* Elevated surface: the scrollbar thumb takes the l2 elevation tokens. The
-     declaration sits on the card rather than on `.scrollable .viewport`
-     because the elevation is a property of this surface, and the custom
-     properties inherit down to whichever descendant actually scrolls (see
-     ui-theme styles/scrollbar.css for the rebinding contract). */
+  
   --maid-scrollbar-thumb: var(--maid-alias-scrollbar-bg-l2);
   --maid-scrollbar-thumb-hover: var(--maid-alias-scrollbar-hover-l2);
 }
 
-/* Primary card is 218 wide in the design across both hosts. */
 .list {
   position: absolute;
   top: calc(100% + 4px);
@@ -36,10 +29,6 @@
   max-width: 360px;
 }
 
-/* Portal mode: fixed in the viewport, coordinates supplied inline from the
- * anchor rect (side/align resolved in JS, the in-place offset rules above
- * don't apply). Portaled lists must layer above modal overlays (z 1000) —
- * an anchor inside a dialog still expects its menu on top. */
 .portal {
   position: fixed;
   top: auto;
@@ -47,7 +36,6 @@
   z-index: 1100;
 }
 
-/* Open above the anchor (empty-state workspace chip: figma 122:9481). */
 .sideTop {
   top: auto;
   bottom: calc(100% + 4px);
@@ -58,11 +46,6 @@
   right: 0;
 }
 
-/* Viewport fit: the card stops 12px short of the viewport's top/bottom edges
- * (24 = 2 × the portal MARGIN in Menu.tsx) and taller content scrolls inside
- * .viewport, so a pinned .footer stays visible. Menus with submenu rows skip
- * this class — the overflow clip would crop the side card, so they rely on
- * staying short. */
 .scrollable {
   max-height: calc(100vh - 24px);
 }
@@ -77,8 +60,6 @@
   overflow-y: auto;
 }
 
-/* Pinned rows below the scroll region; l2 hairline (l1 is near-invisible on
- * the menu surface) mirrors the .separator spacing. */
 .footer {
   flex: none;
   display: flex;
@@ -92,8 +73,6 @@
   position: relative;
 }
 
-/* Menu cell (figma .Menu_cell): min-h 40, r10, pad 10/8, 14/22 primary,
- * gap 8 between leading icon / label / trailing check. */
 .item {
   display: flex;
   align-items: center;
@@ -183,13 +162,10 @@
   color: var(--maid-alias-label-primary);
 }
 
-/* Selected cell keeps the plain fill (marker is the trailing check); the
- * class remains as a hook for owner-side emphasis. */
 .selected {
   background: transparent;
 }
 
-/* Destructive row: error text/icon, danger hover fill. */
 .danger {
   color: var(--maid-alias-state-error-primary);
 }
@@ -202,7 +178,6 @@
   background: var(--maid-alias-interactive-bg-hover-danger);
 }
 
-/* Heading row: non-interactive small grey text, padding aligned with items. */
 .label {
   padding: 8px 10px;
   font-size: 12px;
@@ -210,19 +185,12 @@
   color: var(--maid-alias-label-tertiary);
 }
 
-/* Separator cell (figma 122:9481): py 4 / px 2 around the hairline. */
 .separator {
   height: 1px;
   margin: 4px 2px;
   background: var(--maid-alias-border-l1);
 }
 
-/* Nested card to the right of the parent row (figma 419:16920).
- * Bottom-aligned with the parent menu card (grows upward): itemWrap sits in
- * .list's 4px pad, so bottom: -4px matches the list's outer bottom edge.
- * Horizontal: list pad (4px) + 6px card gap = 10px past itemWrap — plain
- * `100% + 6px` collapses to ~2px between outer card edges.
- * ::before bridges the full gap so the pointer can cross without mouseLeave. */
 .submenu {
   position: absolute;
   top: auto;

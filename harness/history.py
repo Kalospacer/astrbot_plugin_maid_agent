@@ -81,7 +81,6 @@ def history_page(
     blocks = _turn_blocks(events)
 
     if not blocks or not any(_block_surface_count(b) for b in blocks):
-        # 无 surface 消息：空日志或纯 partial
         return {
             "events": events if before_seq is None else [],
             "has_more": False,
@@ -94,7 +93,7 @@ def history_page(
     for block in reversed(blocks):
         block_count = _block_surface_count(block)
         if not block_count and not chosen:
-            continue  # 尾部无消息的块（运行中）先跳过？不会发生：open turn 已含块内
+            continue
         if chosen and count + block_count > max_messages:
             has_more = True
             break
@@ -106,7 +105,6 @@ def history_page(
     partial_from = None
     if before_seq is None and chosen:
         last_block = chosen[-1]
-        # 跳过紧贴最后一条 surface 的收尾标记，其后即 partial
         idx = max(i for i, e in enumerate(last_block) if e.get("type") in SURFACE_EVENT_TYPES)
         k = idx + 1
         while k < len(last_block) and last_block[k].get("type") in _CLOSERS:

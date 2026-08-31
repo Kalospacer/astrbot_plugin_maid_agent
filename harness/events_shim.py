@@ -13,8 +13,8 @@ from astrbot.core.platform.platform_metadata import PlatformMetadata
 
 class DashboardMessage(AstrBotMessage):
     def __init__(self, *, text: str, sender_id: str, session: MessageSession) -> None:
-        super().__init__()  # 基类初始化 timestamp 和 group，缺了下游访问 .group 会 AttributeError
-        self.type = None  # 由 platform_meta 决定；占位
+        super().__init__()
+        self.type = None
         self.self_id = "dashboard"
         self.session_id = session.session_id
         self.message_id = f"dashboard_{uuid.uuid4().hex}"

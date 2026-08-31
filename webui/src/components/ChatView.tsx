@@ -12,12 +12,10 @@ export function ChatView() {
   const innerRef = useRef<HTMLDivElement | null>(null);
   const pinnedRef = useRef(true);
 
-  // store 对 SessionState 就地变更，fold 不能用 [session] 记忆——直接每次重算（线性、量级小）
   const folded = session
     ? foldConversation([...session.events.values()], session.views)
     : { nodes: [] as ChatNode[], running: false };
 
-  // 自动滚动：滚动盒是 ConversationRoot 的共享 scrollBody（贴底跟随，向上翻阅不打扰）
   useEffect(() => {
     const scroller = innerRef.current?.closest("[data-conversation-scroll]");
     if (!scroller) return;
@@ -33,12 +31,8 @@ export function ChatView() {
     if (scroller && pinnedRef.current) scroller.scrollTop = scroller.scrollHeight;
   });
 
-  // hero 相位（无会话/空会话）由 ConversationRoot 持有，这里只渲染消息流
   if (!session) return null;
 
-  // 工作中标识：turn 开着且宿主上报运行中（宿主是运行态的唯一事实源——历史里的
-  // 孤儿 turn/start 不再单独点亮），且末尾不是正在流式的 assistant 块
-  // （流式块自带"生成中…"），在时间线末尾补一个 "正在工作…" 行。
   const lastNode = folded.nodes[folded.nodes.length - 1];
   const working =
     folded.running &&
@@ -104,7 +98,6 @@ function ChatNodeView(props: { node: ChatNode; sessionId: string }) {
       </div>
     );
   }
-  // turn-tail
   const reasonKind = node.reason?.kind ?? "completed";
   const label =
     reasonKind === "completed"

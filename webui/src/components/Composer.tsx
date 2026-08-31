@@ -13,12 +13,10 @@ const EMPTY_QUEUE: never[] = [];
 interface PendingImage {
   name: string;
   mediaType: string;
-  data: string; // base64
+  data: string;
   preview: string;
 }
 
-/** 输入条：附件轨 + 文本 + 工具行（+ 附件，模型芯片，发送/停止）。
- *  常驻同一树位：hero（空会话居中）与 composer（吸附底部）只是 variant 之差。 */
 export function Composer(props: {
   variant: "hero" | "composer";
   running: boolean;
@@ -50,7 +48,7 @@ export function Composer(props: {
       await app.sendPrompt(current, parts, mode);
     } catch (error) {
       console.error(error);
-      setText(trimmed); // 发送失败退回输入框
+      setText(trimmed);
     }
   }
 
@@ -92,8 +90,6 @@ export function Composer(props: {
             ))}
           </div>
         )}
-        {/* 一个滚动口、两层文本：隐藏镜像渲染 draft+'\n' 把栈撑到草稿全高，
-            绝对定位的 textarea 骑在这个高度上；.scroll 是唯一滚动的盒子。 */}
         <div className={css.scroll} data-input-scroll="">
           <div className={css.grow}>
             <textarea
@@ -187,8 +183,6 @@ function fileToBase64(file: File): Promise<string> {
   });
 }
 
-/** 模型选择芯片：本会话 subagent 使用的 AstrBot 聊天 provider。
- *  选中项写进会话 meta（providerId 覆盖），下一 turn 生效；选"默认"清除覆盖。 */
 function ModelChip(props: { sessionId: SessionId }) {
   const models = useApp((s) => s.byId.get(props.sessionId)?.models ?? null);
   const [open, setOpen] = useState(false);

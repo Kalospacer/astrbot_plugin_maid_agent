@@ -14,7 +14,6 @@ from pathlib import Path
 
 logger = getLogger("maid_agent")
 
-# dashboard vite 默认产物名：KaTeX_Main-Regular-B22Nviop.woff2（8 位 base64url hash）
 _HASHED_RE = re.compile(r"^(KaTeX_[A-Za-z0-9]+(?:-[A-Za-z]+)*?)-[A-Za-z0-9_-]{8}\.woff2$")
 
 

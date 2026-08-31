@@ -11,8 +11,6 @@ import uuid
 
 SESSION_FORMAT_VERSION = 0
 
-# ---------------------------------------------------------------- 标量与 id
-
 
 def new_id() -> str:
     return uuid.uuid4().hex
@@ -20,10 +18,6 @@ def new_id() -> str:
 
 def now_ms() -> int:
     return int(time.time() * 1000)
-
-
-# ---------------------------------------------------------------- 内容块
-# ContentBlock: text | reasoning | image | tool-call | tool-result
 
 
 def text_block(text: str) -> dict:
@@ -49,10 +43,6 @@ def tool_result_block(tool_call_id: str, content: list[dict], is_error: bool = F
         "content": content,
         "isError": is_error,
     }
-
-
-# ---------------------------------------------------------------- 消息
-# Message: {id, role, content, source}
 
 
 def user_message(content: list[dict], source: dict | None = None) -> dict:
@@ -89,11 +79,6 @@ def tool_result_message(call_id: str, content: list[dict], is_error: bool) -> di
     }
 
 
-# ---------------------------------------------------------------- 流块
-# StreamChunk: block-start | text-delta | reasoning-delta | tool-call-delta
-#            | block-end | usage | finish
-
-
 def block_start_chunk(index: int, block_type: str) -> dict:
     return {"type": "block-start", "index": index, "blockType": block_type}
 
@@ -125,11 +110,8 @@ def finish_chunk(reason: dict) -> dict:
     return {"type": "finish", "reason": reason}
 
 
-# ---------------------------------------------------------------- 事件词表
-
 SURFACE_EVENT_TYPES = {"user/message", "assistant/message", "tool/result"}
 
-# 核心词表 + maid 扩展（ignorable）
 KNOWN_EVENT_TYPES = SURFACE_EVENT_TYPES | {
     "turn/start",
     "turn/end",
@@ -142,7 +124,6 @@ KNOWN_EVENT_TYPES = SURFACE_EVENT_TYPES | {
     "request/context",
     "session/end-seed",
     "session/title",
-    # maid 自定义（前向兼容：旧读取器可跳过）
     "maid/rewind",
     "maid/notification",
 }
@@ -175,9 +156,6 @@ def make_event(
     return event
 
 
-# turn/end reason 构造器
-
-
 def reason_completed() -> dict:
     return {"kind": "completed"}
 
@@ -200,10 +178,6 @@ def reason_interrupted() -> dict:
 
 def reason_blocked() -> dict:
     return {"kind": "blocked"}
-
-
-# ---------------------------------------------------------------- 工具视图
-# ToolCallView / ToolResultView（presentation.ts 词表）
 
 
 def generic_call_view(title: str, kind: str = "other", raw_input=None, locations=None) -> dict:
@@ -277,9 +251,6 @@ def tool_event_view_call(view: dict) -> dict:
 
 def tool_event_view_result(view: dict) -> dict:
     return {"for": "result", "view": view}
-
-
-# ---------------------------------------------------------------- mux/host 帧
 
 
 def frame_session_event(session_id: str, event: dict, view: dict | None = None) -> dict:

@@ -114,14 +114,16 @@
 | --- | --- | --- |
 | `default_agent_name` | `muiceagent` | 默认被调度的 SubAgent 名称。 |
 | `allowed_agent_names` | `[muiceagent]` | `call_maid` 可显式指定的 Agent 白名单。 |
-| `hide_native_tools` | `true` | 隐藏主模型可见的 AstrBot 原生工具，只保留 `call_maid` 与 `maid_task`。 |
-| `hide_transfer_tools` | `true` | `hide_native_tools=false` 时，额外隐藏全部 `transfer_to_*` 工具。 |
-| `include_raw_user_input` | `true` | 把真实用户原话一并透传给管家。 |
+| `hide_native_tools` | `true` | 隐藏主模型可见的 AstrBot 原生工具，只保留 `call_maid` 与 `maid_task`（经 `on_llm_request` 钩子做请求级过滤，改配置即时生效、无需重启）。 |
+| `hide_transfer_tools` | `true` | `hide_native_tools=false` 时，额外隐藏主模型可见的全部 `transfer_to_*` 工具，`call_maid` 仍可用。 |
+| `include_raw_user_input` | `true` | 开启时把真实用户原话一并透传给管家；关闭后只传大小姐的自然语言请求。 |
+| `log_raw_llm_io` | `false` | 开启后在 DEBUG 日志打印完整 LLM 原始请求/响应（prompt、contexts、system prompt、模型输出），可能包含敏感信息。 |
 | `foreground_timeout_seconds` | `50` | 前台等待阈值（秒），超时转后台。 |
 | `memory_agent_names` | `[]` | 启用持久记忆与原生 Read/Write/Edit 的 agent 名称列表。 |
 | `max_active_per_umo` | `5` | 每会话活跃 run 上限。 |
 | `max_active_global` | `20` | 全局活跃 run 上限。 |
 | `retention_days` | `30` | agent 元数据/run/transcript/output 保留天数（不删 memory）。 |
+| `max_turn_seconds` | `1800` | 单 turn 看门狗超时（秒），超时强制终止并标记 `interrupted`；`0` 关闭看门狗。 |
 | `dispatch_prompt_template` | 内置 | 发送给管家的中继调度系统提示词模板。 |
 
 **调度提示词模板**（`dispatch_prompt_template`）支持两个占位符，运行时自动注入：

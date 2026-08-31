@@ -1,11 +1,9 @@
-// JsonBlock: collapsible JSON block (conversation side; independent from the RPC panel's PayloadJson to avoid cross-panel coupling).
 
 import { useMemo, useState } from 'react'
 import css from './JsonBlock.module.css'
 
 const MAX_CHARS = 20_000
 
-/** Default truncation footer; the owner passes a localized formatter. */
 function defaultTruncatedLabel(total: number): string {
   return `… 已截断，共 ${total} 字符`
 }
@@ -14,7 +12,6 @@ export function JsonBlock({ label, payload, defaultOpen = false, truncatedLabel 
   label: string
   payload: unknown
   defaultOpen?: boolean
-  /** Footer appended when the body exceeds the char cap, given the full length (this package is cordis-free, so copy arrives via props). */
   truncatedLabel?: ((total: number) => string) | undefined
 }) {
   const [open, setOpen] = useState(defaultOpen)
@@ -22,8 +19,6 @@ export function JsonBlock({ label, payload, defaultOpen = false, truncatedLabel 
     if (!open) return ''
     let s: string
     try {
-      // lib typing hides stringify's undefined arm (undefined/function/symbol payloads).
-      // oxlint-disable-next-line typescript/no-unnecessary-condition
       s = JSON.stringify(payload, null, 2) ?? String(payload)
     } catch {
       s = String(payload)

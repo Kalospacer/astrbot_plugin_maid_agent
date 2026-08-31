@@ -1,12 +1,8 @@
-/* 主题令牌 */
+
 @import "../ui/theme/base.css";
 @import "../ui/theme/design-platform.css";
 @import "../ui/theme/gradient-shadow-text.css";
 @import "../ui/theme/scrollbar.css";
-
-/* ============================================================
-   应用层布局胶水 —— 只用 --maid-* 令牌
-   ============================================================ */
 
 :root {
   --app-font: "PingFang SC", "Microsoft YaHei", "Noto Sans SC", system-ui, sans-serif;
@@ -30,11 +26,6 @@ body {
 .muted {
   color: var(--maid-alias-label-secondary);
 }
-
-
-/* ---------------- 对话区 ----------------
-   骨架（相位、滚动口、输入座位）在 Conversation.module.css；
-   这里只留消息流内容样式。 */
 
 .chat-inner {
   box-sizing: border-box;
@@ -73,7 +64,6 @@ body {
   color: var(--maid-alias-state-warn-label);
 }
 
-/* agent 工作中标识：turn 开着但暂无流式文本时落在时间线末尾 */
 .working-line {
   display: flex;
   align-items: center;
@@ -88,8 +78,7 @@ body {
   overflow: hidden;
   background: var(--maid-alias-bg-layer-2);
 }
-/* 卡头：DisclosureRow（24px 行）+ 右侧状态字；左右留 10px 内边距，
-   状态字与标题同基线。 */
+
 .tool-card-head {
   display: flex;
   align-items: center;
@@ -106,7 +95,6 @@ body {
   font-size: 12.5px;
 }
 
-/* 单步 token 消耗（usage 节点，钉在本步工具卡之后） */
 .stats-line {
   display: flex;
   gap: 12px;
@@ -115,7 +103,6 @@ body {
   margin-top: -6px;
 }
 
-/* 用户消息里的图片附件（输入条的附件轨在 Composer.module.css） */
 .attach-rail {
   display: flex;
   gap: 8px;
@@ -131,9 +118,6 @@ body {
   padding: 4px 8px;
   background: var(--maid-alias-bg-layer-1);
 }
-
-/* ---------------- 详情面板 ----------------
-   头部（标题 + 关闭钮）固定，body 滚动。 */
 
 .details {
   height: 100%;
@@ -196,8 +180,6 @@ body {
   margin: 0;
   word-break: break-all;
 }
-
-/* ---------------- 通用 ---------------- */
 
 .row {
   display: flex;

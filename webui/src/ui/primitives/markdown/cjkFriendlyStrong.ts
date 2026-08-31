@@ -1,4 +1,3 @@
-/** Let asterisk strong emphasis close after punctuation when CJK prose continues without whitespace. */
 
 import { attention } from 'micromark-core-commonmark'
 import { unicodePunctuation } from 'micromark-util-character'
@@ -31,7 +30,6 @@ const tokenizeCjkFriendlyAttention: Tokenizer = function (effects, ok, nok) {
   return start
 
   function start(code: number | null): State | undefined {
-    /* v8 ignore next -- this text construct is dispatched only for an asterisk. */
     if (code !== codes.asterisk) return nok(code)
     marker = code
     effects.enter('attentionSequence')
@@ -73,11 +71,6 @@ const cjkFriendlyStrongExtension: Extension = {
   text: { [codes.asterisk]: cjkFriendlyAttention },
 }
 
-/**
- * Extend CommonMark asterisk strong emphasis for punctuation-delimited CJK
- * prose, as a micromark syntax extension for `fromMarkdown`.
- * @returns The micromark syntax extension.
- */
 export function cjkFriendlyStrong(): Extension {
   return cjkFriendlyStrongExtension
 }

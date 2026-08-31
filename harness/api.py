@@ -21,7 +21,6 @@ from .rpc import RpcError, bad_request, session_not_found
 
 SETTINGS_NS = "maid"
 
-# 与旧 _console_settings_save 相同的可写键面
 SETTINGS_KEYS = {
     "default_agent_name",
     "allowed_agent_names",
@@ -44,7 +43,7 @@ class ApiProxy:
         *,
         store,
         registry,
-        config_holder,  # 提供 get_config()/save_config(patch)->config/schema()
+        config_holder,
     ):
         self.store = store
         self.registry = registry
@@ -80,7 +79,6 @@ class ApiProxy:
             payload = {**payload, "_rpcId": rpc_id}
         return await handler(payload)
 
-    # ------------------------------------------------------------ sessions
 
     def _require_session(self, session_id: str):
         if not isinstance(session_id, str) or not self.store.exists(session_id):
@@ -226,7 +224,6 @@ class ApiProxy:
                     f"未找到聊天 provider: {provider_id}",
                     {"sessionId": session_id},
                 )
-        # 空 provider = 清除会话级覆盖，回到 subagent 配置 / umo 当前 provider
         log.update_meta(providerId=provider_id)
         driver = self.registry.drivers.get(session_id)
         if driver is not None:
@@ -261,7 +258,6 @@ class ApiProxy:
         at_seq = int(at_seq) if isinstance(at_seq, int) else None
 
         if at_seq is not None:
-            # 边界 = atSeq 及之后的第一个 turn/end；其后仍开着的 turn 拒绝
             boundary = None
             open_turn = False
             turn_open = False
@@ -356,7 +352,6 @@ class ApiProxy:
         session_id = str(payload.get("sessionId") or "")
         attachment_id = str(payload.get("attachmentId") or "")
         log = self._require_session(session_id)
-        # 会话日志必须引用过该附件 id 才可读（附件准入校验）
         referenced = any(
             block.get("type") == "image"
             and (block.get("attachment") or {}).get("attachmentId") == attachment_id
@@ -387,7 +382,6 @@ class ApiProxy:
             driver.request_stop()
         return {"accepted": True}
 
-    # ------------------------------------------------------------ presets
 
     def _preset_entries(self) -> list[dict]:
         default_name = self.config_holder.default_agent_name()
@@ -448,7 +442,6 @@ class ApiProxy:
             driver.agent_name = preset
         return {"agentPreset": preset}
 
-    # ------------------------------------------------------------ settings
 
     def _settings_view(self) -> dict:
         value = self.config_holder.get_config()
@@ -508,7 +501,6 @@ class ApiProxy:
                 patch[key] = op.get("value")
         return self._apply_settings_patch({"ns": ns, "patch": patch})
 
-    # ------------------------------------------------------------ host
 
     async def host_describe(self, payload: dict) -> dict:
         return {

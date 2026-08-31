@@ -15,32 +15,16 @@ const OBJECT_PREVIEW_LIMIT = 4
 const ARRAY_PREVIEW_LIMIT = 5
 const PREVIEW_DEPTH_LIMIT = 2
 
-/**
- * Display copy for the tree's copy affordance; the owner passes localized
- * labels (this package is cordis-free, so copy arrives via props). Every
- * field defaults to the current built-in value, so existing consumers render
- * unchanged.
- */
 export interface JsonTreeLabels {
-  /** Menu item: copy the raw primitive value. */
   copyValue: string
-  /** Menu item: copy the value as compact JSON (primitive rows). */
   copyJson: string
-  /** Menu item: copy the property path. */
   copyPath: string
-  /** Menu item: copy the value as pretty-printed JSON. */
   copyPrettyJson: string
-  /** Menu item: copy the value as compact JSON (object rows). */
   copyCompactJson: string
-  /** Copy-button state label after a successful copy. */
   copied: string
-  /** Copy-button state label after a failed copy. */
   copyFailed: string
-  /** Expander aria label while expanded. */
   collapseNode: string
-  /** Expander aria label while collapsed. */
   expandNode: string
-  /** Copy-button tooltip, given the current action label. */
   copyButtonTitle: (action: string) => string
 }
 
@@ -206,15 +190,12 @@ function claimFocus(button: HTMLElement): void {
 
 function moveFocus(button: HTMLElement, direction: -1 | 1): void {
   const tree = button.closest<HTMLElement>('[role="tree"]')
-  /* v8 ignore next -- JsonTree attaches expander handlers only beneath its owning role=tree. */
   if (tree === null) return
   const expanders = Array.from(tree.querySelectorAll<HTMLElement>('[data-json-expander]'))
   const current = expanders.indexOf(button)
-  /* v8 ignore next -- the current expander is a member of the queried non-empty set. */
   if (current < 0 || expanders.length === 0) return
   const next = (current + direction + expanders.length) % expanders.length
   const nextExpander = expanders[next]
-  /* v8 ignore next -- modulo over the non-empty expander set always resolves a member. */
   if (nextExpander !== undefined) claimFocus(nextExpander)
 }
 
@@ -383,27 +364,15 @@ function copyText(target: CopyTarget, mode: 'json' | 'path' | 'prettyJson' | 'va
   return JSON.stringify(target.value)
 }
 
-/** Props for the read-only, token-themed JSON tree. */
 export interface JsonTreeProps {
-  /** Parsed JSON object or array. */
   data: object | unknown[]
-  /** Accessible label for the tree. */
   label?: string
-  /** Optional positioning class owned by the caller. */
   className?: string | undefined
-  /** Whether JSON rows expose copy actions. */
   copyable?: boolean
-  /** Whether the top-level object or array is always expanded. */
   expandTopLevel?: boolean
-  /** Localized display copy; omitted fields keep the built-in defaults. */
   labels?: Partial<JsonTreeLabels> | undefined
 }
 
-/**
- * Render parsed JSON as a compact, keyboard-accessible inspector tree.
- * @param props - Parsed data, accessible label, and display options.
- * @returns A read-only JSON tree with an optionally fixed-open top level.
- */
 export function JsonTree({
   data,
   label = 'JSON',
@@ -452,7 +421,6 @@ export function JsonTree({
 
   const copyPosition = (row: HTMLElement): Pick<CopyTarget, 'left' | 'side' | 'top'> => {
     const root = rootRef.current
-    /* v8 ignore next -- row events and viewport listeners run only after the root ref mounts. */
     if (root === null) throw new Error('JsonTree root is not mounted')
     const rootRect = root.getBoundingClientRect()
     const rowRect = row.getBoundingClientRect()
@@ -471,7 +439,6 @@ export function JsonTree({
   const repositionCopyButton = (row: HTMLElement) => {
     const position = copyPosition(row)
     setCopyTarget((current) => {
-      /* v8 ignore next -- an active row and its copy target are installed together. */
       if (current === undefined) return current
       return { ...current, ...position }
     })
@@ -517,7 +484,6 @@ export function JsonTree({
 
   const handleRootMouseOver = (event: ReactMouseEvent<HTMLDivElement>) => {
     if (!copyable || copyMenuOpenRef.current) return
-    /* v8 ignore next -- browser mouse events delivered through React target an Element. */
     if (!(event.target instanceof Element)) return
     if (event.target.closest('[data-json-copy-button]') === null) clearCopyTarget()
   }
@@ -528,7 +494,6 @@ export function JsonTree({
   }
 
   const copy = async (mode: 'json' | 'path' | 'prettyJson' | 'value') => {
-    /* v8 ignore next -- copy controls only render while their target exists. */
     if (copyTarget === undefined) return
     try {
       await navigator.clipboard.writeText(copyText(copyTarget, mode))

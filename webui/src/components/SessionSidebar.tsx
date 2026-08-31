@@ -1,11 +1,3 @@
-/**
- * 侧栏：会话列表 + 搜索 + 底部工具区。
- *
- * 壳：logo 行（品牌字 = 新会话快捷键 + 收起开关）、新会话按钮、浏览区、底部设置。
- * 浏览区：区块头（"会话" 标签 + 按钮式搜索，展开后顶替标签）、会话列表 / 搜索结果。
- * 收起 = 滑出 + 交叉淡入淡出（150ms 落定后宽栏内容卸载，控件进入 56px 轨道）。
- * 裁剪：工作区、拖拽排序、归档、视图选项（插件无对应后端概念）。
- */
 
 import { useEffect, useRef, useState } from "react";
 import clsx from "clsx";
@@ -33,13 +25,9 @@ import * as app from "@/store/app";
 import type { SessionId, SessionSummary } from "@/types";
 import css from "./Sidebar.module.css";
 
-/** 宽栏内容卸载延迟，匹配 150ms 淡出。 */
 const COLLAPSE_SETTLE_MS = 150;
-/** 列滑动时长（--maid-transition-duration-slow）：轨道搜索的聚焦要等滑完。 */
 const EXPAND_SLIDE_MS = 300;
-/** 击键到 session.search 请求的停顿。 */
 const SEARCH_DEBOUNCE_MS = 250;
-/** session.search 线上上限（UTF-16 code units）。 */
 const SEARCH_QUERY_MAX_CODE_UNITS = 500;
 
 function sanitizeSearchQuery(value: string): string {
@@ -52,7 +40,6 @@ function sanitizeSearchQuery(value: string): string {
   return withoutNul.slice(0, end);
 }
 
-/** 紧凑相对时间（"刚刚"/"5分钟"/"3小时"/"2天"…）。 */
 function timeLabel(updatedAt: number, now: number): string {
   const MIN = 60_000;
   const HOUR = 3_600_000;
@@ -86,7 +73,6 @@ export function SessionSidebar(props: {
     void app.createSession(defaultPreset).catch(() => undefined);
   };
 
-  // 宽栏内容在收起动画期间保持挂载（淡出），落定才卸载；展开立即重挂载。
   const [settled, setSettled] = useState(collapsed);
   useEffect(() => {
     if (!collapsed) {
@@ -98,11 +84,9 @@ export function SessionSidebar(props: {
   }, [collapsed]);
   const wide = !collapsed || !settled;
 
-  // 淡出期间把内容冻结在展开宽度：滑动的列裁切它而不是让它重排。
   const lastWideWidth = useRef(width);
   if (!collapsed) lastWideWidth.current = width;
 
-  // 轨道进入动画只出现在真实收起过程；刷新直接进收起态时静态渲染。
   const everWide = useRef(!collapsed);
   if (!collapsed) everWide.current = true;
 
@@ -163,13 +147,9 @@ export function SessionSidebar(props: {
   );
 }
 
-/* ---------------------------------------------------------------- 来源切换 */
-
-/** UMO 切换：新会话绑定的消息来源（platform:MessageType:SessionId）。
- *  已知来源来自会话列表的 meta.umo，也可以手动输入自定义来源。 */
 function UmoSwitcher(props: { wide: boolean }) {
   const sessions = useApp((s) => s.sessions);
-  useApp((s) => s.presets.length); // 版本订阅：setUmo 后重渲染
+  useApp((s) => s.presets.length);
   const [menuOpen, setMenuOpen] = useState(false);
   const [customOpen, setCustomOpen] = useState(false);
   const [customValue, setCustomValue] = useState("");
@@ -250,8 +230,6 @@ function UmoSwitcher(props: { wide: boolean }) {
   );
 }
 
-/* ---------------------------------------------------------------- 浏览区 */
-
 interface RemoteSearchState {
   query: string;
   status: "idle" | "loading" | "ready" | "error";
@@ -262,9 +240,8 @@ function SessionBrowser(props: { wide: boolean; expandSidebar: () => void }) {
   const { wide } = props;
   const sessionMap = useApp((s) => s.sessions);
   const current = useApp((s) => s.current);
-  const umo = app.currentUmo(); // useApp 版本订阅已保证 setUmo 后此处重渲染
+  const umo = app.currentUmo();
 
-  // 查询比输入框活得久（宽栏专属）：收起不打断进行中的过滤。
   const [query, setQuery] = useState("");
   const [searchExpanded, setSearchExpanded] = useState(false);
   const normalizedQuery = sanitizeSearchQuery(query).trim();
@@ -272,7 +249,6 @@ function SessionBrowser(props: { wide: boolean; expandSidebar: () => void }) {
   const searchRoot = useRef<HTMLDivElement | null>(null);
   const searchInput = useRef<HTMLInputElement | null>(null);
 
-  // 轨道搜索 = 展开侧栏 + 落进搜索框：先布防，壳变宽后输入框挂载并聚焦。
   const [searchOnExpand, setSearchOnExpand] = useState(false);
   useEffect(() => {
     if (wide && searchOnExpand) {
@@ -289,7 +265,6 @@ function SessionBrowser(props: { wide: boolean; expandSidebar: () => void }) {
     searchInput.current?.focus({ preventScroll: true });
   }, [wide, searchExpanded, searchOnExpand]);
 
-  // 展开时点击别处：清空即收起。
   useEffect(() => {
     if (!wide || !searchExpanded) return;
     const onClick = (event: MouseEvent): void => {
@@ -302,7 +277,6 @@ function SessionBrowser(props: { wide: boolean; expandSidebar: () => void }) {
     return () => document.removeEventListener("click", onClick);
   }, [normalizedQuery, wide, searchExpanded]);
 
-  // 远程内容搜索（防抖 250ms），只搜当前来源的会话；本地标题匹配在渲染期合并。
   useEffect(() => {
     if (normalizedQuery === "") {
       setRemote({ query: "", status: "idle", items: [] });
@@ -396,7 +370,6 @@ function SessionBrowser(props: { wide: boolean; expandSidebar: () => void }) {
         )}
       </div>
 
-      {/* 收起轨道里搜索保留为独立 36px 控件。 */}
       {!wide && (
         <div className={css.search}>
           <Tooltip label="搜索">
@@ -442,8 +415,6 @@ function SessionBrowser(props: { wide: boolean; expandSidebar: () => void }) {
   );
 }
 
-/* ---------------------------------------------------------------- 搜索结果 */
-
 function SearchResultList(props: {
   sessions: SessionSummary[];
   query: string;
@@ -454,7 +425,6 @@ function SearchResultList(props: {
   const byId = new Map(props.sessions.map((s) => [s.sessionId, s]));
   const lower = query.toLowerCase();
 
-  // 本地标题匹配 + 远程内容摘录，按会话合并去重（远程优先提供 snippet）。
   const remoteItems = remote.query === query ? remote.items : [];
   const remoteIds = new Set(remoteItems.map((item) => item.sessionId));
   const localMatches = props.sessions.filter(
@@ -502,8 +472,6 @@ function SearchResultList(props: {
     </div>
   );
 }
-
-/* ---------------------------------------------------------------- 会话行 */
 
 function SessionRow(props: { item: SessionSummary; currentId: SessionId | undefined; now: number }) {
   const { item, now } = props;
@@ -651,7 +619,6 @@ function RenameDialog(props: { open: boolean; sessionId: SessionId; currentTitle
         onCompositionStart={() => { composingRef.current = true; }}
         onCompositionEnd={() => { composingRef.current = false; }}
         onKeyDown={(e) => {
-          // IME 组合中的 Enter 是选词，不是确认
           if (e.key === "Enter" && !composingRef.current) {
             e.preventDefault();
             confirm();

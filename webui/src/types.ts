@@ -1,4 +1,3 @@
-/** 线上契约类型（与后端词表镜像）。 */
 
 export type RpcId = string;
 export type SessionId = string;
@@ -22,8 +21,6 @@ export interface ServerRequest {
   method: string;
   payload: unknown;
 }
-
-/* ---------------- 内容块与消息 ---------------- */
 
 export interface TextBlock { type: "text"; text: string }
 export interface ReasoningBlock { type: "reasoning"; text: string }
@@ -67,8 +64,6 @@ export type StreamChunk =
   | { type: "usage"; usage: TokenUsage }
   | { type: "finish"; reason: { kind: string } };
 
-/* ---------------- 会话事件 ---------------- */
-
 export type TurnEndReason =
   | { kind: "completed" | "blocked" | "max-tokens" | "interrupted" }
   | { kind: "aborted"; reason: { kind: string } }
@@ -84,8 +79,6 @@ export interface SessionEvent {
   sourceEventSeqs?: number[];
 }
 
-/* ---------------- 工具视图 ---------------- */
-
 export type ToolCallView =
   | { card: "generic"; title: string; kind?: string; rawInput?: unknown }
   | { card: "terminal"; title: string; description?: string; cwd?: string }
@@ -100,8 +93,6 @@ export type ToolResultView =
 export type ToolEventView =
   | { for: "call"; view: ToolCallView }
   | { for: "result"; view: ToolResultView };
-
-/* ---------------- mux 帧 ---------------- */
 
 export type MuxFrame =
   | { type: "session/event"; sessionId: SessionId; event: SessionEvent; view?: ToolEventView }
@@ -123,15 +114,12 @@ export type HostFrame =
   | { type: "host/agent-error"; sessionId: SessionId; message: string }
   | { type: "stream/error"; error: { code: string; message: string } };
 
-/* ---------------- RPC 值 ---------------- */
-
 export interface SessionSummary {
   sessionId: SessionId;
   updatedAt: number;
   running: boolean;
   blank: boolean;
   agentPreset?: string;
-  /** 会话归属的消息来源（platform:MessageType:SessionId），控制台创建时写入 meta。 */
   umo?: string;
   projections?: { asOfSeq: number; values: Record<string, unknown> };
 }

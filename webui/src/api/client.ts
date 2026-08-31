@@ -1,10 +1,3 @@
-/**
- * 客户端传输层：RPC 信封 + 两条 SSE 下行流（mux/host）。
- *
- * WebApiClient/ConnectionController 形态，把 WS 换成 AstrBot 桥的
- * SSE 订阅：帧格式一致（`data: {ServerRequest}`），重连 = 重新订阅 +
- * 重拉 session.list + 当前会话 history。
- */
 
 import { hasBridge, rpcPost, subscribeStream, unsubscribeStream } from "./bridge";
 import type {
@@ -56,7 +49,6 @@ export interface StreamHandlers {
   onReconnected?: () => void;
 }
 
-/** 两条下行流的订阅与重连（指数退避 0.5s 起、2x、上限 10s）。 */
 export class ConnectionController {
   private handlers: StreamHandlers;
   private muxSub = "";
@@ -105,8 +97,6 @@ export class ConnectionController {
       payload?: unknown;
     } | null;
     if (!envelope || typeof envelope.type !== "string") return;
-    // ServerRequest 信封要解一层：真正的帧在 payload 里，帧类型 = method
-    // （payload 内自带 type 时以它为准，与后端帧构造器一致）。
     let frame = envelope as { type: string } & Record<string, unknown>;
     if (envelope.type === "server-request") {
       if (typeof envelope.method !== "string") return;

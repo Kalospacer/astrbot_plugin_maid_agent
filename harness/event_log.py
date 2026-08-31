@@ -48,9 +48,8 @@ class SessionLog:
         self.meta_path = self.dir / "meta.json"
         self.events_path = self.dir / "events.jsonl"
         self.lock = asyncio.Lock()
-        self._events: list[dict] | None = None  # 进程内缓存
+        self._events: list[dict] | None = None
 
-    # ------------------------------------------------------------ 建会话
 
     def exists(self) -> bool:
         return self.header_path.exists()
@@ -63,7 +62,6 @@ class SessionLog:
         _write_json_atomic(self.header_path, payload)
         self.events_path.touch()
 
-    # ------------------------------------------------------------ 元数据
 
     def load_header(self) -> dict | None:
         return _read_json(self.header_path)
@@ -80,7 +78,6 @@ class SessionLog:
         self.save_meta(meta)
         return meta
 
-    # ------------------------------------------------------------ 事件读取
 
     def _load_events(self) -> list[dict]:
         if self._events is not None:
@@ -95,7 +92,7 @@ class SessionLog:
                     try:
                         events.append(json.loads(line))
                     except json.JSONDecodeError:
-                        break  # 尾部损坏行丢弃（与旧实现同策略）
+                        break
         except FileNotFoundError:
             pass
         self._events = events
@@ -110,9 +107,8 @@ class SessionLog:
     @property
     def last_seq(self) -> int:
         events = self._load_events()
-        return len(events) - 1  # -1 = 空日志
+        return len(events) - 1
 
-    # ------------------------------------------------------------ 追加
 
     def append(
         self,
@@ -126,7 +122,6 @@ class SessionLog:
     ) -> dict:
         """同步追加（调用方负责持锁）。返回带 seq 的完整事件。"""
         if event_type not in KNOWN_EVENT_TYPES:
-            # 未知类型必须 ignorable 才能写（读取器前向兼容约束的写入面）
             if not ignorable:
                 raise SessionLogError(f"未知且不可忽略的事件类型: {event_type}")
         events = self._load_events()

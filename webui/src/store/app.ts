@@ -1,9 +1,3 @@
-/**
- * 应用状态：会话列表 + 每会话（事件/视图/投影/队列镜像）+ 连接态。
- *
- * 外部 store + useSyncExternalStore，
- * 投影 higher-seq-wins，事件按 seq 有序落位。
- */
 
 import { call, ConnectionController, type ConnectionState } from "@/api/client";
 import type {
@@ -14,6 +8,7 @@ import type {
   MuxFrame,
   PromptContentPart,
   QueuedInboxItem,
+  SessionEvent,
   SessionId,
   SessionSummary,
   SettingsNamespaceView,
@@ -23,14 +18,14 @@ import type {
 export interface SessionState {
   sessionId: SessionId;
   summary: SessionSummary;
-  events: Map<number, any>; // seq -> SessionEvent
-  views: Map<number, ToolEventView>; // seq -> view
+  events: Map<number, SessionEvent>;
+  views: Map<number, ToolEventView>;
   projections: Record<string, unknown>;
   projectionsSeq: number;
   queue: QueuedInboxItem[];
   historyLoaded: boolean;
   hasMore: boolean;
-  models: SessionModels | null; // session.models RPC（composer 模型芯片）
+  models: SessionModels | null;
 }
 
 export interface SessionModels {
@@ -92,8 +87,6 @@ export function getSnapshot(): AppState {
 export function getVersion(): number {
   return version;
 }
-
-/* ---------------------------------------------------------------- 会话 */
 
 function ensureSession(sessionId: SessionId): SessionState {
   let session = state.byId.get(sessionId);
@@ -177,17 +170,15 @@ export async function loadOlder(sessionId: SessionId): Promise<void> {
 
 function applyProjections(sessionId: SessionId, values: Record<string, unknown>, seq: number): void {
   const session = ensureSession(sessionId);
-  if (seq < session.projectionsSeq) return; // higher-seq-wins
+  if (seq < session.projectionsSeq) return;
   session.projectionsSeq = seq;
   session.projections = { ...session.projections, ...values };
 }
 
-/* ---------------------------------------------------------------- 帧 */
-
 export function applyMuxFrame(frame: MuxFrame): void {
   if (frame.type === "session/event") {
     const session = ensureSession(frame.sessionId);
-    if (session.events.has(frame.event.seq)) return; // 重连重放去重
+    if (session.events.has(frame.event.seq)) return;
     session.events.set(frame.event.seq, frame.event);
     if (frame.view) session.views.set(frame.event.seq, frame.view);
     session.summary.updatedAt = Math.max(session.summary.updatedAt, frame.event.time);
@@ -196,11 +187,7 @@ export function applyMuxFrame(frame: MuxFrame): void {
     return;
   }
   if (frame.type === "session/subscribed") {
-    const session = ensureSession(frame.sessionId);
-    // truncate到 lastSeq：重连后的权威基线
-    for (const seq of [...session.events.keys()]) {
-      if (seq > frame.lastSeq) session.events.delete(seq);
-    }
+    ensureSession(frame.sessionId);
     return;
   }
   if (frame.type === "session/queue") {
@@ -246,8 +233,6 @@ export function setConnection(connection: ConnectionState): void {
   emit();
 }
 
-/* ---------------------------------------------------------------- 动作 */
-
 export async function createSession(agentPreset?: string): Promise<SessionId> {
   const { sessionId } = await call<{ sessionId: SessionId }>("session.create", {
     agentPreset: agentPreset || chosenPreset() || undefined,
@@ -258,7 +243,7 @@ export async function createSession(agentPreset?: string): Promise<SessionId> {
   return sessionId;
 }
 
-const LEGACY_WEBID_UMO = "dashboard:WebId:dashboard"; // 2.0 初版的非法默认值（MessageType 无 WebId）
+const LEGACY_WEBID_UMO = "dashboard:WebId:dashboard";
 export const DEFAULT_UMO = "dashboard:FriendMessage:dashboard";
 
 let umoChoice = "";
@@ -278,7 +263,6 @@ export function setUmo(umo: string): void {
   } catch {
     /* sandboxed iframe */
   }
-  // 切换来源后，不属于该来源的当前会话一并收起（发送即落到新来源的新会话）
   const currentSummary = state.current ? state.sessions.get(state.current) : undefined;
   if (currentSummary && (currentSummary.umo || DEFAULT_UMO) !== currentUmo()) {
     state.current = undefined;
@@ -286,7 +270,6 @@ export function setUmo(umo: string): void {
   emit();
 }
 
-/** 未建会话时的预选 preset（hero 芯片选择）；建会话后走 agentPreset.select。 */
 let presetChoice = "";
 export function chosenPreset(): string {
   return presetChoice || state.presets.find((p) => p.isDefault)?.id || "";
@@ -342,7 +325,6 @@ export async function loadAttachmentImage(
   return `data:${attachment.mediaType};base64,${data}`;
 }
 
-/** 远端内容搜索（session.search）：标题匹配在组件渲染期本地合并。 */
 export async function searchSessions(
   query: string,
   umo?: string,
@@ -373,8 +355,6 @@ export async function refreshSettings(): Promise<void> {
   emit();
 }
 
-/* ---------------------------------------------------------------- 模型 */
-
 export async function loadModels(sessionId: SessionId): Promise<void> {
   const models = await call<SessionModels>("session.models", { sessionId });
   const session = ensureSession(sessionId);
@@ -382,7 +362,6 @@ export async function loadModels(sessionId: SessionId): Promise<void> {
   emit();
 }
 
-/** provider 传空串 = 清除会话级覆盖（跟随 subagent 配置 / umo 当前 provider）。 */
 export async function selectModel(sessionId: SessionId, provider: string): Promise<void> {
   await call("session.selectModel", { sessionId, provider });
   await loadModels(sessionId);
@@ -414,12 +393,9 @@ export function setTheme(theme: "light" | "dark"): void {
 }
 
 export function applyTheme(): void {
-  // 暗色样式按属性存在性匹配 body[data-maid-dark-theme]：亮色必须移除属性
   if (state.theme === "dark") document.body.setAttribute("data-maid-dark-theme", "");
   else document.body.removeAttribute("data-maid-dark-theme");
 }
-
-/* ---------------------------------------------------------------- 启动 */
 
 let controller: ConnectionController | null = null;
 

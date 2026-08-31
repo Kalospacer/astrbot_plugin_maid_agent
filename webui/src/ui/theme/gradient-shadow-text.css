@@ -1,13 +1,13 @@
 body {
   --maid-linear-gradient-think: linear-gradient(180deg, #fff 20.19%, rgba(255, 255, 255, 0) 100%);
   --maid-linear-think-select: linear-gradient(180deg, #f5f6f7 20.19%, rgba(245, 246, 247, 0) 100%);
-  /* 阴影 */
+  
   --maid-shadow-lv1: 0 2px 4px 0 rgba(0, 0, 0, 0.05);
   --maid-shadow-lv1-blur: 0 4px 12px 0 rgba(0, 0, 0, 0.02);
   --maid-shadow-lv2: 0 4px 12px 0 rgba(0, 0, 0, 0.02), 0 2px 8px 0 rgba(0, 0, 0, 0.04);
   --maid-shadow-lv3:
     0 0 1px 0 rgba(0, 0, 0, 0.2), 0 0 4px 0 rgba(0, 0, 0, 0.02), 0 12px 32px 0 rgba(0, 0, 0, 0.08);
-  /* blur filter */
+  
   --maid-mask-blur: blur(2px);
 }
 
@@ -15,8 +15,6 @@ body[data-maid-dark-theme] {
   --maid-linear-gradient-think: linear-gradient(180deg, #151517 20.19%, rgba(21, 21, 23, 0) 100%);
   --maid-linear-think-select: linear-gradient(180deg, #232325 20.19%, rgba(35, 35, 37, 0) 100%);
 }
-
-/* ---------- 字体 ---------- */
 
 body {
   --maid-font-markdown-h1: 700 24px/34px var(--maid-font-family);
@@ -131,7 +129,6 @@ body {
   --maid-font-markdown-code-block-font-size: 13px;
   --maid-font-markdown-code-block-font-style: normal;
 
-  /* 手工补充（非插件导出）：tool row 展开卡片内的小号 code 字体。 */
   --maid-font-markdown-code-block-small: 12px/18px var(--maid-font-family-code);
   --maid-font-markdown-code-block-small-font-family: var(--maid-font-family-code);
   --maid-font-markdown-code-block-small-font-weight: 400;

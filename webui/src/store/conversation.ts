@@ -1,13 +1,3 @@
-/**
- * 会话折叠：SessionEvent[] → 渲染节点。
- *
- * 会话事件折叠为渲染节点：
- * - user/message → 用户节点
- * - assistant/message → assistant 节点（blocks：text/reasoning/tool-call）
- * - assistant/chunk → 当前未定稿 partial（按块索引累加 text/reasoning）
- * - tool/call + tool/result → 工具节点（配对 by callId）
- * - turn/end → turn-tail 节点（reason）
- */
 
 import type { ContentBlock, SessionEvent, ToolEventView } from "@/types";
 
@@ -62,7 +52,6 @@ export interface TurnTailNode {
   time: number;
 }
 
-/** 单步 token 消耗：钉在 assistant/message 的事件位置（本步工具卡之后）。 */
 export interface UsageNode {
   kind: "usage";
   key: string;
@@ -148,9 +137,6 @@ export function foldConversation(
           usage: data.usage,
           time: event.time,
         };
-        // 定稿消息取代 partial —— 原地替换，锚在首条 chunk 的位置。
-        // 事件序里本步的 tool/call 在 assistant/message 之前（步末才 diff 出
-        // 定稿消息），若简单 push 到末尾，工具卡会跳到思考/正文上面。
         if (partial) {
           const idx = nodes.lastIndexOf(partial);
           const sameStep = partial.turn === turn && partial.step === step;
@@ -163,8 +149,6 @@ export function foldConversation(
         } else {
           nodes.push(node);
         }
-        // usage 独立成节点、按事件序追加：落在本步工具卡之后，而不是卡在
-        // 正文与工具卡之间。
         if (data.usage) {
           nodes.push({
             kind: "usage",
@@ -175,7 +159,6 @@ export function foldConversation(
             time: event.time,
           });
         }
-        // assistant 消息中的 tool-call 块创建工具节点（若无钩子事件）
         for (const block of blocks) {
           if (block.type === "tool-call" && !openTools.has(block.id)) {
             const node: ToolNode = {

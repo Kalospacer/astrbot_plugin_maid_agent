@@ -1,6 +1,4 @@
-/* Figma font-weight 510 (an SF Pro variable-font weight) always renders as
-   font-weight: 500 in this UI — non-variable webfonts snap intermediate
-   weights unpredictably across platforms. */
+
 body {
   --maid-static-amber-100: rgb(254, 245, 231);
   --maid-static-amber-400: rgb(247, 173, 49);

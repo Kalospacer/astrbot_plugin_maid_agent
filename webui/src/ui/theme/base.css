@@ -1,8 +1,4 @@
-/* Base variables referenced by the token sheets and component CSS but defined
- * upstream theme/global.css — supplied here so the composite
- * --maid-font-* variables resolve and motion rides the upstream curve. Code
- * font stack deliberately omits a bare `monospace` tail (Windows CJK falls
- * back to SimSun otherwise). */
+
 :root {
   --maid-font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC',
     'Hiragino Sans GB', 'Microsoft YaHei', 'Helvetica Neue', Helvetica, Arial, sans-serif;

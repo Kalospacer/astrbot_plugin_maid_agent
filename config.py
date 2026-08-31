@@ -11,7 +11,11 @@ from typing import Any
 
 from astrbot.api import logger
 
-from .constants import DEFAULT_MAID_AGENT_NAME
+from .constants import (
+    DEFAULT_MAID_AGENT_NAME,
+    MISTRESS_REQUEST_BLOCK_LABEL,
+    USER_INPUT_BLOCK_LABEL,
+)
 
 DEFAULT_FOREGROUND_TIMEOUT_SECONDS = 50
 DEFAULT_MAX_ACTIVE_PER_UMO = 5
@@ -55,15 +59,23 @@ def _render_default_dispatch_prompt(values: Mapping[str, str]) -> str:
 def render_dispatch_prompt(
     template: str,
     *,
-    user_input_block: str,
-    maid_request_block: str,
+    true_user_input: str,
+    request_text: str,
+    include_raw_user_input: bool,
 ) -> str:
-    """Render a configured dispatch prompt.
+    """Render a configured dispatch prompt for the maid subagent.
+
+    Blocks: the mistress's natural-language request, plus the user's raw
+    input when ``include_raw_user_input`` is on (and the input is non-empty).
 
     Unknown or malformed placeholders fall back to the default template so a
     stale user configuration cannot turn an otherwise valid runtime run into
     an immediate failure.
     """
+    user_input_block = ""
+    if include_raw_user_input and (true_user_input or "").strip():
+        user_input_block = f"【{USER_INPUT_BLOCK_LABEL}】\n{true_user_input}\n\n"
+    maid_request_block = f"【{MISTRESS_REQUEST_BLOCK_LABEL}】\n{request_text}\n\n"
     values = {
         "user_input_block": user_input_block,
         "maid_request_block": maid_request_block,
@@ -176,8 +188,6 @@ def load_maid_mode_config(config: Mapping[str, Any] | None = None) -> MaidModeCo
         DEFAULT_FOREGROUND_TIMEOUT_SECONDS,
     )
     if not 1 <= foreground_timeout_seconds <= 55:
-        # Must stay strictly below the Core local-tool timeout (60s) so the
-        # foreground wait_for can migrate to background before Core cancels it.
         logger.warning(
             "[大小姐模式] foreground_timeout_seconds=%s 越界，已重置为默认 %s",
             foreground_timeout_seconds,

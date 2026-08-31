@@ -12,7 +12,6 @@ from typing import Any
 
 from . import contracts as c
 
-# 工具名 → (kind, 卡类型)。terminal 类工具走终端卡，read 类走代码卡。
 _TOOL_KIND_RULES: list[tuple[str, str, str]] = [
     ("bash", "execute", "terminal"),
     ("shell", "execute", "terminal"),
@@ -171,5 +170,4 @@ def present_result(tool_name: str, result_text: str, arguments: Any) -> dict | N
         view: dict = c.diff_call_view(f"{tool_name} 完成", diffs)
         view["card"] = "diff"
         return {"card": "diff", "diffs": diffs}
-    # search / web / generic：文本足够，返回 None 让客户端渲染原始内容
     return None

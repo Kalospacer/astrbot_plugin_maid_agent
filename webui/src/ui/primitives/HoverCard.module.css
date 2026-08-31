@@ -1,14 +1,9 @@
-/* Block, not inline-flex: consumers wrap full-width list rows and an
- * inline wrapper would shrink them; the card still measures this rect. */
+
 .root {
   position: relative;
   display: block;
 }
 
-/* Preview card: 244 wide, r12, pad 12/16, the menu card's elevation.
- * 卡面跟主题令牌走（亮色下深色卡面会让令牌文字不可读）。
- * Hit-testable on purpose: resting the pointer on the card holds it open
- * (HoverCard's grace close), which a `pointer-events: none` card cannot do. */
 .card {
   position: fixed;
   z-index: 100;

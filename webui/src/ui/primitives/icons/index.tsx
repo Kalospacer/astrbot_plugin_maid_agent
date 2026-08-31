@@ -1,13 +1,7 @@
-/**
- * Icon set. All glyphs render fill="currentColor"
- * and take {size, className}.
- * (same figma source); batch B glyphs are harness-only figma extracts.
- */
 import type { IconProps } from './props.ts'
 
 export type { IconProps } from './props.ts'
 
-/** new chat outline 16 */
 export const IconNewChatOutline16 = ({ size = 16, className }: IconProps) => (
   <svg width={size} height={size} className={className} viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
     <path
@@ -17,7 +11,6 @@ export const IconNewChatOutline16 = ({ size = 16, className }: IconProps) => (
   </svg>
 )
 
-/** search outline 16 */
 export const IconSearchOutline16 = ({ size = 16, className }: IconProps) => (
   <svg width={size} height={size} className={className} viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
     <path
@@ -31,7 +24,6 @@ export const IconSearchOutline16 = ({ size = 16, className }: IconProps) => (
   </svg>
 )
 
-/** meridian globe. */
 export const IconGlobeOutline14 = ({ size = 14, className }: IconProps) => (
   <svg width={size} height={size} className={className} viewBox="0 0 14 14" fill="none" xmlns="http://www.w3.org/2000/svg">
     <path
@@ -43,7 +35,6 @@ export const IconGlobeOutline14 = ({ size = 14, className }: IconProps) => (
   </svg>
 )
 
-/** settings outline 14 */
 export const IconSettingsOutline14 = ({ size = 14, className }: IconProps) => (
   <svg width={size} height={size} className={className} viewBox="0 0 14 14" fill="none" xmlns="http://www.w3.org/2000/svg">
     <g clipPath="url(#clip0_2580_121189)">
@@ -64,7 +55,6 @@ export const IconSettingsOutline14 = ({ size = 14, className }: IconProps) => (
   </svg>
 )
 
-/** settings outline 16 */
 export const IconSettingsOutline16 = ({ size = 16, className }: IconProps) => (
   <svg width={size} height={size} className={className} viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
     <g clipPath="url(#clip0_1450_63327)">
@@ -85,7 +75,6 @@ export const IconSettingsOutline16 = ({ size = 16, className }: IconProps) => (
   </svg>
 )
 
-/** panel left outline 16 */
 export const IconPanelLeftOutline16 = ({ size = 16, className }: IconProps) => (
   <svg width={size} height={size} className={className} viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
     <path
@@ -97,7 +86,6 @@ export const IconPanelLeftOutline16 = ({ size = 16, className }: IconProps) => (
   </svg>
 )
 
-/** ellipsis outline 16 */
 export const IconEllipsisOutline16 = ({ size = 16, className }: IconProps) => (
   <svg width={size} height={size} className={className} viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
     <path
@@ -115,7 +103,6 @@ export const IconEllipsisOutline16 = ({ size = 16, className }: IconProps) => (
   </svg>
 )
 
-/** plus outline 16 */
 export const IconPlusOutline16 = ({ size = 16, className }: IconProps) => (
   <svg width={size} height={size} className={className} viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
     <path
@@ -125,7 +112,6 @@ export const IconPlusOutline16 = ({ size = 16, className }: IconProps) => (
   </svg>
 )
 
-/** check outline 16 */
 export const IconCheckOutline16 = ({ size = 16, className }: IconProps) => (
   <svg width={size} height={size} className={className} viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
     <path
@@ -135,7 +121,6 @@ export const IconCheckOutline16 = ({ size = 16, className }: IconProps) => (
   </svg>
 )
 
-/** check outline 14 */
 export const IconCheckOutline14 = ({ size = 14, className }: IconProps) => (
   <svg width={size} height={size} className={className} viewBox="0 0 14 14" fill="none" xmlns="http://www.w3.org/2000/svg">
     <path
@@ -145,7 +130,6 @@ export const IconCheckOutline14 = ({ size = 14, className }: IconProps) => (
   </svg>
 )
 
-/** branch outline 16 */
 export const IconBranchOutline16 = ({ size = 16, className }: IconProps) => (
   <svg width={size} height={size} className={className} viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
     <path
@@ -157,7 +141,6 @@ export const IconBranchOutline16 = ({ size = 16, className }: IconProps) => (
   </svg>
 )
 
-/** chevron down outline 14 */
 export const IconChevronDownOutline14 = ({ size = 14, className }: IconProps) => (
   <svg width={size} height={size} className={className} viewBox="0 0 14 14" fill="none" xmlns="http://www.w3.org/2000/svg">
     <path
@@ -167,7 +150,6 @@ export const IconChevronDownOutline14 = ({ size = 14, className }: IconProps) =>
   </svg>
 )
 
-/** chevron left outline 14 */
 export const IconChevronLeftOutline14 = ({ size = 14, className }: IconProps) => (
   <svg width={size} height={size} className={className} viewBox="0 0 14 14" fill="none" xmlns="http://www.w3.org/2000/svg">
     <path
@@ -177,7 +159,6 @@ export const IconChevronLeftOutline14 = ({ size = 14, className }: IconProps) =>
   </svg>
 )
 
-/** chevron right outline 14 */
 export const IconChevronRightOutline14 = ({ size = 14, className }: IconProps) => (
   <svg width={size} height={size} className={className} viewBox="0 0 14 14" fill="none" xmlns="http://www.w3.org/2000/svg">
     <path
@@ -187,7 +168,6 @@ export const IconChevronRightOutline14 = ({ size = 14, className }: IconProps) =
   </svg>
 )
 
-/** tree expand arrow; points right, consumers rotate it 90° for the open state. */
 export const IconTriangleRightFill14 = ({ size = 14, className }: IconProps) => (
   <svg width={size} height={size} className={className} viewBox="0 0 14 14" fill="none" xmlns="http://www.w3.org/2000/svg">
     <path
@@ -197,7 +177,6 @@ export const IconTriangleRightFill14 = ({ size = 14, className }: IconProps) => 
   </svg>
 )
 
-/** chevron up outline 14 */
 export const IconChevronUpOutline14 = ({ size = 14, className }: IconProps) => (
   <svg width={size} height={size} className={className} viewBox="0 0 14 14" fill="none" xmlns="http://www.w3.org/2000/svg">
     <path
@@ -207,7 +186,6 @@ export const IconChevronUpOutline14 = ({ size = 14, className }: IconProps) => (
   </svg>
 )
 
-/** close outline 16 */
 export const IconCloseOutline16 = ({ size = 16, className }: IconProps) => (
   <svg width={size} height={size} className={className} viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
     <path
@@ -221,7 +199,6 @@ export const IconCloseOutline16 = ({ size = 16, className }: IconProps) => (
   </svg>
 )
 
-/** close fill 14 */
 export const IconCloseFill14 = ({ size = 14, className }: IconProps) => (
   <svg width={size} height={size} className={className} viewBox="0 0 14 14" fill="none" xmlns="http://www.w3.org/2000/svg">
     <path
@@ -231,7 +208,6 @@ export const IconCloseFill14 = ({ size = 14, className }: IconProps) => (
   </svg>
 )
 
-/** copy outline 16 */
 export const IconCopyOutline16 = ({ size = 16, className }: IconProps) => (
   <svg width={size} height={size} className={className} viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
     <path
@@ -241,7 +217,6 @@ export const IconCopyOutline16 = ({ size = 16, className }: IconProps) => (
   </svg>
 )
 
-/** refresh outline 16 */
 export const IconRefreshOutline16 = ({ size = 16, className }: IconProps) => (
   <svg width={size} height={size} className={className} viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
     <path
@@ -251,7 +226,6 @@ export const IconRefreshOutline16 = ({ size = 16, className }: IconProps) => (
   </svg>
 )
 
-/** refresh outline 14 */
 export const IconRefreshOutline14 = ({ size = 14, className }: IconProps) => (
   <svg width={size} height={size} className={className} viewBox="0 0 14 14" fill="none" xmlns="http://www.w3.org/2000/svg">
     <path
@@ -261,7 +235,6 @@ export const IconRefreshOutline14 = ({ size = 14, className }: IconProps) => (
   </svg>
 )
 
-/** like outline 16 */
 export const IconLikeOutline16 = ({ size = 16, className }: IconProps) => (
   <svg width={size} height={size} className={className} viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
     <path
@@ -271,7 +244,6 @@ export const IconLikeOutline16 = ({ size = 16, className }: IconProps) => (
   </svg>
 )
 
-/** like fill 16 */
 export const IconLikeFill16 = ({ size = 16, className }: IconProps) => (
   <svg width={size} height={size} className={className} viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
     <path
@@ -285,7 +257,6 @@ export const IconLikeFill16 = ({ size = 16, className }: IconProps) => (
   </svg>
 )
 
-/** dislike outline 16 */
 export const IconDislikeOutline16 = ({ size = 16, className }: IconProps) => (
   <svg width={size} height={size} className={className} viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
     <path
@@ -295,7 +266,6 @@ export const IconDislikeOutline16 = ({ size = 16, className }: IconProps) => (
   </svg>
 )
 
-/** dislike fill 16 */
 export const IconDislikeFill16 = ({ size = 16, className }: IconProps) => (
   <svg width={size} height={size} className={className} viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
     <path
@@ -309,7 +279,6 @@ export const IconDislikeFill16 = ({ size = 16, className }: IconProps) => (
   </svg>
 )
 
-/** share outline 16 */
 export const IconShareOutline16 = ({ size = 16, className }: IconProps) => (
   <svg width={size} height={size} className={className} viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
     <path
@@ -319,7 +288,6 @@ export const IconShareOutline16 = ({ size = 16, className }: IconProps) => (
   </svg>
 )
 
-/** edit outline 16 */
 export const IconEditOutline16 = ({ size = 16, className }: IconProps) => (
   <svg width={size} height={size} className={className} viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
     <path
@@ -329,7 +297,6 @@ export const IconEditOutline16 = ({ size = 16, className }: IconProps) => (
   </svg>
 )
 
-/** think outline 14 */
 export const IconThinkOutline14 = ({ size = 14, className }: IconProps) => (
   <svg width={size} height={size} className={className} viewBox="0 0 14 14" fill="none" xmlns="http://www.w3.org/2000/svg">
     <path
@@ -345,7 +312,6 @@ export const IconThinkOutline14 = ({ size = 14, className }: IconProps) => (
   </svg>
 )
 
-/** think outline 16 */
 export const IconThinkOutline16 = ({ size = 16, className }: IconProps) => (
   <svg width={size} height={size} className={className} viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
     <path
@@ -361,7 +327,6 @@ export const IconThinkOutline16 = ({ size = 16, className }: IconProps) => (
   </svg>
 )
 
-/** node interiors knock out to transparency via mask, so the glyph sits on any fill. */
 export const IconAgentPresetOutline16 = ({ size = 16, className }: IconProps) => (
   <svg width={size} height={size} className={className} viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
     <mask id="mask0_agent_preset_16" maskUnits="userSpaceOnUse" x="0" y="0" width="16" height="16">
@@ -390,7 +355,6 @@ export const IconAgentPresetOutline16 = ({ size = 16, className }: IconProps) =>
   </svg>
 )
 
-/** browse outline 16 */
 export const IconBrowseOutline16 = ({ size = 16, className }: IconProps) => (
   <svg width={size} height={size} className={className} viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
     <path d="M11.2426 4.80473V6.10551H4.75819V4.80473H11.2426Z" fill="currentColor" />
@@ -402,7 +366,6 @@ export const IconBrowseOutline16 = ({ size = 16, className }: IconProps) => (
   </svg>
 )
 
-/** link outline 14 */
 export const IconLinkOutline14 = ({ size = 14, className }: IconProps) => (
   <svg width={size} height={size} className={className} viewBox="0 0 14 14" fill="none" xmlns="http://www.w3.org/2000/svg">
     <path
@@ -416,7 +379,6 @@ export const IconLinkOutline14 = ({ size = 14, className }: IconProps) => (
   </svg>
 )
 
-/** link outline 16 */
 export const IconLinkOutline16 = ({ size = 16, className }: IconProps) => (
   <svg width={size} height={size} className={className} viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
     <path
@@ -430,7 +392,6 @@ export const IconLinkOutline16 = ({ size = 16, className }: IconProps) => (
   </svg>
 )
 
-/** right up outline 14 */
 export const IconRightUpOutline14 = ({ size = 8, className }: IconProps) => (
   <svg width={size} height={size} className={className} viewBox="0 0 8 14" fill="none" xmlns="http://www.w3.org/2000/svg">
     <path
@@ -440,7 +401,6 @@ export const IconRightUpOutline14 = ({ size = 8, className }: IconProps) => (
   </svg>
 )
 
-/** right up outline 16 */
 export const IconRightUpOutline16 = ({ size = 16, className }: IconProps) => (
   <svg width={size} height={size} className={className} viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
     <path
@@ -450,7 +410,6 @@ export const IconRightUpOutline16 = ({ size = 16, className }: IconProps) => (
   </svg>
 )
 
-/** enhance outline 16 */
 export const IconEnhanceOutline16 = ({ size = 16, className }: IconProps) => (
   <svg width={size} height={size} className={className} viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
     <path d="M14.9943 1.92389V3.32428H1.00598V1.92389H14.9943Z" fill="currentColor" />
@@ -460,7 +419,6 @@ export const IconEnhanceOutline16 = ({ size = 16, className }: IconProps) => (
   </svg>
 )
 
-/** trash outline 16 */
 export const IconTrashOutline16 = ({ size = 16, className }: IconProps) => (
   <svg width={size} height={size} className={className} viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
     <path
@@ -470,7 +428,6 @@ export const IconTrashOutline16 = ({ size = 16, className }: IconProps) => (
   </svg>
 )
 
-/** warning outline 16 */
 export const IconWarningOutline16 = ({ size = 14, className }: IconProps) => (
   <svg width={size} height={size} className={className} viewBox="0 0 14 14" fill="none" xmlns="http://www.w3.org/2000/svg">
     <path
@@ -485,7 +442,6 @@ export const IconWarningOutline16 = ({ size = 14, className }: IconProps) => (
   </svg>
 )
 
-/** user outline 16 */
 export const IconUserOutline16 = ({ size = 16, className }: IconProps) => (
   <svg width={size} height={size} className={className} viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
     <path
@@ -499,7 +455,6 @@ export const IconUserOutline16 = ({ size = 16, className }: IconProps) => (
   </svg>
 )
 
-/** send outline 16 */
 export const IconSendOutline16 = ({ size = 16, className }: IconProps) => (
   <svg width={size} height={size} className={className} viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
     <path
@@ -509,7 +464,6 @@ export const IconSendOutline16 = ({ size = 16, className }: IconProps) => (
   </svg>
 )
 
-/** stop fill 16 */
 export const IconStopFill16 = ({ size = 16, className }: IconProps) => (
   <svg width={size} height={size} className={className} viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
     <path
@@ -519,7 +473,6 @@ export const IconStopFill16 = ({ size = 16, className }: IconProps) => (
   </svg>
 )
 
-/** paperclip outline 16 */
 export const IconPaperclipOutline16 = ({ size = 16, className }: IconProps) => (
   <svg width={size} height={size} className={className} viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
     <path
@@ -529,7 +482,6 @@ export const IconPaperclipOutline16 = ({ size = 16, className }: IconProps) => (
   </svg>
 )
 
-/** loading outline 16 */
 export const IconLoadingOutline16 = ({ size = 16, className }: IconProps) => (
   <svg width={size} height={size} className={className} viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
     <path
@@ -539,7 +491,6 @@ export const IconLoadingOutline16 = ({ size = 16, className }: IconProps) => (
   </svg>
 )
 
-/** download outline 16 */
 export const IconDownloadOutline16 = ({ size = 16, className }: IconProps) => (
   <svg width={size} height={size} className={className} viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
     <path
@@ -549,7 +500,6 @@ export const IconDownloadOutline16 = ({ size = 16, className }: IconProps) => (
   </svg>
 )
 
-/** play outline 16 */
 export const IconPlayOutline16 = ({ size = 16, className }: IconProps) => (
   <svg width={size} height={size} className={className} viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
     <path
@@ -563,7 +513,6 @@ export const IconPlayOutline16 = ({ size = 16, className }: IconProps) => (
   </svg>
 )
 
-/** pause outline 16 */
 export const IconPauseOutline16 = ({ size = 16, className }: IconProps) => (
   <svg width={size} height={size} className={className} viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
     <path
@@ -575,7 +524,6 @@ export const IconPauseOutline16 = ({ size = 16, className }: IconProps) => (
   </svg>
 )
 
-/** fullscreen outline 16 */
 export const IconFullscreenOutline16 = ({ size = 16, className }: IconProps) => (
   <svg width={size} height={size} className={className} viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
     <path
@@ -589,7 +537,6 @@ export const IconFullscreenOutline16 = ({ size = 16, className }: IconProps) => 
   </svg>
 )
 
-/** code outline 16 */
 export const IconCodeOutline16 = ({ size = 16, className }: IconProps) => (
   <svg width={size} height={size} className={className} viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
     <path
@@ -601,7 +548,6 @@ export const IconCodeOutline16 = ({ size = 16, className }: IconProps) => (
   </svg>
 )
 
-/** cordis plugin outline 14 */
 export const IconCordisPluginOutline14 = ({ size = 14, className }: IconProps) => (
   <svg width={size} height={size} className={className} viewBox="0 0 14 14" fill="none" xmlns="http://www.w3.org/2000/svg">
     <g clipPath="url(#clip0_1840_45990)">
@@ -619,7 +565,6 @@ export const IconCordisPluginOutline14 = ({ size = 14, className }: IconProps) =
   </svg>
 )
 
-/** API glyph. */
 export const IconApiOutline14 = ({ size = 14, className }: IconProps) => (
   <svg width={size} height={size} className={className} viewBox="0 0 14 14" fill="none">
     <path transform="translate(0.6689 1.073)" d="M11.4818 5.57813C11.4818 4.45301 11.4807 3.66237 11.4075 3.05908C11.3359 2.46953 11.2024 2.13852 10.9939 1.89441C10.9247 1.81341 10.8493 1.73801 10.7683 1.66882C10.5242 1.46033 10.1932 1.32686 9.60364 1.25525C9.00034 1.18198 8.20974 1.18091 7.0846 1.18091L5.57813 1.18091C4.45301 1.18091 3.66238 1.18198 3.05908 1.25525C2.46953 1.32686 2.13852 1.46033 1.89441 1.66882C1.81341 1.73801 1.73801 1.81341 1.66882 1.89441C1.46033 2.13852 1.32686 2.46953 1.25525 3.05908C1.18198 3.66238 1.18091 4.45301 1.18091 5.57813L1.18091 6.2771C1.18091 7.40218 1.18197 8.19288 1.25525 8.79614C1.32687 9.38553 1.46036 9.71674 1.66882 9.96082C1.73797 10.0417 1.81347 10.1173 1.89441 10.1864C2.13851 10.3948 2.46965 10.5275 3.05908 10.5991C3.66238 10.6724 4.45298 10.6735 5.57813 10.6735L7.0846 10.6735C8.20977 10.6735 9.00033 10.6724 9.60364 10.5991C10.1931 10.5275 10.5242 10.3948 10.7683 10.1864C10.8493 10.1173 10.9247 10.0417 10.9939 9.96082C11.2024 9.71674 11.3358 9.38553 11.4075 8.79614C11.4808 8.19288 11.4818 7.40218 11.4818 6.2771L11.4818 5.57813ZM12.6627 6.2771C12.6627 7.37222 12.6637 8.247 12.5798 8.93799C12.4942 9.64284 12.3133 10.2359 11.8928 10.7282C11.7834 10.8562 11.6637 10.9751 11.5356 11.0845C11.0434 11.5049 10.4511 11.6867 9.74634 11.7723C9.05525 11.8563 8.17999 11.8552 7.0846 11.8552L5.57813 11.8552C4.48273 11.8552 3.60747 11.8563 2.91638 11.7723C2.21157 11.6867 1.61933 11.5049 1.12708 11.0845C0.99901 10.9751 0.879281 10.8562 0.769898 10.7282C0.349454 10.2359 0.168506 9.64284 0.0828864 8.93799C-0.00101964 8.247 4.88512e-07 7.37222 6.47206e-07 6.2771L6.47206e-07 5.57813C6.47206e-07 4.48273 -0.00106163 3.60747 0.0828864 2.91638C0.168502 2.21168 0.349594 1.61928 0.769898 1.12708C0.879302 0.998981 0.998981 0.879302 1.12708 0.769898C1.61928 0.349594 2.21168 0.168502 2.91638 0.0828864C3.60747 -0.00106163 4.48273 6.47206e-07 5.57813 6.47206e-07L7.0846 6.47206e-07C8.17999 6.47206e-07 9.05525 -0.00106163 9.74634 0.0828864C10.451 0.168505 11.0434 0.349587 11.5356 0.769898C11.6637 0.879302 11.7834 0.998981 11.8928 1.12708C12.3131 1.61928 12.4942 2.21169 12.5798 2.91638C12.6638 3.60747 12.6627 4.48273 12.6627 5.57813L12.6627 6.2771Z" fill="currentColor"/>
@@ -628,14 +573,12 @@ export const IconApiOutline14 = ({ size = 14, className }: IconProps) => (
   </svg>
 )
 
-/** personalization glyph. */
 export const IconPersonalizationOutline16 = ({ size = 16, className }: IconProps) => (
   <svg width={size} height={size} className={className} viewBox="0 0 16 16" fill="none">
     <path transform="translate(1.292 1.3)" d="M10.3232 9.18164C11.2868 9.18164 12.0985 9.82833 12.3506 10.7109L13.415 10.7109L13.415 11.8711L12.3496 11.8711C12.0971 12.7532 11.2864 13.3994 10.3232 13.3994C9.36031 13.3992 8.55012 12.7531 8.29785 11.8711L0 11.8711L0 10.7109L8.29688 10.7109C8.54876 9.82845 9.35988 9.18186 10.3232 9.18164ZM10.3232 10.3418C9.7999 10.3421 9.37534 10.7667 9.375 11.29C9.375 11.8137 9.79969 12.239 10.3232 12.2393C10.847 12.2393 11.2725 11.8138 11.2725 11.29C11.2721 10.7666 10.8468 10.3418 10.3232 10.3418ZM12.4326 11.291C12.4326 11.3549 12.4284 11.418 12.4229 11.4805C12.4287 11.4181 12.4326 11.355 12.4326 11.291ZM8.21484 11.2832C8.21484 11.2856 8.21484 11.2886 8.21484 11.291L8.21484 11.29C8.21484 11.2878 8.21484 11.2855 8.21484 11.2832ZM3.08301 4.59082C4.04605 4.59095 4.85696 5.23717 5.10938 6.11914L13.415 6.11914L13.415 7.2793L5.11035 7.2793C4.85833 8.16202 4.04648 8.80846 3.08301 8.80859C2.11972 8.80843 1.30963 8.16179 1.05762 7.2793L0 7.2793L0 6.11914L1.05762 6.11914C1.30994 5.23728 2.12006 4.59098 3.08301 4.59082ZM3.08301 5.75098C2.55962 5.75117 2.13512 6.17587 2.13477 6.69922C2.13477 7.22287 2.5594 7.64824 3.08301 7.64844C3.60665 7.64828 4.03223 7.2229 4.03223 6.69922C4.03187 6.17585 3.60643 5.75113 3.08301 5.75098ZM5.19238 6.69922C5.19238 6.763 5.18816 6.82633 5.18262 6.88867C5.18846 6.82629 5.19238 6.76313 5.19238 6.69922C5.19236 6.63495 5.18853 6.57152 5.18262 6.50879C5.18826 6.57154 5.19236 6.635 5.19238 6.69922ZM0.982422 6.52344C0.977382 6.58136 0.97463 6.63999 0.974609 6.69922C0.974609 6.75775 0.977496 6.81579 0.982422 6.87305C0.977758 6.81579 0.974609 6.75767 0.974609 6.69922C0.974628 6.64 0.977618 6.58142 0.982422 6.52344ZM10.3232 0C11.2869 0 12.0986 0.646596 12.3506 1.5293L13.415 1.5293L13.415 2.68945L12.3496 2.68945C12.363 2.64266 12.3754 2.59488 12.3857 2.54688C12.1838 3.50118 11.3376 4.21777 10.3232 4.21777C9.36037 4.21756 8.55018 3.57139 8.29785 2.68945L0 2.68945L0 1.5293L8.29688 1.5293C8.5487 0.646717 9.35981 0.00021854 10.3232 0ZM10.3232 1.16016C9.79984 1.16042 9.37524 1.58499 9.375 2.1084C9.375 2.63201 9.79969 3.05735 10.3232 3.05762C10.847 3.05762 11.2725 2.63217 11.2725 2.1084C11.2722 1.58483 10.8469 1.16016 10.3232 1.16016ZM12.4229 2.29883C12.4287 2.23641 12.4326 2.17331 12.4326 2.10938C12.4326 2.17327 12.4284 2.23638 12.4229 2.29883ZM8.21484 2.10938L8.21484 2.1084L8.21484 2.10938ZM8.22266 1.93359C8.21785 1.98897 8.21506 2.04499 8.21484 2.10156C8.21503 2.04501 8.2181 1.98902 8.22266 1.93359ZM8.22266 11.1162C8.2179 11.1713 8.21507 11.227 8.21484 11.2832C8.21504 11.227 8.21814 11.1713 8.22266 11.1162Z" fill="currentColor"/>
   </svg>
 )
 
-/** project-add glyph. */
 export const IconProjectAddOutline16 = ({ size = 16, className }: IconProps) => (
   <svg width={size} height={size} className={className} viewBox="0 0 16 16" fill="none">
     <path transform="translate(9.52 2.52)" d="M3.55246 0L3.55246 2.44252L6 2.44252L6 3.55748L3.55246 3.55748L3.55246 6L2.43834 6L2.43834 3.55748L0 3.55748L0 2.44252L2.43834 2.44252L2.43834 0L3.55246 0Z" fill="currentColor"/>
@@ -643,18 +586,12 @@ export const IconProjectAddOutline16 = ({ size = 16, className }: IconProps) => 
   </svg>
 )
 
-/**
- * folder_open_16, outline layer only: the duotone original above reads a rung
- * heavier than the …Outline16 family, so an icon-button row mixing them looks
- * mismatched — this is the same geometry without the 20%-opacity inner fill.
- */
 export const IconFolderOpenOutline16 = ({ size = 16, className }: IconProps) => (
   <svg width={size} height={size} className={className} viewBox="0 0 16 16" fill="none">
     <path d="M5.19629 1.57104C5.81144 1.5711 6.38623 1.8786 6.72754 2.39038L7.19922 3.09839C7.28454 3.22635 7.42824 3.30344 7.58203 3.30347H12.1699C13.5039 3.30348 14.5859 4.38548 14.5859 5.71948V6.62671C15.2694 7.02689 15.6605 7.85012 15.4385 8.68726L14.3848 12.658C14.1037 13.7164 13.1449 14.4527 12.0498 14.4529H2.91699C1.51651 14.4529 0.451662 13.2814 0.501954 11.9519V3.98706C0.501954 2.65305 1.58396 1.57104 2.91797 1.57104H5.19629ZM3.7793 7.75562C3.30994 7.75562 2.89883 8.07153 2.77832 8.52515L1.91602 11.7722C1.74167 12.4291 2.23734 13.073 2.91699 13.073H12.0498C12.5191 13.0728 12.9304 12.757 13.0508 12.3035L14.1045 8.33374C14.1819 8.04202 13.9619 7.756 13.6602 7.75562H3.7793ZM2.91797 2.9519C2.34625 2.9519 1.88281 3.41534 1.88281 3.98706V7.2937C2.33068 6.7269 3.02249 6.37476 3.7793 6.37476H13.2051V5.71948C13.2051 5.14777 12.7416 4.68434 12.1699 4.68433H7.58203C6.96675 4.6843 6.39209 4.37595 6.05078 3.86401L5.5791 3.15601C5.49379 3.02821 5.34995 2.95196 5.19629 2.9519H2.91797Z" fill="currentColor"/>
   </svg>
 )
 
-/** folder_open_16 (figma extract): outline at full ink + 20%-opacity inner fill riding the same currentColor. */
 export const IconFolderOpen16 = ({ size = 16, className }: IconProps) => (
   <svg width={size} height={size} className={className} viewBox="0 0 16 16" fill="none">
     <path d="M5.19629 1.57104C5.81144 1.5711 6.38623 1.8786 6.72754 2.39038L7.19922 3.09839C7.28454 3.22635 7.42824 3.30344 7.58203 3.30347H12.1699C13.5039 3.30348 14.5859 4.38548 14.5859 5.71948V6.62671C15.2694 7.02689 15.6605 7.85012 15.4385 8.68726L14.3848 12.658C14.1037 13.7164 13.1449 14.4527 12.0498 14.4529H2.91699C1.51651 14.4529 0.451662 13.2814 0.501954 11.9519V3.98706C0.501954 2.65305 1.58396 1.57104 2.91797 1.57104H5.19629ZM3.7793 7.75562C3.30994 7.75562 2.89883 8.07153 2.77832 8.52515L1.91602 11.7722C1.74167 12.4291 2.23734 13.073 2.91699 13.073H12.0498C12.5191 13.0728 12.9304 12.757 13.0508 12.3035L14.1045 8.33374C14.1819 8.04202 13.9619 7.756 13.6602 7.75562H3.7793ZM2.91797 2.9519C2.34625 2.9519 1.88281 3.41534 1.88281 3.98706V7.2937C2.33068 6.7269 3.02249 6.37476 3.7793 6.37476H13.2051V5.71948C13.2051 5.14777 12.7416 4.68434 12.1699 4.68433H7.58203C6.96675 4.6843 6.39209 4.37595 6.05078 3.86401L5.5791 3.15601C5.49379 3.02821 5.34995 2.95196 5.19629 2.9519H2.91797Z" fill="currentColor"/>
@@ -662,21 +599,18 @@ export const IconFolderOpen16 = ({ size = 16, className }: IconProps) => (
   </svg>
 )
 
-/** folder_close_16 (figma extract) */
 export const IconFolderClose16 = ({ size = 16, className }: IconProps) => (
   <svg width={size} height={size} className={className} viewBox="0 0 16 16" fill="none">
     <path transform="translate(1.5 2.429)" d="M5.05582 0.518756L4.50669 0.86654L5.05582 0.518756ZM13 9.4837L13.65 9.4837L13.65 3.53962L13 3.53962L12.35 3.53962L12.35 9.4837L13 9.4837ZM11.3264 1.86603L11.3264 1.21603L6.52313 1.21603L6.52313 1.86603L6.52313 2.51603L11.3264 2.51603L11.3264 1.86603ZM5.58054 1.34727L6.12968 0.999489L5.60495 0.170972L5.05582 0.518756L4.50669 0.86654L5.03141 1.69506L5.58054 1.34727ZM4.11323 1.23058e-13L4.11323 -0.65L1.67359 -0.65L1.67359 5.00699e-14L1.67359 0.65L4.11323 0.65L4.11323 1.23058e-13ZM0 1.67359L-0.65 1.67359L-0.65 9.4837L0 9.4837L0.65 9.4837L0.65 1.67359L0 1.67359ZM11.3264 11.1573L11.3264 10.5073L1.67359 10.5073L1.67359 11.1573L1.67359 11.8073L11.3264 11.8073L11.3264 11.1573ZM0 9.4837L-0.65 9.4837C-0.65 10.767 0.390308 11.8073 1.67359 11.8073L1.67359 11.1573L1.67359 10.5073C1.10828 10.5073 0.65 10.049 0.65 9.4837L0 9.4837ZM1.67359 5.00699e-14L1.67359 -0.65C0.390307 -0.65 -0.65 0.390309 -0.65 1.67359L0 1.67359L0.65 1.67359C0.65 1.10828 1.10828 0.65 1.67359 0.65L1.67359 5.00699e-14ZM5.05582 0.518756L5.60495 0.170972C5.28121 -0.340193 4.71829 -0.65 4.11323 -0.65L4.11323 1.23058e-13L4.11323 0.65C4.27282 0.65 4.4213 0.731715 4.50669 0.86654L5.05582 0.518756ZM6.52313 1.86603L6.52313 1.21603C6.36354 1.21603 6.21507 1.13431 6.12968 0.999489L5.58054 1.34727L5.03141 1.69506C5.35515 2.20622 5.91808 2.51603 6.52313 2.51603L6.52313 1.86603ZM13 3.53962L13.65 3.53962C13.65 2.25634 12.6097 1.21603 11.3264 1.21603L11.3264 1.86603L11.3264 2.51603C11.8917 2.51603 12.35 2.97431 12.35 3.53962L13 3.53962ZM13 9.4837L12.35 9.4837C12.35 10.049 11.8917 10.5073 11.3264 10.5073L11.3264 11.1573L11.3264 11.8073C12.6097 11.8073 13.65 10.767 13.65 9.4837L13 9.4837Z" fill="currentColor"/>
   </svg>
 )
 
-/** tree_corner_8x10 (figma extract; session-tree "L" connector, stroke geometry pre-expanded) */
 export const IconTreeCorner8x10 = ({ size = 10, className }: IconProps) => (
   <svg width={(size * 8) / 10} height={size} className={className} viewBox="-0.5 0 8.5 10.5" fill="none">
     <path d="M0 0L-0.5 0L-0.5 7L0 7L0.5 7L0.5 0L0 0ZM3 10L3 10.5L8 10.5L8 10L8 9.5L3 9.5L3 10ZM0 7L-0.5 7C-0.5 8.933 1.067 10.5 3 10.5L3 10L3 9.5C1.61929 9.5 0.5 8.38071 0.5 7L0 7Z" fill="currentColor"/>
   </svg>
 )
 
-/** light outline 16 */
 export const IconLightOutline16 = ({ size = 16, className }: IconProps) => (
   <svg width={size} height={size} className={className} viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
     <path
@@ -706,7 +640,6 @@ export const IconLightOutline16 = ({ size = 16, className }: IconProps) => (
   </svg>
 )
 
-/** dark outline 16 */
 export const IconDarkOutline16 = ({ size = 16, className }: IconProps) => (
   <svg width={size} height={size} className={className} viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
     <path
@@ -716,7 +649,6 @@ export const IconDarkOutline16 = ({ size = 16, className }: IconProps) => (
   </svg>
 )
 
-/** followsystem outline 16 */
 export const IconFollowsystemOutline16 = ({ size = 16, className }: IconProps) => (
   <svg width={size} height={size} className={className} viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
     <path d="M12.1665 13.5811V14.7803H3.66651V13.5811H12.1665Z" fill="currentColor" />
@@ -727,7 +659,6 @@ export const IconFollowsystemOutline16 = ({ size = 16, className }: IconProps) =
   </svg>
 )
 
-/** data outline 16 */
 export const IconDataOutline16 = ({ size = 16, className }: IconProps) => (
   <svg width={size} height={size} className={className} viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
     <path
@@ -745,7 +676,6 @@ export const IconDataOutline16 = ({ size = 16, className }: IconProps) => (
   </svg>
 )
 
-/** ic_send_outline_14 (figma extract): thin-stroke upward send arrow. */
 export const IconSendOutline14 = ({ size = 14, className }: IconProps) => (
   <svg width={size} height={size} className={className} viewBox="0 0 14 14" fill="none" xmlns="http://www.w3.org/2000/svg">
     <path
@@ -755,7 +685,6 @@ export const IconSendOutline14 = ({ size = 14, className }: IconProps) => (
   </svg>
 )
 
-/** ic_queue_outline_14 (figma extract): open chat bubble with two queued lines. */
 export const IconQueueOutline14 = ({ size = 14, className }: IconProps) => (
   <svg width={size} height={size} className={className} viewBox="0 0 14 14" fill="none" xmlns="http://www.w3.org/2000/svg">
     <path
@@ -765,7 +694,6 @@ export const IconQueueOutline14 = ({ size = 14, className }: IconProps) => (
   </svg>
 )
 
-/** ic_checklist_outline_14 (figma extract): two rings + two list bars. */
 export const IconChecklistOutline14 = ({ size = 14, className }: IconProps) => (
   <svg width={size} height={size} className={className} viewBox="0 0 14 14" fill="none" xmlns="http://www.w3.org/2000/svg">
     <path d="M13.3277 9.69629V10.976H7.28086V9.69629H13.3277Z" fill="currentColor" />
@@ -775,7 +703,6 @@ export const IconChecklistOutline14 = ({ size = 14, className }: IconProps) => (
   </svg>
 )
 
-/** List Pen outline 16 */
 export const IconListPenOutline16 = ({ size = 16, className }: IconProps) => (
   <svg width={size} height={size} className={className} viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
     <path d="M10.8239 3.54733V4.78443H4.63437V3.54733H10.8239Z" fill="currentColor" />
@@ -793,7 +720,6 @@ export const IconListPenOutline16 = ({ size = 16, className }: IconProps) => (
   </svg>
 )
 
-/** goal strip leading glyph: dartboard with a landed arrow. */
 export const IconGoalOutline16 = ({ size = 16, className }: IconProps) => (
   <svg width={size} height={size} className={className} viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
     <path
@@ -809,9 +735,6 @@ export const IconGoalOutline16 = ({ size = 16, className }: IconProps) => (
   </svg>
 )
 
-/** Others tool-row leading glyph; hand-authored three-star
- *  approximation — the figma 43:31850 glyph is an SF Symbols "sparkles" text glyph,
- *  not extractable as vector data) */
 export const IconSparkle16 = ({ size = 16, className }: IconProps) => (
   <svg width={size} height={size} className={className} viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
     <path d="M6.1 3.1Q6.6 7.8 11.3 8.3Q6.6 8.8 6.1 13.5Q5.6 8.8 0.9 8.3Q5.6 7.8 6.1 3.1Z" fill="currentColor" />
@@ -820,14 +743,12 @@ export const IconSparkle16 = ({ size = 16, className }: IconProps) => (
   </svg>
 )
 
-/** inspect_outline_12 (shared tool-row trajectory affordance glyph) */
 export const IconInspectOutline12 = ({ size = 12, className }: IconProps) => (
   <svg width={size} height={size} className={className} viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden>
     <path d="M16 8L10.8571 12V10.552L14.1383 8L10.8571 5.448V4L16 8ZM5.14286 10.552L1.86171 8L5.14286 5.448V4L0 8L5.14286 12V10.552ZM9.02514 4L5.59657 12H6.84057L10.2691 4H9.02514Z" fill="currentColor" />
   </svg>
 )
 
-/** skill_outline_16 (skill tool-row glyph; document instructions + sparkle) */
 export const IconSkillOutline16 = ({ size = 16, className }: IconProps) => (
   <svg width={size} height={size} className={className} viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
     <path
@@ -841,7 +762,6 @@ export const IconSkillOutline16 = ({ size = 16, className }: IconProps) => (
   </svg>
 )
 
-/** ring + question glyph. */
 export const IconQuestionOutline14 = ({ size = 14, className }: IconProps) => (
   <svg width={size} height={size} className={className} viewBox="0 0 14 14" fill="none" xmlns="http://www.w3.org/2000/svg">
     <path
@@ -856,9 +776,6 @@ export const IconQuestionOutline14 = ({ size = 14, className }: IconProps) => (
   </svg>
 )
 
-/** lidded box + label slot. The export's
- *  0.11px stroke ring around the box contour is dropped — it restates the same
- *  contour in the same ink, which currentColor already carries. */
 export const IconArchiveOutline20 = ({ size = 20, className }: IconProps) => (
   <svg width={size} height={size} className={className} viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
     <path

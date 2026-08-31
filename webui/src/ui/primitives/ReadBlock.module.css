@@ -1,14 +1,8 @@
-/* Geometry mirrors CodeBlock (12px radius, code-block surface + banner row,
-   markdown code-block font) so a read card and a fenced code block read as one
-   family. Content keeps `white-space: pre` and scrolls horizontally rather than
-   folding, because a source line's indentation is part of what a reader is
-   reading. */
 
 .block {
   --dsl-read-radius: 12px;
   --dsl-read-line-height: 22px;
-  /* Fixed-width gutter column for the line numbers, so the content edge stays
-     put down the whole window regardless of how wide the numbers grow. */
+  
   --dsl-read-gutter: 48px;
 
   position: relative;
@@ -76,8 +70,6 @@
   overflow-y: hidden;
 }
 
-/* One row per file line: a fixed gutter column, then the content. No wrapping —
-   a source line's leading whitespace is meaningful and scrolls sideways. */
 .line {
   display: flex;
   min-height: var(--dsl-read-line-height);
@@ -91,8 +83,7 @@
   padding-right: 14px;
   text-align: right;
   color: var(--maid-alias-label-tertiary);
-  /* The gutter is chrome, not content: keep it out of a text selection so a
-     copy of the visible rows carries the source, not the line numbers. */
+  
   user-select: none;
 }
 

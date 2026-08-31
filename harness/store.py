@@ -46,7 +46,6 @@ class SessionStore:
         self.projections = projections or ProjectionRegistry()
         self._logs: dict[str, SessionLog] = {}
 
-    # ------------------------------------------------------------ 日志句柄
 
     def log(self, session_id: str) -> SessionLog:
         log = self._logs.get(session_id)
@@ -69,7 +68,6 @@ class SessionStore:
                         out.append(child.name)
         return sorted(out)
 
-    # ------------------------------------------------------------ 建会话
 
     def create_session(
         self,
@@ -121,7 +119,6 @@ class SessionStore:
         log.save_meta(merged_meta)
         return log
 
-    # ------------------------------------------------------------ 概要
 
     def summary(self, session_id: str, *, running: bool = False, with_projections: bool = True) -> dict:
         log = self.log(session_id)
@@ -165,7 +162,6 @@ class SessionStore:
         meta["updatedAt"] = now_ms()
         log.save_meta(meta)
 
-    # ------------------------------------------------------------ 附件
 
     def save_attachment(self, session_id: str, media_type: str, data_b64: str, name: str | None = None) -> dict:
         """持久化 base64 图片，返回 ImageAttachmentRef。"""
@@ -237,7 +233,6 @@ class SessionStore:
                 paths.append(str(path))
         return paths
 
-    # ------------------------------------------------------------ 维护
 
     def delete_session(self, session_id: str) -> None:
         import shutil

@@ -94,7 +94,6 @@ class TestChatSessionForNewSession:
     def test_no_reuse_by_umo_agent_name(self, store, registry):
         """The old bug: same (umo, agent_name) would reuse existing session."""
         sid1 = _chat_session_for_new(store, registry, "umo1", "butler")
-        # Old code would scan and find sid1 by (umo="umo1", agentName="butler", chatOwned=True)
         sid2 = _chat_session_for_new(store, registry, "umo1", "butler")
         assert sid1 != sid2, "must not reuse by (umo, agent_name) — each dispatch creates a new session"
 
@@ -133,7 +132,6 @@ class TestBatchConcurrentDispatch:
 
     def test_batch_capacity_precheck_rejects_when_per_umo_full(self, registry):
         """批量超过 per_umo 上限时整批拒绝。"""
-        # Simulate 4 already-running; batch of 3 would push to 7 > 5
         batch_size = 3
         per_umo_cap = 5
         global_cap = 20
@@ -195,9 +193,7 @@ class TestSkipCapacityCheck:
     def test_single_dispatch_checks_capacity(self, registry):
         """单次 dispatch 路径（skip_capacity_check=False）在容量满时拒绝。"""
         skip = False
-        # Simulate capacity full: we can't easily set running count on registry
-        # without a real driver, so we test the condition directly.
-        capacity_available = False  # would be False when running_count >= cap
+        capacity_available = False
 
         if not skip and not capacity_available:
             result = {"status": "error", "error": "并发上限已满，稍后再试。"}
@@ -209,7 +205,7 @@ class TestSkipCapacityCheck:
     def test_batch_dispatch_skips_capacity_check(self):
         """batch 路径（skip_capacity_check=True）跳过逐项检查。"""
         skip = True
-        capacity_available = False  # would be False, but batch pre-check already done
+        capacity_available = False
 
         if not skip and not capacity_available:
             result = {"status": "error", "error": "并发上限已满，稍后再试。"}
@@ -227,7 +223,6 @@ class TestRegistryCapacity:
 
     def test_capacity_available_respects_per_umo(self, registry, store):
         """When per_umo limit is hit, capacity_available returns False."""
-        # Create sessions and mark their drivers as running
         for i in range(5):
             log = store.create_session(meta={"umo": "umo1"})
             driver = registry.attach(log.session_id)
@@ -238,7 +233,6 @@ class TestRegistryCapacity:
 
     def test_capacity_available_respects_global(self, registry, store):
         """When global limit is hit, capacity_available returns False."""
-        # Create 20 sessions across different umos
         for i in range(20):
             log = store.create_session(meta={"umo": f"umo{i}"})
             driver = registry.attach(log.session_id)

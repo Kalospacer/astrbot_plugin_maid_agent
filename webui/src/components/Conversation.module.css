@@ -1,7 +1,3 @@
-/* 对话列骨架（hero/active/settling 三相，
-   几何逐值照抄；header/tabs 与 heroGlow 按插件实际裁掉）。
-   相位机：hero（空会话，输入卡居中）/ active（输入卡吸附底部）/ settling
-   （历史回放中，座位不可见以免闪烁）。composer 常驻同一棵树位。 */
 
 .root {
   position: relative;
@@ -11,14 +7,12 @@
   min-width: 0;
   background: var(--maid-alias-bg-base);
 
-  /* 整列共享宽度轴：消息流 W，输入卡 W + 32px，两侧净距 16px。 */
   --maid-chat-content-width: 748px;
   --maid-composer-card-max-width: calc(var(--maid-chat-content-width) + 32px);
   --maid-composer-side-clearance: 16px;
   --maid-composer-dock-inset: 8px;
 }
 
-/* 会话详情开关：钉在对话列右上角（从输入条工具行挪出），静止透明、hover 才有填充。 */
 .detailsToggle {
   position: absolute;
   top: 10px;
@@ -47,8 +41,6 @@
   overflow: hidden;
 }
 
-/* 列内唯一滚动轴：消息流与吸附的输入座位同在这个盒子里，滚轮扫过底栏
-   也推动消息流。 */
 .scrollBody {
   display: flex;
   flex: 1;
@@ -71,17 +63,14 @@
   min-height: 0;
 }
 
-/* composer 链的公共座位。 */
 .composerSeat {
   display: flex;
   flex: none;
   flex-direction: column;
-  /* 草稿滚动上限（14 行 × 24px），声明在座位上向下继承。 */
+  
   --maid-composer-text-max-height: 336px;
 }
 
-/* active：座位吸附底部；顶部 36px 固定渐隐带（px 停止值，草稿长高只
-   扩大实色区，渐隐带不拉伸）。 */
 .root[data-phase='active'] .composerSeat {
   position: sticky;
   bottom: 0;
@@ -100,14 +89,13 @@
   gap: var(--maid-composer-stack-gap);
 }
 
-/* hero：composer 栈（hero 标题 + 芯片行 + 卡）在列内 flex 居中。 */
 .composerHero {
   position: relative;
   align-self: center;
   gap: 8px;
-  /* 居中盒内的脚底把栈稍微托离真正的中心。 */
+  
   padding-bottom: 32px;
-  /* 卡上限 + 两侧净距：hero 输入卡与停靠态在每个视口同宽。 */
+  
   width: min(calc(var(--maid-composer-card-max-width) + 2 * var(--maid-composer-side-clearance)), 100%);
   z-index: 1;
 }
@@ -130,8 +118,6 @@
   visibility: hidden;
 }
 
-/* ================= Hero 标题 =================
-   居中大标题，26/32 wt500。 */
 .headline {
   display: flex;
   align-items: center;
@@ -149,8 +135,6 @@
   white-space: nowrap;
 }
 
-/* 预设芯片：图标 + 名称 + 下拉尖角 —— 静止透明，hover/展开才有填充
-   （HeroShell .workspace 同规格）。 */
 .presetChip {
   display: inline-flex;
   align-items: center;

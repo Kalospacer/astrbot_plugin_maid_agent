@@ -23,7 +23,6 @@ class RpcError(Exception):
         return {"code": self.code, "message": self.message, "details": self.details}
 
 
-# 错误码表（照抄 RpcErrorDetailsMap 的键；details 形状按需填充）
 RPC_ERROR_CODES = {
     "bad-request",
     "cancelled",
@@ -82,9 +81,6 @@ def bad_request(message: str, issues: list | None = None) -> RpcError:
 
 def internal_error(message: str) -> RpcError:
     return RpcError("internal", message, {})
-
-
-# ---------------------------------------------------------------- 信封
 
 
 def parse_client_request(body: dict) -> tuple[str, str, dict]:

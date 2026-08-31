@@ -12,7 +12,7 @@ from .contracts import is_token_delta
 class ProjectionUnit:
     key: str = ""
 
-    def init(self) -> dict:  # state
+    def init(self) -> dict:
         raise NotImplementedError
 
     def apply(self, state: dict, event: dict) -> dict:

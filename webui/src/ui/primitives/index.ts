@@ -1,6 +1,3 @@
-/**
- * Cordis-free React primitives styled only through `--maid-*` tokens.
- */
 
 export { StateDot } from './StateDot.tsx'
 export type { StateDotState } from './StateDot.tsx'

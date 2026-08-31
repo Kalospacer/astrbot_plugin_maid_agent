@@ -5,8 +5,6 @@ import { useApp } from "@/hooks";
 import * as app from "@/store/app";
 import css from "./SettingsDialog.module.css";
 
-/** 设置弹窗：外观（主题）+ _conf_schema.json 驱动的插件配置表单。
- *  每次打开自动从后端拉取最新配置（settings.describe），不依赖启动时的缓存。 */
 export function SettingsDialog(props: { open: boolean; onClose: () => void }) {
   const settings = useApp((s) => s.settings);
   const theme = useApp((s) => s.theme);

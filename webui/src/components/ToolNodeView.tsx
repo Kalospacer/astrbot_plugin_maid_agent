@@ -10,7 +10,6 @@ import type { ToolNode } from "@/store/conversation";
 
 const PARAMS_MAX_CHARS = 20_000;
 
-/** 工具节点：按视图词表（terminal/read/diff/generic）渲染卡片。 */
 export function ToolNodeView(props: { node: ToolNode }) {
   const node = props.node;
   const [open, setOpen] = useState(false);
@@ -96,7 +95,6 @@ function ToolBody(props: { node: ToolNode }) {
   );
 }
 
-/** 参数内联展示：外层工具卡本身已是一层折叠，参数不再套第二层折叠块。 */
 function formatArguments(raw: string): string {
   let text = raw;
   try {

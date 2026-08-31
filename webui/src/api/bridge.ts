@@ -1,4 +1,3 @@
-/** AstrBot 插件页桥接封装（postMessage → 父窗口带鉴权代理）。 */
 
 type BridgeHandlers = {
   onOpen?: () => void;
@@ -40,10 +39,6 @@ export async function ready(): Promise<void> {
   await resolveBridge().ready();
 }
 
-/**
- * RPC：POST api/<method>，信封原样穿透（父窗口解包规则是
- * `response.data?.data ?? response.data`，ServerResponse 无 data/status 字段）。
- */
 export async function rpcPost(method: string, payload: unknown) {
   const response = (await resolveBridge().apiPost(`api/${method}`, payload)) as any;
   return response;

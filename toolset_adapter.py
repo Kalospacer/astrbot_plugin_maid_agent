@@ -34,23 +34,18 @@ if TYPE_CHECKING:
     from astrbot.api.star import Context
     from astrbot.core.agent.handoff import HandoffTool
 
-from .constants import PLUGIN_DATA_DIR_NAME
+from .constants import CALL_MAID_TOOL_NAME, MAID_TASK_TOOL_NAME, PLUGIN_DATA_DIR_NAME
 
 MEMORY_SUBDIR = "memory"
 MEMORY_INDEX_FILENAME = "MEMORY.md"
 MEMORY_MAX_LINES = 200
 MEMORY_MAX_BYTES = 25_000
 
-# Tool names that must never reach a child worker (control plane / recursion).
 _RECURSION_TOOL_NAMES = frozenset({"call_maid", "maid_task"})
 _HANDOFF_TOOL_PREFIX = "transfer_to_"
 
-# Builtin file tools auto-added to memory-enabled children.
 _FILE_TOOL_CLASS_NAMES = ("FileReadTool", "FileWriteTool", "FileEditTool")
 
-# Kept in contract-test parity with AstrBot 4.26.6
-# FunctionToolExecutor._get_runtime_computer_tools. Production code deliberately
-# avoids calling that private Core method.
 _SANDBOX_TOOL_CLASS_NAMES = (
     "ExecuteShellTool",
     "PythonTool",
@@ -99,6 +94,42 @@ def _sanitize_child_toolset(tools: ToolSet | None) -> ToolSet | None:
             continue
         sanitized.add_tool(tool)
     return None if sanitized.empty() else sanitized
+
+
+def apply_main_tool_policy(
+    toolset: ToolSet | None,
+    *,
+    hide_native_tools: bool,
+    hide_transfer_tools: bool,
+) -> ToolSet | None:
+    """Filter the main (mistress) model's toolset by maid-mode visibility policy.
+
+    - ``hide_native_tools=True``: keep only ``call_maid`` / ``maid_task`` so the
+      main model delegates to the maid instead of calling AstrBot native tools.
+    - Otherwise, when ``hide_transfer_tools=True``: drop all ``transfer_to_*``
+      handoff tools while keeping ``call_maid`` and the rest of the native tools.
+    - Both flags off: return the toolset untouched.
+
+    Guard: only applies when ``call_maid`` is present in the toolset, so
+    third-party agent runners that assemble their own tool lists are never
+    stripped. Mutates ``toolset`` in place and returns it for convenience.
+    """
+    if toolset is None:
+        return None
+    if not hide_native_tools and not hide_transfer_tools:
+        return toolset
+    if toolset.get_tool(CALL_MAID_TOOL_NAME) is None:
+        return toolset
+    if hide_native_tools:
+        keep = {CALL_MAID_TOOL_NAME, MAID_TASK_TOOL_NAME}
+        for tool in list(toolset.tools):
+            if tool.name not in keep:
+                toolset.remove_tool(tool.name)
+    else:
+        for tool in list(toolset.tools):
+            if _is_handoff_tool(tool):
+                toolset.remove_tool(tool.name)
+    return toolset
 
 
 def _get_builtin_file_tools(context: Context) -> dict[str, FunctionTool]:
@@ -155,7 +186,6 @@ def build_child_toolset(
     toolset = ToolSet()
 
     if raw_tools is None:
-        # "all tools" — mirror Core: every active registered tool except handoffs.
         handoff_names = {
             t.name for t in (tool_mgr.func_list if tool_mgr else []) if _is_handoff_tool(t)
         }
@@ -182,7 +212,6 @@ def build_child_toolset(
             rt_tool = runtime_computer_tools.get(name)
             if rt_tool is not None:
                 toolset.add_tool(rt_tool)
-    # else: empty list -> no tools.
 
     sanitized = _sanitize_child_toolset(toolset)
 
@@ -300,9 +329,6 @@ def _get_runtime_computer_tools(
     return {}
 
 
-# ---------------------------------------------------------------- memory dir
-
-
 _UMO_SAFE_RE = re.compile(r"[^A-Za-z0-9._-]+")
 
 
@@ -349,7 +375,6 @@ def load_memory_index_inline(unified_msg_origin: str, agent_name: str) -> str | 
         if len(lines) <= MEMORY_MAX_LINES:
             return raw
 
-    # Over cap: truncate to the line/byte limit and append a split hint.
     truncated_lines: list[str] = []
     total_bytes = 0
     for line in raw.splitlines():

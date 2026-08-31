@@ -3,8 +3,6 @@ import { IconBranchOutline16 } from "@/ui/primitives/icons";
 import { useApp } from "@/hooks";
 import * as app from "@/store/app";
 
-/** 右栏详情：会话元数据 + 投影（title/stats/tokenUsage）+ 原始事件。
- *  头部带关闭钮，默认关闭、从输入条右端打开。 */
 export function DetailsPanel(props: { onClose?: () => void }) {
   const session = useApp((s) => (s.current ? s.byId.get(s.current) : undefined));
 

@@ -1,6 +1,3 @@
-/* Markdown visuals, adapted to CSS
-   Modules. Cite pills, header anchors, and thinking-small variants are
-   intentionally absent (no matching DOM). Token names match that sheet. */
 
 .markdown {
   min-width: 0;
@@ -46,7 +43,6 @@
   margin: 16px 0;
 }
 
-/* Tighten h4–h6 against a following list (design: 8px gap). */
 .markdown :where(h4, h5, h6) + :where(ul, ol) {
   margin-top: 8px;
 }
@@ -56,14 +52,12 @@
 }
 
 .markdown a {
-  /* Upstream uses brand-text (blue); this sheet
-     keeps design-platform brand-text as near-black, so links use the blue
-     business-primary alias instead. */
+  
   color: var(--maid-alias-state-business-primary);
   transition: box-shadow var(--maid-transition-duration) var(--maid-ease-in-out);
   position: relative;
   text-decoration: none;
-  /* Transparent hit-area padding; literal zero-alpha only (no painted color). */
+  
   border-left: 3px solid rgb(255 255 255 / 0);
   border-right: 3px solid rgb(255 255 255 / 0);
   border-top: 2px solid rgb(255 255 255 / 0);
@@ -100,7 +94,6 @@
   color: var(--maid-alias-label-secondary);
 }
 
-/* Nested ol under ul/ol: markers inside (models sometimes emit this shape). */
 .markdown :where(ul, ol) ol {
   list-style-position: inside;
   padding-left: 0;
@@ -118,7 +111,6 @@
   margin-top: 0;
 }
 
-/* Keep list-nested code-block vertical margins (design: +4px vs other last children). */
 .markdown li > *:last-child:not(:global(.md-code-block)) {
   margin-bottom: 0;
 }
@@ -242,10 +234,6 @@
   object-fit: contain;
 }
 
-/* Inline file mention: the same link language this sheet gives anchors (and
-   thereby URL-promoted inline code) — link-blue at rest, underline only on
-   hover/focus. An underline at rest reads badly inside the code chip, where
-   it collides with monospace descenders and the pill background. */
 .fileMention {
   margin: 0;
   padding: 0;

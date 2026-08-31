@@ -1,8 +1,3 @@
-/**
- * Dev mock-bridge：无 Dashboard 时模拟 window.AstrBotPluginPage，
- * 实现新 RPC 信封 + events.mux/events.host SSE 协议（内置数据，
- * 含模拟流式回合：reasoning → text → 工具卡 → 完成）。
- */
 
 type Handlers = {
   onOpen?: () => void;
@@ -269,7 +264,6 @@ async function runMockTurn(session: MockSession, content: any[]) {
   session.title = text.slice(0, 12) || "新任务";
   append(session, "session/title", { title: session.title, source: { kind: "auto" } });
 
-  // 投影推送（对齐真实后端的 session/projection 帧，让统计/标题实时落位）
   const values = projectionsBlock(session).values;
   const seq = session.events.length - 1;
   for (const key of ["title", "sessionStats", "tokenUsage"] as const) {
@@ -284,8 +278,6 @@ async function runMockTurn(session: MockSession, content: any[]) {
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
-
-/* ---------------- SSE 订阅扇出 ---------------- */
 
 const streams = new Map<string, { endpoint: string; handlers: Handlers }>();
 let subSeq = 0;

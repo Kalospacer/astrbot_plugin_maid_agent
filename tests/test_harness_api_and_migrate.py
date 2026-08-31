@@ -245,7 +245,6 @@ class TestSessionsApi:
         log.append("assistant/message", {"turn": 3, "step": 1, "message": c.assistant_message([c.text_block("a3")], "p", "m")}, source_event_seqs=[])
         log.append("turn/end", {"turn": 3, "reason": c.reason_completed()})
 
-        # 默认（无 atSeq）= 最后一个完整 turn，即全量
         child = await proxy.dispatch("session.fork", {"sessionId": sid})
         child_events = store.log(child["sessionId"]).read_events()
         _texts = []
@@ -255,7 +254,6 @@ class TestSessionsApi:
             _texts.extend(b.get("text") for b in blocks)
         assert _texts == ["q1", "a1", "q2", "a2", "q3", "a3"]
 
-        # atSeq 指到 turn2 的 user 消息 → 包含该整个 turn（q1/a1 + q2/a2），排除 turn3
         q2_seq = next(
             e["seq"] for e in store.log(sid).read_events()
             if e["type"] == "user/message" and "q2" in str(e["data"].get("content"))
@@ -267,7 +265,7 @@ class TestSessionsApi:
             data = e["data"]
             blocks = data.get("content") or data.get("message", {}).get("content") or []
             surface_texts.extend(b.get("text") for b in blocks)
-        assert surface_texts == ["q1", "a1", "q2", "a2"]  # 包含 atSeq 所在完整 turn
+        assert surface_texts == ["q1", "a1", "q2", "a2"]
         kinds = [e["type"] for e in child_events]
         assert kinds[-1] == "session/end-seed"
 
@@ -349,7 +347,6 @@ class TestMigrate:
             "tool/result",
             "turn/end",
         ]
-        # callId 配对
         call = next(e for e in events if e["type"] == "tool/call")
         result = next(e for e in events if e["type"] == "tool/result")
         assert call["data"]["callId"] == "tc1"
@@ -357,5 +354,4 @@ class TestMigrate:
         meta = store.log(agent_id).load_meta()
         assert meta["umo"] == "qq:GroupMessage:1"
 
-        # 幂等：再跑一遍不重复
         assert migrate_legacy_agents(store, legacy)["migrated"] == []

@@ -1,7 +1,7 @@
 {
   "name": "maid-agent-console",
   "private": true,
-  "version": "2.0.1",
+  "version": "2.0.3",
   "type": "module",
   "description": "代理女仆 Console—— AstrBot 插件页前端，构建产物输出到 ../pages/console",
   "scripts": {

@@ -29,13 +29,12 @@ from .constants import (
     MAID_NOTIFICATION_ID_META_KEY,
     MAID_NOTIFICATION_IDS_META_KEY,
     MAID_TASK_TOOL_NAME,
-    MISTRESS_REQUEST_BLOCK_LABEL,
     PLUGIN_DATA_DIR_NAME,
     RAW_INPUT_EXTRA_KEY,
     TRUE_USER_INPUT_EXTRA_KEY,
-    USER_INPUT_BLOCK_LABEL,
 )
 from .harness import contracts as c
+from .harness._log import dump_raw_llm_output, dump_raw_llm_request
 from .harness.api import ApiProxy
 from .harness.drivers import DriverRegistry
 from .harness.hub import StreamHub, sse_frame
@@ -50,8 +49,9 @@ from .harness.rpc import (
 )
 from .harness.store import SessionStore
 from .katex_fonts import materialize_katex_fonts
+from .toolset_adapter import apply_main_tool_policy
 
-__version__ = "2.0.2"
+__version__ = "2.0.3"
 
 _SETTINGS_SCHEMA_CACHE: dict | None = None
 
@@ -87,6 +87,7 @@ class _ConfigHolder:
         except Exception as exc:  # noqa: BLE001
             logger.warning("[maid] 配置持久化失败: %s", exc)
         self.plugin.maid_mode_config = load_maid_mode_config(self.plugin.config)
+        self.plugin.registry.config = self.plugin.maid_mode_config
         return self.get_config()
 
     def default_agent_name(self) -> str:
@@ -115,7 +116,6 @@ class MaidAgent(Star):
         self.registry.on_turn_terminal = self._on_turn_terminal
         self.api = ApiProxy(store=self.store, registry=self.registry, config_holder=_ConfigHolder(self))
 
-    # ================================================================ 生命周期
 
     async def initialize(self) -> None:
         self._patch_llm_tool_schemas()
@@ -227,7 +227,6 @@ class MaidAgent(Star):
         except Exception as exc:  # noqa: BLE001
             logger.error("[maid] 旧数据迁移失败（跳过，保留原目录）: %s", exc, exc_info=True)
 
-    # ================================================================ Web API
 
     def _register_web_apis(self) -> None:
         prefix = f"/{PLUGIN_DATA_DIR_NAME}"
@@ -275,7 +274,6 @@ class MaidAgent(Star):
             body = None
         if not isinstance(body, dict) or body.get("type") != "client-response":
             return jsonify(client_response_receipt(False, "bad-response"))
-        # 本部署没有可应答的服务端请求（approval/question 未实现）
         return jsonify(client_response_receipt(False, "not-pending"))
 
     async def web_events_mux(self):
@@ -326,17 +324,14 @@ class MaidAgent(Star):
         }
         try:
             from starlette.responses import StreamingResponse
-        except ImportError:  # Quart 原生旧版 dashboard
+        except ImportError:
             StreamingResponse = None
         if StreamingResponse is not None:
-            # 适配层对 starlette Response 原样透传（真流式）；Quart Response 会被
-            # get_data() 全量缓冲，无限流的 SSE 永远发不出响应头。
             return StreamingResponse(stream(), headers=headers)
         response = await make_response(stream(), {**headers, "Transfer-Encoding": "chunked"})
         response.timeout = None  # type: ignore[attr-defined]
         return response
 
-    # ================================================================ LLM 工具
 
     def _patch_llm_tool_schemas(self) -> None:
         manager = self.context.get_llm_tool_manager()
@@ -383,6 +378,31 @@ class MaidAgent(Star):
                 },
                 "required": ["action"],
             }
+
+    @filter.on_llm_request()
+    async def _on_main_llm_request(self, _event, req) -> None:
+        """主模型（大小姐）请求的 maid 模式处理：工具可见性策略 + 原始请求 dump。
+
+        maid 子代理直接走 ``ToolLoopAgentRunner``（``maid_dispatcher._build_runner``），
+        不经过 ``OnLLMRequestEvent`` 管道钩子，因此这里只影响主模型的请求，不会剥掉
+        maid 自己的工具。dump 放在策略之后，日志里看到的就是过滤后的工具列表。
+        配置实时读取：改配置后下一次请求立即生效，无需重启。
+        """
+        cfg = self.maid_mode_config
+        if req.func_tool is not None and (cfg.hide_native_tools or cfg.hide_transfer_tools):
+            apply_main_tool_policy(
+                req.func_tool,
+                hide_native_tools=cfg.hide_native_tools,
+                hide_transfer_tools=cfg.hide_transfer_tools,
+            )
+        if cfg.log_raw_llm_io:
+            dump_raw_llm_request(req, source="main")
+
+    @filter.on_llm_response()
+    async def _log_main_llm_response(self, _event, resp) -> None:
+        """log_raw_llm_io 开启时 dump 主模型最终输出（请求侧见 ``_apply_main_tool_policy``）。"""
+        if self.maid_mode_config.log_raw_llm_io:
+            dump_raw_llm_output(getattr(resp, "completion_text", "") or "", source="main")
 
     @staticmethod
     def _json_outcome(payload: dict) -> str:
@@ -468,12 +488,6 @@ class MaidAgent(Star):
                 }
             )
 
-        # Batch path: run all items concurrently. Each item creates an
-        # independent session+driver so they execute in parallel.
-        # Batch capacity pre-check (atomic): if the whole batch would exceed
-        # per-umo or global limits, reject the entire batch without creating
-        # any sessions. This avoids the per-item race where gather dispatches
-        # all items before any pump has set state=running.
         batch_size = len(batch)
         per_umo_cap = _safe_int(getattr(self.maid_mode_config, "max_active_per_umo", 5), 5)
         global_cap = _safe_int(getattr(self.maid_mode_config, "max_active_global", 20), 20)
@@ -509,12 +523,11 @@ class MaidAgent(Star):
         session_id = self._chat_session_for(umo, agent_name, item.get("resume_session_id") or "")
         driver = self.registry.attach(session_id)
 
-        user_input_block = f"【{USER_INPUT_BLOCK_LABEL}】\n{true_user_input}\n\n" if true_user_input.strip() else ""
-        maid_request_block = f"【{MISTRESS_REQUEST_BLOCK_LABEL}】\n{item['request_text']}\n\n"
         prompt = render_dispatch_prompt(
             self.maid_mode_config.dispatch_prompt_template,
-            user_input_block=user_input_block,
-            maid_request_block=maid_request_block,
+            true_user_input=true_user_input,
+            request_text=item["request_text"],
+            include_raw_user_input=self.maid_mode_config.include_raw_user_input,
         )
 
         task_id = uuid.uuid4().hex
@@ -541,7 +554,6 @@ class MaidAgent(Star):
                 "error": result.get("error", ""),
             }
         except asyncio.TimeoutError:
-            # 前台超时原地转后台：同一 task 继续跑，稍后经通知回灌
             self._track_background_task(
                 asyncio.create_task(self._watch_and_notify(driver), name=f"maid-notify-{session_id[:8]}")
             )
@@ -710,7 +722,7 @@ class MaidAgent(Star):
                     result = await driver.wait_next_turn_result(timeout=timeout)
                 except asyncio.TimeoutError:
                     return self._json_outcome({"session_id": sid, "status": "running", "query_status": "timeout"})
-                driver.log.update_meta(notified=True)  # 主动读取即认领
+                driver.log.update_meta(notified=True)
                 return self._json_outcome({"session_id": sid, **result})
             meta = driver.log.load_meta()
             driver.log.update_meta(notified=True)
@@ -725,7 +737,6 @@ class MaidAgent(Star):
 
         return self._json_outcome({"status": "error", "error": f"maid_task action 非法: {action}"})
 
-    # ================================================================ 命令与钩子
 
     @filter.command_group("maid")
     def maid(self):

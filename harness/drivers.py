@@ -21,11 +21,11 @@ from typing import TYPE_CHECKING, Any
 
 try:  # pragma: no cover - AstrBot 运行时
     from astrbot.api import logger
-except ImportError:  # 测试/离线环境
+except ImportError:
     from ._log import logger
 try:  # pragma: no cover - AstrBot 运行时
     from astrbot.core.agent.hooks import BaseAgentRunHooks
-except ImportError:  # 测试/离线环境
+except ImportError:
 
     class BaseAgentRunHooks:  # type: ignore[no-redef]
         def __init__(self, *args, **kwargs):
@@ -34,13 +34,14 @@ except ImportError:  # 测试/离线环境
 from ..constants import normalize_umo
 from . import contracts as c
 from . import tools_view
+from ._log import dump_raw_llm_output, dump_raw_llm_request
 from .history import visible_events
 from .store import SessionStore
 
 if TYPE_CHECKING:
     from astrbot.api.star import Context
 
-CHUNK_THROTTLE_S = 0.0  # chunk 事件不额外节流：hub 队列满时丢旧
+CHUNK_THROTTLE_S = 0.0
 
 
 def _chain_text(chain: Any) -> str:
@@ -187,7 +188,7 @@ class _TurnHooks(BaseAgentRunHooks):
     def __init__(self, driver: "SessionDriver", step_holder: dict):
         self._driver = driver
         self._step_holder = step_holder
-        self._active: list[dict] = []  # {callId, name, args}
+        self._active: list[dict] = []
         self.emitted: list[str] = []
 
     def begin_step(self) -> None:
@@ -197,24 +198,17 @@ class _TurnHooks(BaseAgentRunHooks):
         call_id = c.new_id()
         name = str(getattr(tool, "name", "") or "")
         arguments = tool_args if isinstance(tool_args, str) else json.dumps(tool_args or {}, ensure_ascii=False, default=str)
-        self._active.append({"callId": call_id, "name": name, "args": tool_args})
+        self._active.append({"tool": tool, "callId": call_id, "name": name, "args": tool_args})
         self.emitted.append(call_id)
         await self._driver.emit_tool_call(call_id, name, arguments, self._step_holder["step"])
 
     async def on_tool_end(self, _run_context, tool, _tool_args, tool_result) -> None:
-        name = str(getattr(tool, "name", "") or "")
-        entry = None
-        for candidate in self._active:
-            if candidate["name"] == name:
-                entry = candidate
-                break
-        if entry is None and self._active:
-            entry = self._active[0]
+        entry = next((item for item in self._active if item["tool"] is tool), None)
         if entry is not None:
             self._active.remove(entry)
-            call_id, args = entry["callId"], entry["args"]
+            call_id, name, args = entry["callId"], entry["name"], entry["args"]
         else:
-            call_id, args = c.new_id(), None
+            call_id, name, args = c.new_id(), str(getattr(tool, "name", "") or ""), None
         text, is_error = _tool_result_to_text(tool_result)
         await self._driver.emit_tool_result(call_id, name, text, is_error, self._step_holder["step"], args)
 
@@ -241,8 +235,8 @@ class SessionDriver:
     ):
         self.registry = registry
         self.session_id = session_id
-        self.state = "idle"  # idle | running
-        self.inbox: list[dict] = []  # {id, placement, message}
+        self.state = "idle"
+        self.inbox: list[dict] = []
         self._wakeup = asyncio.Event()
         self._task: asyncio.Task | None = None
         self._steer_fn = None
@@ -250,15 +244,14 @@ class SessionDriver:
         self._turn_result_waiters: list[asyncio.Future] = []
         meta = self.log.load_meta()
         self.umo = normalize_umo(meta.get("umo"))
-        self.provider_id = str(meta.get("providerId") or "")  # 会话级模型覆盖（控制台模型选择块）
+        self.provider_id = str(meta.get("providerId") or "")
         self.agent_name = str(meta.get("agentName") or "")
         self.sender_id = str(meta.get("senderId") or "")
         self._stop_requested = False
         self._interrupted = False
-        self.turn_started_at: float | None = None  # 看门狗用：当前 turn 的 monotonic 起点
-        self.last_turn: dict = {}  # {status, result, error, turn}
+        self.turn_started_at: float | None = None
+        self.last_turn: dict = {}
 
-    # ------------------------------------------------------------ 基础
 
     @property
     def log(self):
@@ -271,7 +264,6 @@ class SessionDriver:
     def _meta_update(self, **fields) -> None:
         self.log.update_meta(**fields)
 
-    # ------------------------------------------------------------ 收件箱
 
     def _publish_queue(self) -> None:
         items = [
@@ -392,7 +384,6 @@ class SessionDriver:
         )
         return True
 
-    # ------------------------------------------------------------ 循环
 
     def _kick(self) -> None:
         self._wakeup.set()
@@ -413,9 +404,7 @@ class SessionDriver:
                 await self.run_turn(item["message"])
             except asyncio.CancelledError:
                 if self._interrupted:
-                    raise  # 停用流程：让 pump 任务正常退出
-                # 看门狗超时取消：补写终态并继续存活（run_turn 的 finally 已复位
-                # state/host frame，但 turn/end 在取消路径不会落盘，这里兑底）
+                    raise
                 logger.warning("[maid] turn 被看门狗取消: session=%s", self.session_id[:8])
                 async with self.log.lock:
                     await self._emit("turn/end", {"turn": self._count_turns(), "reason": c.reason_interrupted()})
@@ -456,7 +445,6 @@ class SessionDriver:
     def _count_turns(self) -> int:
         return sum(1 for e in self.log.read_events() if e.get("type") == "turn/start")
 
-    # ------------------------------------------------------------ turn 执行
 
     async def run_turn(self, user_message: dict) -> dict:
         """执行一个 turn。返回 {status, result, error}。"""
@@ -488,10 +476,10 @@ class SessionDriver:
             )
             self.registry.store.touch(self.session_id)
             self._publish_queue()
-            self._kick()  # 还有排队消息则继续
+            self._kick()
 
     async def _execute_turn(self, turn: int) -> dict:
-        from ..maid_dispatcher import _build_runner  # 延迟导入避免环
+        from ..maid_dispatcher import _build_runner
 
         context = self.registry.context
         agent_name = self.agent_name or self.registry.default_agent_name
@@ -513,8 +501,6 @@ class SessionDriver:
 
         toolset = self.registry.build_toolset(handoff=handoff, umo=umo, agent_name=resolved_name)
 
-        # Resume：从事件日志重建上下文。排除本 turn（turn/start 之前的事件）——
-        # 当前请求经 runner 的 prompt 参数注入，不进 contexts，避免重复。
         turn_start_seq = next(
             (e["seq"] for e in reversed(self.log.read_events()) if e.get("type") == "turn/start"),
             -1,
@@ -558,6 +544,9 @@ class SessionDriver:
             agent_hooks=hooks,
         )
 
+        if getattr(self.registry.config, "log_raw_llm_io", False):
+            dump_raw_llm_request(getattr(runner, "req", None), source="maid")
+
         runner_holder = {"runner": runner}
 
         def _steer_handler(text: str):
@@ -599,14 +588,12 @@ class SessionDriver:
                         if stop_requested_flag():
                             runner.request_stop()
                 finally:
-                    # 步末：落新消息 + 收尾钩子
                     persisted, prev_usage = await self._diff_messages(
                         runner, persisted, prev_usage, turn, step, hooks
                     )
                     await hooks.close_unfinished()
                     async with self.log.lock:
                         await self._emit("step/end", {"turn": turn, "step": step})
-                # steer 被 claim：清掉 steering 展示
                 self._clear_steering_items()
                 if stop_requested_flag():
                     break
@@ -642,6 +629,9 @@ class SessionDriver:
             llm_resp = runner.get_final_llm_resp()
             final_text = (getattr(llm_resp, "completion_text", "") or "") if llm_resp is not None else ""
 
+            if getattr(self.registry.config, "log_raw_llm_io", False) and final_text:
+                dump_raw_llm_output(final_text, source="maid")
+
             if self._interrupted:
                 reason = c.reason_interrupted()
                 status = "interrupted"
@@ -668,13 +658,11 @@ class SessionDriver:
         async with self.log.lock:
             await self._emit("turn/end", {"turn": turn, "reason": reason})
 
-        # 首回合后生成标题
         if turn == 1:
             self.registry.schedule_title_generation(self, prompt_text)
 
         return {"status": status, "result": final_text, "error": error_text}
 
-    # ------------------------------------------------------------ 事件发射
 
     async def _emit(self, event_type: str, data: dict, view: dict | None = None, **extra) -> dict:
         event = self.log.append(event_type, data, **extra)
@@ -809,7 +797,6 @@ class SessionDriver:
             self.inbox = [item for item in self.inbox if item["placement"] != "steering"]
             self._publish_queue()
 
-    # ------------------------------------------------------------ resume 上下文
 
     def _rebuild_contexts(self, before_seq: int) -> list:
         """从事件日志重建 runner contexts（只取 seq < before_seq 的可见 surface）。"""
@@ -823,7 +810,6 @@ class SessionDriver:
             etype = event.get("type")
             data = event.get("data", {})
             if etype == "user/message":
-                # user/message 的 data 就是消息本体
                 text = "".join(
                     block.get("text", "")
                     for block in data.get("content", [])
@@ -865,7 +851,6 @@ class SessionDriver:
                     )
                 )
 
-        # 截掉未配对的尾部 assistant tool_calls（与旧 rebuild 一致）
         while contexts and contexts[-1].role == "assistant" and contexts[-1].tool_calls:
             contexts.pop()
             while contexts and contexts[-1].role == "tool":
@@ -915,9 +900,8 @@ class DriverRegistry:
         self.config = config
         self.drivers: dict[str, SessionDriver] = {}
         self._background_tasks: set[asyncio.Task] = set()
-        self.on_turn_terminal = None  # main.py 接通知投递
+        self.on_turn_terminal = None
 
-    # ------------------------------------------------------------ 驱动管理
 
     def driver(self, session_id: str) -> SessionDriver | None:
         driver = self.drivers.get(session_id)
@@ -963,7 +947,6 @@ class DriverRegistry:
             await asyncio.gather(*self._background_tasks, return_exceptions=True)
         self._background_tasks.clear()
 
-    # ------------------------------------------------------------ 帧扇出
 
     def publish_frame(self, session_id: str, payload: dict) -> None:
         from .rpc import new_rpc_id
@@ -985,7 +968,6 @@ class DriverRegistry:
         for key, value in baseline["values"].items():
             self.publish_frame(session_id, c.frame_session_projection(session_id, key, value, as_of))
 
-    # ------------------------------------------------------------ AstrBot 桥（移植自旧 main.py）
 
     def resolve_handoff(self, agent_name: str):
         from ..maid_dispatcher import _resolve_handoff
@@ -1060,7 +1042,6 @@ class DriverRegistry:
     def fallback_provider_name(self) -> str:
         return "astrbot"
 
-    # ------------------------------------------------------------ 标题生成
 
     def schedule_title_generation(self, driver: SessionDriver, request_text: str) -> None:
         task = asyncio.create_task(

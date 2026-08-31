@@ -71,7 +71,7 @@ class TestEventLog:
     def test_truncated_tail_line_dropped(self, log: SessionLog, tmp_path: Path):
         _emit_turn(log, 0)
         with open(log.events_path, "a", encoding="utf-8") as fh:
-            fh.write('{"type": "turn/st')  # 损坏尾行
+            fh.write('{"type": "turn/st')
         log.invalidate_cache()
         events = log.read_events()
         assert events[-1]["type"] == "turn/end"
@@ -105,7 +105,6 @@ class TestHistoryPaging:
         for turn in range(5):
             _emit_turn(log, turn)
         page = history_page(log.read_events(), max_messages=2)
-        # 每条消息块：user/message 独占一块（turn/start..user/message），assistant 一块
         assert page["has_more"] is True
         types = [e["type"] for e in page["events"]]
         assert types[0] == "turn/start"
@@ -128,13 +127,13 @@ class TestHistoryPaging:
             _emit_turn(log, turn)
         events = log.read_events()
         surface_seqs = [e["seq"] for e in derive_surface(events)]
-        before = surface_seqs[6]  # turn3 的 user/message
+        before = surface_seqs[6]
         page = history_page(events, before_seq=before, max_messages=2)
         page_events = page["events"]
         page_surface = [e for e in page_events if e["type"] in c.SURFACE_EVENT_TYPES]
         assert all(e["seq"] < before for e in page_surface)
         assert page["has_more"] is True
-        assert len(page_surface) == 2  # 恰好 turn2 的两条消息
+        assert len(page_surface) == 2
 
 
 class TestRewind:
@@ -144,11 +143,10 @@ class TestRewind:
         _emit_turn(log, 2)
         events = log.read_events()
         surface = derive_surface(events)
-        target_seq = surface[2]["seq"]  # rewind 第二个 turn 的 user/message
+        target_seq = surface[2]["seq"]
         log.append("maid/rewind", {"atSeq": target_seq}, ignorable=True)
         visible = visible_events(log.read_events())
         surface_after = derive_surface(visible)
         assert surface_after == surface[:2]
-        # rewind 之后的新事件可见（turn0 的 2 条 + turn3 的 2 条）
         _emit_turn(log, 3)
         assert len(derive_surface(log.read_events())) == 4

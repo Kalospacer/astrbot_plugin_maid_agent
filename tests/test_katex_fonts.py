@@ -14,7 +14,6 @@ class TestMaterializeKatexFonts:
         (assets / "KaTeX_Main-Regular-B22Nviop.woff2").write_bytes(b"main-regular")
         (assets / "KaTeX_Math-Italic-t53AETM-.woff2").write_bytes(b"math-italic")
         (assets / "KaTeX_AMS-Regular-BQhdFMY1.woff2").write_bytes(b"ams")
-        # 非字体 / 非 woff2 不参与
         (assets / "KaTeX_Main-Regular-Dr94JaBh.woff").write_bytes(b"legacy")
         (assets / "index-Qx7Zp2AA.js").write_bytes(b"js")
 
@@ -37,7 +36,7 @@ class TestMaterializeKatexFonts:
         target = tmp_path / "fonts"
         materialize_katex_fonts(dist, target)
         marker = target / "KaTeX_Main-Regular.woff2"
-        marker.write_bytes(b"sentinel")  # 体积不同会被刷新
+        marker.write_bytes(b"sentinel")
         materialize_katex_fonts(dist, target)
         assert marker.read_bytes() == b"main-regular"
 

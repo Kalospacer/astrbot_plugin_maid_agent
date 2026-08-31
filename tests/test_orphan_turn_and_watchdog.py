@@ -32,7 +32,7 @@ def sync(coro_fn):
 def registry(tmp_path: Path) -> DriverRegistry:
     store = SessionStore(tmp_path / "runtime")
     return DriverRegistry(
-        context=None,  # 测试不执行真实 turn
+        context=None,
         store=store,
         mux_hub=_Hub(),
         host_hub=_Hub(),
@@ -66,7 +66,6 @@ class TestOrphanTurnHeal:
         sid = _create_session_with_orphan_turn(registry)
         registry.driver(sid)
         count_after_first = len(registry.store.log(sid).read_events())
-        # 重建 registry（模拟再次重启/重新 attach），不应重复补写
         fresh = DriverRegistry(
             context=None, store=registry.store, mux_hub=_Hub(), host_hub=_Hub(), config=None
         )
@@ -81,7 +80,7 @@ class TestOrphanTurnHeal:
         log.append("turn/end", {"turn": 1, "reason": c.reason_completed()})
         registry.driver(sid)
         types = [e["type"] for e in registry.store.log(sid).read_events()]
-        assert types.count("turn/end") == 1  # 未新增
+        assert types.count("turn/end") == 1
 
     def test_empty_log_untouched(self, registry: DriverRegistry):
         log = registry.store.create_session(meta={"umo": ""})
@@ -129,7 +128,6 @@ class TestWatchdogCancel:
         assert events[-1]["type"] == "turn/end"
         assert events[-1]["data"]["reason"]["kind"] == "interrupted"
         assert driver.last_turn.get("status") == "interrupted"
-        # pump 仍存活（可继续处理后续消息），没有被取消波及
         assert driver._task is not None and not driver._task.done()
 
         driver.interrupt()
@@ -142,4 +140,4 @@ class TestWatchdogCancel:
         sid = log.session_id
         driver = registry.driver(sid)
         assert driver is not None
-        driver.watchdog_cancel()  # 无任务时不抛错
+        driver.watchdog_cancel()

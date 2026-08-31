@@ -1,4 +1,4 @@
-/* Full-viewport layer (figma Mask + Dialog 451:18655): mask + centered card. */
+
 .root {
   position: fixed;
   inset: 0;
@@ -9,8 +9,6 @@
   padding: 24px;
 }
 
-/* User/spec mask: rgba(0,0,0,0.24) + blur(2px) via --maid-alias-bg-mask-1 /
-   --maid-mask-blur (light); dark theme raises mask opacity. */
 .mask {
   position: absolute;
   inset: 0;
@@ -18,7 +16,6 @@
   backdrop-filter: var(--maid-mask-blur);
 }
 
-/* Dialog card: r24, shadow-lv3, layer-2 fill, inverted border, pb 24. */
 .dialog {
   position: relative;
   z-index: 1;
@@ -40,8 +37,6 @@
   width: 100%;
 }
 
-/* Header row (figma Title row): pad l24/t22/r14/b12, SPACE_BETWEEN —
- * title left, close button right. */
 .header {
   display: flex;
   align-items: center;
@@ -54,7 +49,7 @@
   margin: 0;
   font-size: 16px;
   line-height: 24px;
-  font-weight: 500; /* figma wt510, rendered 500 */
+  font-weight: 500; 
   color: var(--maid-alias-label-primary);
 }
 
@@ -76,7 +71,6 @@
   background: var(--maid-alias-interactive-bg-hover);
 }
 
-/* Description and body share the 332px content column (24px side pads). */
 .description {
   margin: 0;
   padding: 0 24px;

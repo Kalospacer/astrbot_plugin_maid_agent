@@ -135,7 +135,6 @@ def _migrate_one(store: SessionStore, agent_dir: Path, agent_id: str) -> None:
             "migratedFrom": "v1",
         },
     )
-    # create_session 写了 header；手动补 createdAt
     header = log.load_header() or {}
     header["createdAt"] = created_ms
     import os

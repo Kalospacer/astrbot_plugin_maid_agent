@@ -3,18 +3,14 @@ import clsx from 'clsx'
 import { IconChevronDownOutline14 } from './icons/index.tsx'
 import css from './DisclosureRow.module.css'
 
-/** Shared 24px disclosure chrome for compact flow rows. */
 export interface DisclosureRowProps {
   icon: ReactNode
   title: string
   open: boolean
   expandable: boolean
   onToggle: () => void
-  /** Makes the complete title row the disclosure target. */
   expandOnRowClick?: boolean | undefined
-  /** Replaces the collapsed icon with a chevron while the row is hovered. */
   previewChevron?: boolean | undefined
-  /** Keeps `collapsedContent` inline while open. */
   keepContentWhenOpen?: boolean | undefined
   collapsedContent?: ReactNode
   children?: ReactNode
@@ -25,11 +21,6 @@ export interface DisclosureRowProps {
   titleClassName?: string | undefined
 }
 
-/**
- * Render one disclosure header and its controlled expanded content.
- * @param props - Visual content, controlled state, and interaction policy.
- * @returns the disclosure row.
- */
 export function DisclosureRow({
   icon,
   title,

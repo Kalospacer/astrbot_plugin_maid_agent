@@ -27,6 +27,8 @@ export interface AssistantNode {
   blocks: ContentBlock[];
   usage?: any;
   time: number;
+  /** 中间步骤消息（带工具调用块）：归属轮次过程，随折叠条显隐。 */
+  inProcess?: boolean;
 }
 
 export interface ToolNode {
@@ -50,13 +52,12 @@ export interface TurnTailNode {
   kind: "turn-tail";
   key: string;
   turn: number;
-  reason: any;
+  /** turn/end 时填充；运行中为 undefined（折叠条先于过程行创建）。 */
+  reason?: any;
   time: number;
-  /** 本轮过程统计（DSH turn-process 折叠条标签）：工具调用数 / 助手消息数。 */
+  /** 本轮过程统计（折叠条标签）：工具调用数 / 过程内助手消息数。 */
   toolCallCount: number;
   messageCount: number;
-  /** 本轮首个 user 节点 seq（折叠条展开定位锚）。 */
-  startSeq: number | null;
 }
 
 export interface UsageNode {
@@ -98,10 +99,11 @@ export class ConversationFolder {
   private processed = 0;
   private viewsCount = 0;
   private result: FoldResult = EMPTY_FOLD;
-  /** 本轮过程统计（turn-tail 标签用）。 */
+  /** 本轮过程统计（折叠条标签用）。 */
   private turnToolCount = 0;
   private turnMessageCount = 0;
-  private turnStartSeq: number | null = null;
+  /** 本轮折叠条节点：首个过程行出现时创建在行之前（DSH TurnProcess 位置）。 */
+  private turnBar: TurnTailNode | null = null;
 
   ingest(events: Map<number, SessionEvent>, views: Map<number, ToolEventView>): FoldResult {
     let fresh: SessionEvent[] | null = [];
@@ -153,7 +155,7 @@ export class ConversationFolder {
     this.viewsCount = 0;
     this.turnToolCount = 0;
     this.turnMessageCount = 0;
-    this.turnStartSeq = null;
+    this.turnBar = null;
   }
 
   private push(node: ChatNode): void {
@@ -166,6 +168,20 @@ export class ConversationFolder {
     else this.nodes.push(next);
   }
 
+  /** 首个过程行入列前调用：把折叠条插到它前面（用户消息下方）。 */
+  private ensureTurnBar(time: number): void {
+    if (this.turnBar !== null) return;
+    this.turnBar = {
+      kind: "turn-tail",
+      key: `tb${this.lastTurn}`,
+      turn: this.lastTurn,
+      time,
+      toolCallCount: 0,
+      messageCount: 0,
+    };
+    this.push(this.turnBar);
+  }
+
   private process(event: SessionEvent, views: Map<number, ToolEventView>): void {
     const data = (event.data ?? {}) as Record<string, any>;
     switch (event.type) {
@@ -174,27 +190,41 @@ export class ConversationFolder {
         this.running = true;
         this.turnToolCount = 0;
         this.turnMessageCount = 0;
-        this.turnStartSeq = null;
+        this.turnBar = null;
         break;
       }
       case "turn/end": {
         this.running = false;
         this.partial = null;
-        this.push({
-          kind: "turn-tail",
-          key: `t${event.seq}`,
-          turn: data.turn ?? this.lastTurn,
-          reason: data.reason,
-          time: event.time,
-          toolCallCount: this.turnToolCount,
-          messageCount: this.turnMessageCount,
-          startSeq: this.turnStartSeq,
-        });
+        const reason = data.reason;
+        const turn = data.turn ?? this.lastTurn;
+        if (this.turnBar !== null) {
+          // 折叠条在轮首已就位，回填计数与终态
+          const bar = this.turnBar;
+          this.turnBar = null;
+          this.replaceNode(bar, {
+            ...bar,
+            reason,
+            time: event.time,
+            toolCallCount: this.turnToolCount,
+            messageCount: this.turnMessageCount,
+          });
+        } else if (reason?.kind !== undefined && reason?.kind !== "completed") {
+          // 纯文本轮的失败/中断也要有终态行
+          this.push({
+            kind: "turn-tail",
+            key: `t${event.seq}`,
+            turn,
+            reason,
+            time: event.time,
+            toolCallCount: 0,
+            messageCount: 0,
+          });
+        }
         break;
       }
       case "user/message": {
         this.partial = null;
-        if (this.turnStartSeq === null) this.turnStartSeq = event.seq;
         this.push({
           kind: "user",
           key: `u${event.seq}`,
@@ -223,11 +253,16 @@ export class ConversationFolder {
         break;
       }
       case "assistant/message": {
-        this.turnMessageCount += 1;
         const turn = data.turn ?? this.lastTurn;
         const step = data.step ?? this.lastStep;
         const blocks: ContentBlock[] = data.message?.content ?? [];
         if (blocks.length === 0) blocks.push({ type: "text", text: "" });
+        // 带工具调用块的是中间步骤消息：归入轮次过程（计一条），受折叠条控制
+        const inProcess = blocks.some((b) => b.type === "tool-call");
+        if (inProcess) {
+          this.ensureTurnBar(event.time);
+          this.turnMessageCount += 1;
+        }
         const node: AssistantNode = {
           kind: "assistant",
           key: `a${event.seq}`,
@@ -237,6 +272,7 @@ export class ConversationFolder {
           blocks,
           usage: data.usage,
           time: event.time,
+          inProcess: inProcess || undefined,
         };
         const partial = this.partial;
         if (partial) {
@@ -281,17 +317,27 @@ export class ConversationFolder {
       }
       case "tool/call": {
         this.lastStep = data.step ?? this.lastStep;
+        this.ensureTurnBar(event.time);
         this.turnToolCount += 1;
         const view = views.get(event.seq);
+        const callView = view && view.for === "call" ? view.view : undefined;
+        // migrate 路径 assistant/message 已按 tool-call 块建行：只补视图，不重复建行
+        const existing = this.openTools.get(data.callId);
+        if (existing) {
+          const merged: ToolNode = { ...existing, callView: callView ?? existing.callView };
+          this.openTools.set(data.callId, merged);
+          this.replaceNode(existing, merged);
+          break;
+        }
         const toolNode: ToolNode = {
           kind: "tool",
           key: `tc${event.seq}`,
           callId: data.callId,
           name: data.name,
           arguments: data.arguments ?? "",
-          callView: view && view.for === "call" ? view.view : undefined,
+          callView,
           callTime: event.time,
-          turn: this.lastTurn,
+          turn: data.turn ?? this.lastTurn,
         };
         this.openTools.set(data.callId, toolNode);
         this.push(toolNode);
@@ -332,7 +378,7 @@ export class ConversationFolder {
             isError: Boolean(data.error),
             resultView: view && view.for === "result" ? view.view : undefined,
             callTime: event.time,
-            turn: this.lastTurn,
+            turn: data.turn ?? this.lastTurn,
           });
         }
         break;

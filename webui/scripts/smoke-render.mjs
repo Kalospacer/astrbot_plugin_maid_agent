@@ -249,14 +249,26 @@ const checks = [
 ];
 for (const [label, ok] of checks) console.log(`${ok ? "PASS" : "FAIL"} ${label}`);
 
-// 展开工具行验证输出卡（默认收起，io-card 不在 DOM）
+// 折叠条行为：完成后过程行默认收起；点击折叠条在原位展开；再点工具行可见输出卡
+const toolRow = document.querySelector(".tool-row");
+const collapsedOk = toolRow !== null && toolRow.hasAttribute("hidden");
+console.log(`${collapsedOk ? "PASS" : "FAIL"} 完成后过程行收起`);
+
+let expandOk = false;
 let outputOk = false;
-const toolRowBtn = document.querySelector(".tool-row .disclosure-row");
-if (toolRowBtn) {
-  toolRowBtn.dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
-  await delay(300);
-  outputOk = document.getElementById("root").textContent.includes("晴，26 度，适合出门。");
+const barBtn = document.querySelector(".turn-process");
+if (barBtn && toolRow) {
+  barBtn.dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+  await delay(200);
+  expandOk = !toolRow.hasAttribute("hidden");
+  const toolRowBtn = toolRow.querySelector(".disclosure-row");
+  if (toolRowBtn) {
+    toolRowBtn.dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+    await delay(300);
+    outputOk = document.getElementById("root").textContent.includes("晴，26 度，适合出门。");
+  }
 }
+console.log(`${expandOk ? "PASS" : "FAIL"} 折叠条展开过程行`);
 console.log(`${outputOk ? "PASS" : "FAIL"} 工具输出正文`);
 
 // Node/jsdom 中懒加载 chunk 的 URL 解析依赖浏览器环境（fetch http://localhost/...），
@@ -274,6 +286,12 @@ if (runtimeErrors.length) {
   console.log("PASS 无未捕获运行时错误");
 }
 
-const allOk = heroOk && checks.every(([, ok]) => ok) && outputOk && runtimeErrors.length === 0;
+const allOk =
+  heroOk &&
+  checks.every(([, ok]) => ok) &&
+  collapsedOk &&
+  expandOk &&
+  outputOk &&
+  runtimeErrors.length === 0;
 console.log(allOk ? "\nSMOKE OK" : "\nSMOKE FAILED");
 process.exit(allOk ? 0 : 1);

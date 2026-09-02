@@ -1,13 +1,15 @@
 {
   "name": "maid-agent-console",
   "private": true,
-  "version": "2.0.3",
+  "version": "2.0.4",
   "type": "module",
-  "description": "代理女仆 Console—— AstrBot 插件页前端，构建产物输出到 ../pages/console",
+  "description": "代理女仆 Console—— AstrBot 插件页前端（性能+设计重写版），构建产物输出到 ../pages/console",
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "smoke": "node scripts/smoke-render.mjs",
+    "validate": "node scripts/validate-preview.mjs && node scripts/validate-chunks.mjs"
   },
   "dependencies": {
     "@shikijs/langs": "^4.4.3",
@@ -35,6 +37,7 @@
     "@types/react": "^18.3.18",
     "@types/react-dom": "^18.3.5",
     "@vitejs/plugin-react": "^4.3.4",
+    "jsdom": "^30.0.1",
     "typescript": "^5.7.3",
     "vite": "^6.0.7"
   }

@@ -1,5 +1,28 @@
 # Changelog
 
+## 2.0.4 - 2026-09-02
+
+控制台前端（webui）性能与设计重写：修复流式期间整棵组件树随每个 token 重渲染、每个 token 全量重折会话历史的两个渲染放大问题；视觉层对齐 Kimi 设计语言。构建保持单文件形态——AstrBot 插件页宿主以 60s JWT asset_token 签名下发资产、URL 改写基于正则，拆包会导致 chunk 401 白屏，故入口仍为零相对导入的单文件。
+
+### 修复
+
+- **流式输出全树重渲染**：旧版 `useApp` 把全局 version 当作 `useSyncExternalStore` 的 snapshot，任何一次状态变更（流式时每秒数十帧 SSE）都会重渲染所有订阅组件。重写为选择器记忆化订阅（缓存 version + 选中值，Object.is 相等则不重渲染），配合 store 侧的 `session.stamp` / `sessionsStamp` 变更戳解决原地 mutate 与引用比较的冲突；`emit()` 改为微任务合批。流式期间只有数据真正变化的组件重渲染。
+- **会话折叠 O(n)/token**：`ChatView` 每个 token 都对全部历史事件重新 `foldConversation`。重写为常驻的 `ConversationFolder` 增量折叠器，只处理新增事件；节点改为替换式更新并配合 `React.memo`，未变化节点零重渲染；检测到历史前置加载或事件收缩时自动退化为全量重折。
+
+### 变更
+
+- **设计对齐 Kimi 设计语言**：用户气泡由品牌蓝染色改为中性灰；发送按钮由品牌蓝改为深色主按钮；markdown 字重从 700/600 收敛为 400/500 两档并去除中文伪斜体；圆角归入 6/8/10/12/16 标尺；统计/详情数字启用 `tabular-nums`；hero 标题 26→22px/500；token 层去除 light/dark 重复的静态色板（design-platform.css 缩减约三分之一）。
+- **验证脚本**：新增 `webui/scripts/`（preview 资源校验、chunk 完整性校验、jsdom 运行时冒烟测试，覆盖 hero→发送→流式→回合完成全流程）。
+- MarkdownText / ReadBlock 改为 `React.lazy` 包裹：在单文件产物中等同即时解析，无加载语义变化，仅保留代码边界的 Suspense 兜底。
+- metadata.yaml / pyproject.toml / webui/package.json / `__version__` 升至 2.0.4。
+
+### 不变
+
+- 构建产物形态不变：单 `console.js` + 单 `console.css`，无相对导入，与插件页 asset_token 改写模型兼容（拆包在宿主 60s token 与正则改写下行不通，已验证并记录于 vite.config.ts 注释）。
+- 控制台 RPC 协议、SSE 帧格式、插件页集成（bridge-sdk 注入）不变，后端零改动。
+- `call_maid` / `maid_task` 的工具签名与语义不变，`/maid status`、`/maid stop` 命令不变。
+- 已有会话数据无需迁移，不修改 AstrBot Core 任何文件。
+
 ## 2.0.2 - 2026-08-24
 
 修复并发能力退化：`call_maid` 每次新 dispatch 不再复用旧会话，batch 从串行改并发执行。

@@ -60,6 +60,10 @@ export default defineConfig({
     outDir: "../pages/console",
     emptyOutDir: true,
     target: "es2020",
+    // 宿主约束（AstrBot plugin_page_service）：所有资产经 /api/plugin/page/content/
+    // 以 60s JWT asset_token 签名下发，URL 改写基于正则——minify 后的静态
+    // from"./x.js" 无空白不匹配改写规则，且 token 60s 过期后运行时再加载 chunk 会 401。
+    // 因此产物必须是零相对导入的单文件，拆包在本宿主下行不通。
     cssCodeSplit: false,
     modulePreload: false,
     assetsInlineLimit: 0,

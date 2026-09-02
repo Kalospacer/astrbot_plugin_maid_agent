@@ -123,8 +123,8 @@
   align-items: center;
   justify-content: center;
   min-width: 0;
-  font-size: 26px;
-  line-height: 32px;
+  font-size: 22px;
+  line-height: 28px;
   font-weight: 500;
   color: var(--maid-alias-label-primary);
 }

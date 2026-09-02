@@ -51,7 +51,7 @@ from .harness.store import SessionStore
 from .katex_fonts import materialize_katex_fonts
 from .toolset_adapter import apply_main_tool_policy
 
-__version__ = "2.0.3"
+__version__ = "2.0.4"
 
 _SETTINGS_SCHEMA_CACHE: dict | None = None
 

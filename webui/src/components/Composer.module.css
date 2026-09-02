@@ -29,19 +29,19 @@
   position: relative;
   display: flex;
   flex-direction: column;
-  
+
   gap: 12px;
   width: 100%;
   max-width: var(--maid-composer-card-max-width);
-  padding-top: 10px;
-  
+  padding-top: 8px;
+
   border: 1px solid var(--maid-alias-border-l2-darkmode-thin);
-  border-radius: 22px;
+  border-radius: 16px;
   background: var(--maid-specific-input-major);
   box-shadow: var(--maid-shadow-lv2);
   font-size: 16px;
   line-height: 24px;
-  
+
   --maid-scrollbar-thumb: var(--maid-alias-scrollbar-bg-l2);
   --maid-scrollbar-thumb-hover: var(--maid-alias-scrollbar-hover-l2);
 }
@@ -180,7 +180,7 @@
   width: 28px;
   height: 28px;
   border: none;
-  border-radius: 999px;
+  border-radius: 8px;
   background: var(--maid-specific-selector);
   color: var(--maid-alias-label-primary);
   cursor: pointer;
@@ -226,21 +226,22 @@
   display: grid;
   place-items: center;
   flex: none;
-  width: 34px;
-  height: 34px;
+  width: 32px;
+  height: 32px;
   border: none;
   border-radius: 999px;
-  background: var(--maid-alias-button-info-fill);
-  
-  color: #fff;
+  /* 主操作走深色而非品牌蓝（Kimi：交互强调是黑，不是蓝） */
+  background: var(--maid-alias-button-primary-fill);
+
+  color: var(--maid-alias-label-primary-inverted);
   cursor: pointer;
   transition: background-color 100ms ease;
-  
+
   transform: translateY(-2px);
 }
 
 .primary:hover:not(:disabled) {
-  background: var(--maid-alias-button-info-hover);
+  background: var(--maid-alias-button-primary-hover);
 }
 
 .primary:disabled {

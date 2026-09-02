@@ -1,5 +1,6 @@
 
 import { call, ConnectionController, type ConnectionState } from "@/api/client";
+import { ConversationFolder } from "@/store/conversation";
 import type {
   AgentPresetEntry,
   HistoryEntry,
@@ -26,6 +27,11 @@ export interface SessionState {
   historyLoaded: boolean;
   hasMore: boolean;
   models: SessionModels | null;
+  /** 任何 session 内部数据（events/views/queue/summary/projections/models）变化时 +1，
+   *  供 useApp 选择器以原始值订阅，避免原地修改导致更新丢失。 */
+  stamp: number;
+  /** 增量折叠器：跨渲染复用，流式时只 fold 新增事件。 */
+  folder: ConversationFolder;
 }
 
 export interface SessionModels {
@@ -37,6 +43,8 @@ export interface AppState {
   connection: ConnectionState;
   booting: boolean;
   sessions: Map<SessionId, SessionSummary>;
+  /** 会话列表或其内部任何 summary 变化时 +1（summary 对象是原地修改的）。 */
+  sessionsStamp: number;
   byId: Map<SessionId, SessionState>;
   current: SessionId | undefined;
   presets: AgentPresetEntry[];
@@ -51,6 +59,7 @@ const state: AppState = {
   connection: "connecting",
   booting: true,
   sessions: new Map(),
+  sessionsStamp: 0,
   byId: new Map(),
   current: undefined,
   presets: [],
@@ -70,9 +79,33 @@ function readTheme(): "light" | "dark" {
   }
 }
 
-function emit(): void {
+let flushScheduled = false;
+
+function flush(): void {
+  flushScheduled = false;
   version += 1;
   for (const listener of listeners) listener();
+}
+
+/**
+ * 微任务合批的 emit：同一事件循环里的连续变更（如批量 RPC 回写、
+ * SSE 帧连发）只触发一轮监听者通知，配合 useApp 的选择器缓存，
+ * 把流式期间的渲染开销压到最小。
+ */
+function emit(): void {
+  if (flushScheduled) return;
+  flushScheduled = true;
+  queueMicrotask(flush);
+}
+
+/** 标记某个 session 的内部数据已变化（供 useApp stamp 选择器感知）。 */
+function touchSession(session: SessionState): void {
+  session.stamp += 1;
+}
+
+/** 标记会话列表/摘要已变化。 */
+function touchSessions(): void {
+  state.sessionsStamp += 1;
 }
 
 export function subscribe(listener: Listener): () => void {
@@ -109,6 +142,8 @@ function ensureSession(sessionId: SessionId): SessionState {
       historyLoaded: false,
       hasMore: false,
       models: null,
+      stamp: 0,
+      folder: new ConversationFolder(),
     };
     state.byId.set(sessionId, session);
   }
@@ -120,12 +155,15 @@ export async function refreshSessions(): Promise<void> {
   state.sessions = new Map(items.map((item) => [item.sessionId, item]));
   for (const [sid, session] of state.byId) {
     const fresh = items.find((item) => item.sessionId === sid);
-    if (fresh) session.summary = fresh;
-    else state.byId.delete(sid);
+    if (fresh) {
+      session.summary = fresh;
+      touchSession(session);
+    } else state.byId.delete(sid);
   }
   if (state.current !== undefined && !state.sessions.has(state.current)) {
     state.current = undefined;
   }
+  touchSessions();
   emit();
 }
 
@@ -149,6 +187,7 @@ export async function loadHistoryTail(sessionId: SessionId): Promise<void> {
   session.hasMore = page.hasMore;
   if (page.projections) applyProjections(sessionId, page.projections.values, page.projections.asOfSeq);
   session.historyLoaded = true;
+  touchSession(session);
   emit();
 }
 
@@ -165,6 +204,7 @@ export async function loadOlder(sessionId: SessionId): Promise<void> {
     if (entry.view) session.views.set(entry.event.seq, entry.view);
   }
   session.hasMore = page.hasMore;
+  touchSession(session);
   emit();
 }
 
@@ -183,6 +223,8 @@ export function applyMuxFrame(frame: MuxFrame): void {
     if (frame.view) session.views.set(frame.event.seq, frame.view);
     session.summary.updatedAt = Math.max(session.summary.updatedAt, frame.event.time);
     if (frame.event.type === "turn/start") session.summary.blank = false;
+    touchSession(session);
+    touchSessions();
     if (state.current === frame.sessionId) emit();
     return;
   }
@@ -193,6 +235,7 @@ export function applyMuxFrame(frame: MuxFrame): void {
   if (frame.type === "session/queue") {
     const session = ensureSession(frame.sessionId);
     session.queue = frame.items;
+    touchSession(session);
     emit();
     return;
   }
@@ -202,6 +245,9 @@ export function applyMuxFrame(frame: MuxFrame): void {
     if (summary?.projections && frame.key === "title") {
       summary.projections.values.title = frame.value;
     }
+    const session = state.byId.get(frame.sessionId);
+    if (session) touchSession(session);
+    touchSessions();
     emit();
   }
 }
@@ -214,7 +260,11 @@ export function applyHostFrame(frame: HostFrame): void {
       if (frame.running) summary.blank = false;
     }
     const session = state.byId.get(frame.sessionId);
-    if (session) session.summary.running = frame.running;
+    if (session) {
+      session.summary.running = frame.running;
+      touchSession(session);
+    }
+    touchSessions();
     emit();
   }
   if (frame.type === "host/session-added") {
@@ -224,6 +274,7 @@ export function applyHostFrame(frame: HostFrame): void {
     state.sessions.delete(frame.sessionId);
     state.byId.delete(frame.sessionId);
     if (state.current === frame.sessionId) state.current = undefined;
+    touchSessions();
     emit();
   }
 }
@@ -345,7 +396,11 @@ export async function refreshPresets(): Promise<void> {
 export async function selectPreset(sessionId: SessionId, agentPreset: string): Promise<void> {
   await call("agentPreset.select", { sessionId, agentPreset });
   const session = state.byId.get(sessionId);
-  if (session) session.summary.agentPreset = agentPreset;
+  if (session) {
+    session.summary.agentPreset = agentPreset;
+    touchSession(session);
+  }
+  touchSessions();
   await refreshSessions();
 }
 
@@ -359,6 +414,7 @@ export async function loadModels(sessionId: SessionId): Promise<void> {
   const models = await call<SessionModels>("session.models", { sessionId });
   const session = ensureSession(sessionId);
   session.models = models;
+  touchSession(session);
   emit();
 }
 

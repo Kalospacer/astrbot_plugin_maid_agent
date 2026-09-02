@@ -42,6 +42,8 @@ export interface ToolNode {
   resultView?: any;
   callTime: number;
   resultTime?: number;
+  /** 所属轮次（过程折叠归属）。 */
+  turn: number;
 }
 
 export interface TurnTailNode {
@@ -50,6 +52,11 @@ export interface TurnTailNode {
   turn: number;
   reason: any;
   time: number;
+  /** 本轮过程统计（DSH turn-process 折叠条标签）：工具调用数 / 助手消息数。 */
+  toolCallCount: number;
+  messageCount: number;
+  /** 本轮首个 user 节点 seq（折叠条展开定位锚）。 */
+  startSeq: number | null;
 }
 
 export interface UsageNode {
@@ -91,6 +98,10 @@ export class ConversationFolder {
   private processed = 0;
   private viewsCount = 0;
   private result: FoldResult = EMPTY_FOLD;
+  /** 本轮过程统计（turn-tail 标签用）。 */
+  private turnToolCount = 0;
+  private turnMessageCount = 0;
+  private turnStartSeq: number | null = null;
 
   ingest(events: Map<number, SessionEvent>, views: Map<number, ToolEventView>): FoldResult {
     let fresh: SessionEvent[] | null = [];
@@ -140,6 +151,9 @@ export class ConversationFolder {
     this.maxSeq = -1;
     this.processed = 0;
     this.viewsCount = 0;
+    this.turnToolCount = 0;
+    this.turnMessageCount = 0;
+    this.turnStartSeq = null;
   }
 
   private push(node: ChatNode): void {
@@ -158,6 +172,9 @@ export class ConversationFolder {
       case "turn/start": {
         this.lastTurn = data.turn ?? this.lastTurn;
         this.running = true;
+        this.turnToolCount = 0;
+        this.turnMessageCount = 0;
+        this.turnStartSeq = null;
         break;
       }
       case "turn/end": {
@@ -169,11 +186,15 @@ export class ConversationFolder {
           turn: data.turn ?? this.lastTurn,
           reason: data.reason,
           time: event.time,
+          toolCallCount: this.turnToolCount,
+          messageCount: this.turnMessageCount,
+          startSeq: this.turnStartSeq,
         });
         break;
       }
       case "user/message": {
         this.partial = null;
+        if (this.turnStartSeq === null) this.turnStartSeq = event.seq;
         this.push({
           kind: "user",
           key: `u${event.seq}`,
@@ -202,6 +223,7 @@ export class ConversationFolder {
         break;
       }
       case "assistant/message": {
+        this.turnMessageCount += 1;
         const turn = data.turn ?? this.lastTurn;
         const step = data.step ?? this.lastStep;
         const blocks: ContentBlock[] = data.message?.content ?? [];
@@ -249,6 +271,7 @@ export class ConversationFolder {
               name: block.name,
               arguments: block.arguments,
               callTime: event.time,
+              turn,
             };
             this.openTools.set(block.id, toolNode);
             this.push(toolNode);
@@ -258,6 +281,7 @@ export class ConversationFolder {
       }
       case "tool/call": {
         this.lastStep = data.step ?? this.lastStep;
+        this.turnToolCount += 1;
         const view = views.get(event.seq);
         const toolNode: ToolNode = {
           kind: "tool",
@@ -267,6 +291,7 @@ export class ConversationFolder {
           arguments: data.arguments ?? "",
           callView: view && view.for === "call" ? view.view : undefined,
           callTime: event.time,
+          turn: this.lastTurn,
         };
         this.openTools.set(data.callId, toolNode);
         this.push(toolNode);
@@ -274,14 +299,18 @@ export class ConversationFolder {
       }
       case "tool/result": {
         const callId = data.message?.source?.callId ?? "";
-        const text = (data.message?.content ?? [])
-          .filter((b: any) => b.type === "text")
-          .map((b: any) => b.text)
+        // contracts.tool_result_message 的正文在 tool-result 块内层：
+        // content = [{ type: "tool-result", toolCallId, content: [textBlock] }]
+        const blocks = (data.message?.content ?? []) as any[];
+        const text = blocks
+          .flatMap((b: any) => (b?.type === "tool-result" ? b.content ?? [] : [b]))
+          .filter((b: any) => b?.type === "text")
+          .map((b: any) => b.text ?? "")
           .join("\n");
         const view = views.get(event.seq);
         const open = this.openTools.get(callId);
         if (open) {
-          // 替换而非原地修改，保证 memo 化的 ToolNodeView 重新渲染
+          // 替换而非原地修改，保证 memo 化的工具行重新渲染
           const updated: ToolNode = {
             ...open,
             resultSeq: event.seq,
@@ -303,6 +332,7 @@ export class ConversationFolder {
             isError: Boolean(data.error),
             resultView: view && view.for === "result" ? view.view : undefined,
             callTime: event.time,
+            turn: this.lastTurn,
           });
         }
         break;

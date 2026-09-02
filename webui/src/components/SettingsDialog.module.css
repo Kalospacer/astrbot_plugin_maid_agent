@@ -1,11 +1,149 @@
+/* 设置面板（DSH ui-settings-general SettingsRoot.module.css）：
+   全屏遮罩 + 800px 居中面板（r32），左 nav 列 188px + 右内容列。 */
 
-.dialog {
-  width: min(520px, 100%);
-  max-height: 100%;
+.overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 
-.scroll {
+.mask {
+  position: absolute;
+  inset: 0;
+  background: var(--maid-alias-bg-mask-1);
+  backdrop-filter: var(--maid-mask-blur);
+}
+
+.panel {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  width: 800px;
+  height: min(800px, calc(100vh - 48px));
+  max-width: calc(100vw - 48px);
+  border-radius: 32px;
+  overflow: hidden;
+  background: var(--maid-alias-bg-layer-2);
+  box-shadow: var(--maid-shadow-lv3);
+  --maid-scrollbar-thumb: var(--maid-alias-scrollbar-bg-l2);
+  --maid-scrollbar-thumb-hover: var(--maid-alias-scrollbar-hover-l2);
+}
+
+/* nav 左列（DSH .nav）：188 宽，pad 22 12 0，gap 18 */
+.nav {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  width: 188px;
+  padding: 22px 12px 0;
+  box-sizing: border-box;
+}
+
+.navTitle {
+  padding: 0 12px;
+  font-size: 16px;
+  line-height: 24px;
+  font-weight: 500;
+  color: var(--maid-alias-label-primary);
+}
+
+.navList {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+/* nav 单元（DSH .navCell）：40px 高 r12，选中/悬停走侧栏项填充 */
+.navCell {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 40px;
+  padding: 9px 16px 9px 12px;
+  box-sizing: border-box;
+  border: none;
+  border-radius: 12px;
+  background: transparent;
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 14px;
+  line-height: 22px;
+  font-weight: 400;
+  color: var(--maid-alias-label-primary);
+  text-align: left;
+}
+
+.navCell:hover {
+  background: var(--maid-specific-sidebar-nav-item-hover);
+}
+
+.navCell.active {
+  background: var(--maid-specific-sidebar-nav-item-active);
+}
+
+.navIcon {
+  flex: none;
+}
+
+.navLabel {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.content {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* header（DSH .header）：h54，close 右置 */
+.header {
+  flex: none;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+  height: 54px;
+  padding: 20px 14px 8px 10px;
+  box-sizing: border-box;
+}
+
+.headerSpacer {
+  min-width: 0;
+  flex: 1;
+}
+
+.close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: none;
+  border-radius: 28px;
+  background: transparent;
+  cursor: pointer;
+  color: var(--maid-alias-label-primary);
+}
+
+.close:hover {
+  background: var(--maid-alias-interactive-bg-hover);
+}
+
+/* options 区（DSH .options）：pad 0 24 24，滚动 */
+.options {
+  flex: 1;
   min-height: 0;
+  padding: 0 24px 24px;
   overflow-y: auto;
 }
 
@@ -67,4 +205,31 @@
 .themeRow {
   display: flex;
   gap: 8px;
+}
+
+.aboutRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--maid-alias-label-primary);
+}
+
+.footer {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 0 24px 20px;
+}
+
+.hiddenLabel {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
 }

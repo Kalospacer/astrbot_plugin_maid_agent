@@ -1,8 +1,8 @@
-import { useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import clsx from "clsx";
 
-import { Menu, Tooltip } from "@/ui/primitives";
-import { IconAgentPresetOutline16, IconChevronDownOutline14, IconPanelLeftOutline16 } from "@/ui/primitives/icons";
+import { Menu } from "@/ui/primitives";
+import { IconAgentPresetOutline16, IconChevronDownOutline14 } from "@/ui/primitives/icons";
 import { useApp } from "@/hooks";
 import * as app from "@/store/app";
 import { ChatView } from "@/components/ChatView";
@@ -11,8 +11,6 @@ import css from "./Conversation.module.css";
 
 export function ConversationRoot(props: {
   booting: boolean;
-  detailsOpen?: boolean;
-  onToggleDetails?: () => void;
 }) {
   const current = useApp((s) => s.current);
   // summary 原地修改，订阅派生原始值
@@ -21,6 +19,22 @@ export function ConversationRoot(props: {
   const historyLoaded = useApp((s) =>
     s.current ? (s.byId.get(s.current)?.historyLoaded ?? false) : false,
   );
+
+  // 发布输入区座高度与滚动口高度（DSH ConversationRoot seatObserver）：
+  // 回底按钮与轮次导航轨据此避开 sticky 输入区，并居中于剩余可见带。
+  const seatObserver = useRef<ResizeObserver | null>(null);
+  const seatResizeRef = useCallback((seat: HTMLDivElement | null): void => {
+    seatObserver.current?.disconnect();
+    seatObserver.current = null;
+    const scroller = seat?.parentElement ?? null;
+    if (seat === null || scroller === null) return;
+    seatObserver.current = new ResizeObserver(() => {
+      scroller.style.setProperty("--maid-composer-height", `${seat.offsetHeight}px`);
+      scroller.style.setProperty("--maid-conversation-viewport-height", `${scroller.clientHeight}px`);
+    });
+    seatObserver.current.observe(seat);
+    seatObserver.current.observe(scroller);
+  }, []);
 
   const hero =
     current === undefined ||
@@ -31,28 +45,13 @@ export function ConversationRoot(props: {
 
   return (
     <div className={css.root} data-phase={phase}>
-      {props.onToggleDetails ? (
-        <Tooltip label={props.detailsOpen ? "收起详情" : "会话详情"} side="bottom" delayMs={500}>
-          <button
-            type="button"
-            className={css.detailsToggle}
-            aria-label={props.detailsOpen ? "收起详情" : "会话详情"}
-            aria-pressed={props.detailsOpen}
-            onClick={props.onToggleDetails}
-          >
-            <span style={{ display: "inline-flex", transform: "scaleX(-1)" }}>
-              <IconPanelLeftOutline16 size={16} />
-            </span>
-          </button>
-        </Tooltip>
-      ) : null}
       <div className={css.scrollBody} data-conversation-scroll="">
         {!hero && !props.booting ? (
           <div className={css.viewArea}>
             <ChatView />
           </div>
         ) : null}
-        <div className={css.composerSeat} data-composer-seat="">
+        <div className={css.composerSeat} data-composer-seat="" ref={seatResizeRef}>
           <div className={clsx(css.composerStack, phase === "hero" && css.composerHero)}>
             {phase === "hero" ? (
               <HeroHeadline text={props.booting ? "正在连接 AstrBot…" : "派一个新任务"} />

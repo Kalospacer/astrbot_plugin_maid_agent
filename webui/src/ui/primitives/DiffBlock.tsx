@@ -34,6 +34,17 @@ const ROW_CLASS: Record<DiffRow['kind'], string | undefined> = {
   gap: css.gap,
 }
 
+/** 行级 +/− 计数（DSH diffTotals）：折叠摘要的 +n -m 尾标。 */
+export function diffTotals(diffs: DiffHunk[]): { added: number; removed: number } {
+  let added = 0
+  let removed = 0
+  for (const diff of diffs) {
+    if (diff.oldText !== null) removed += contentLines(diff.oldText).length
+    added += contentLines(diff.newText).length
+  }
+  return { added, removed }
+}
+
 function buildRows(diffs: DiffHunk[]): { rows: DiffRow[]; added: number; removed: number; files: number } {
   const rows: DiffRow[] = []
   const paths = new Set<string>()

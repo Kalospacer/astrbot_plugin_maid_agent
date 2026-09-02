@@ -318,6 +318,10 @@ body {
   display: flex;
   flex-direction: column;
 }
+/* 作者 display 会压掉 UA 的 [hidden] 规则，必须显式声明才能收起过程行 */
+.tool-row[hidden] {
+  display: none;
+}
 .tool-row .disclosure-row {
   position: relative;
   overflow: hidden;
@@ -587,8 +591,7 @@ body {
   z-index: 8;
   height: 0;
   display: flex;
-  justify-content: flex-end;
-  padding-right: max(0px, calc((100% - var(--maid-chat-content-width, 748px)) / 2));
+  justify-content: center;
   pointer-events: none;
 }
 /* 输入区是滚动口内的 sticky 座（Conversation.tsx 发布实际高度），

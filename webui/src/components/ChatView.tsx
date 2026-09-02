@@ -134,11 +134,28 @@ export function ChatView() {
   const [atBottom, setAtBottom] = useState(true);
   const [turnOpen, setTurnOpen] = useState<Map<number, boolean>>(() => new Map());
 
+  // 增量折叠：复用 session 上的 folder，只处理新增事件
+  const folded = useMemo(
+    () => (session ? session.folder.ingest(session.events, session.views) : EMPTY_FOLD),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [session, stampKey],
+  );
+
+  // 运行中轮次：过程行默认展开（DSH live turn 行为），turn/end 后自动收进折叠条
+  const runningTurn = useMemo(() => {
+    if (!folded.running) return undefined;
+    for (let i = folded.nodes.length - 1; i >= 0; i--) {
+      const t = (folded.nodes[i] as any).turn;
+      if (typeof t === "number") return t;
+    }
+    return undefined;
+  }, [folded]);
+
   // 值必须随 turnOpen 变化：ChatNodeView 被 memo 化，只有 context 值
   // 换新引用才会重渲染（否则点击折叠条状态翻转但界面纹丝不动）。
   const processCtx = useMemo(
     () => ({
-      isOpen: (turn: number) => turnOpen.get(turn) ?? false,
+      isOpen: (turn: number) => turnOpen.get(turn) ?? turn === runningTurn,
       toggle: (turn: number) =>
         setTurnOpen((prev) => {
           const next = new Map(prev);
@@ -146,14 +163,7 @@ export function ChatView() {
           return next;
         }),
     }),
-    [turnOpen],
-  );
-
-  // 增量折叠：复用 session 上的 folder，只处理新增事件
-  const folded = useMemo(
-    () => (session ? session.folder.ingest(session.events, session.views) : EMPTY_FOLD),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [session, stampKey],
+    [turnOpen, runningTurn],
   );
 
   useEffect(() => {
@@ -282,7 +292,16 @@ const ChatNodeView = memo(function ChatNodeView(props: {
     );
   }
   if (node.kind === "assistant") {
-    return <AssistantBody blocks={node.blocks} streaming={false} usage={node.usage} time={node.time} interrupted={false} />;
+    return (
+      <AssistantBody
+        blocks={node.blocks}
+        streaming={false}
+        usage={node.usage}
+        time={node.time}
+        interrupted={false}
+        hidden={Boolean(node.inProcess) && !process.isOpen(node.turn) ? true : undefined}
+      />
+    );
   }
   if (node.kind === "assistant-partial") {
     const blocks = node.blocks.map((b) => ({ type: b.kind, text: b.text }));
@@ -294,69 +313,64 @@ const ChatNodeView = memo(function ChatNodeView(props: {
   if (node.kind === "usage") {
     return <UsageLine usage={node.usage} />;
   }
+  // 折叠条节点：位置在轮首（用户消息下方、过程行之前，DSH TurnProcess 几何）。
+  // 有过程行时渲染折叠按钮；有终态（失败/中断/截断）时在其下渲染终态行。
   const reasonKind = node.reason?.kind ?? "completed";
-  if (reasonKind === "completed") {
-    // 过程折叠条（DSH TurnProcessNodeView）：已完成轮的过程行（工具/中间消息）默认收起
-    const open = process.isOpen(node.turn);
-    const labels: string[] = [];
-    if (node.toolCallCount > 0) labels.push(`${node.toolCallCount} 次工具调用`);
-    if (node.messageCount > 0) labels.push(`${node.messageCount} 条消息`);
-    const label = labels.length === 0 ? "已思考" : `已思考 · ${labels.join(" · ")}`;
-    return (
-      <button
-        type="button"
-        className="turn-process"
-        data-open={open || undefined}
-        aria-expanded={open}
-        onClick={(event) => {
-          event.currentTarget.focus();
-          process.toggle(node.turn);
-        }}
-      >
-        <span className="turn-process-label">{label}</span>
-        <IconChevronDownOutline14 className="turn-process-chevron" />
-      </button>
-    );
-  }
-  if (reasonKind === "error") {
-    return (
-      <div className="turn-error-row" role="status">
-        <StateDot state="error" className="state-dot" />
-        <div className="turn-error-copy">
-          <span className="turn-error-title">本轮运行失败</span>
-          <span className="turn-error-message">{node.reason?.error?.message ?? ""}</span>
+  const barOpen = process.isOpen(node.turn);
+  const labels: string[] = [];
+  if (node.toolCallCount > 0) labels.push(`${node.toolCallCount} 次工具调用`);
+  if (node.messageCount > 0) labels.push(`${node.messageCount} 条消息`);
+  return (
+    <>
+      {labels.length > 0 ? (
+        <button
+          type="button"
+          className="turn-process"
+          data-open={barOpen || undefined}
+          aria-expanded={barOpen}
+          onClick={(event) => {
+            event.currentTarget.focus();
+            process.toggle(node.turn);
+          }}
+        >
+          <span className="turn-process-label">已思考 · {labels.join(" · ")}</span>
+          <IconChevronDownOutline14 className="turn-process-chevron" />
+        </button>
+      ) : null}
+      {reasonKind === "error" ? (
+        <div className="turn-error-row" role="status">
+          <StateDot state="error" className="state-dot" />
+          <div className="turn-error-copy">
+            <span className="turn-error-title">本轮运行失败</span>
+            <span className="turn-error-message">{node.reason?.error?.message ?? ""}</span>
+          </div>
+          {node.reason?.error?.code !== undefined ? (
+            <code className="turn-error-code">{node.reason.error.code}</code>
+          ) : null}
         </div>
-        {node.reason?.error?.code !== undefined ? (
-          <code className="turn-error-code">{node.reason.error.code}</code>
-        ) : null}
-      </div>
-    );
-  }
-  if (reasonKind === "interrupted" || reasonKind === "aborted") {
-    return (
-      <div className="turn-error-row" role="status">
-        <StateDot state="warning" className="state-dot" />
-        <div className="turn-error-copy">
-          <span className="turn-error-title">已停止</span>
-          <span className="turn-error-message">本轮已被中断</span>
+      ) : null}
+      {reasonKind === "interrupted" || reasonKind === "aborted" ? (
+        <div className="turn-error-row" role="status">
+          <StateDot state="warning" className="state-dot" />
+          <div className="turn-error-copy">
+            <span className="turn-error-title">已停止</span>
+            <span className="turn-error-message">本轮已被中断</span>
+          </div>
         </div>
-      </div>
-    );
-  }
-  if (reasonKind === "max-tokens") {
-    return (
-      <div className="turn-error-row" role="status">
-        <StateDot state="warning" className="state-dot" />
-        <div className="turn-error-copy">
-          <span className="turn-error-title">已达到输出 token 上限</span>
-          <span className="turn-error-message">
-            回答被截断，已有输出保留在对话中。发送“继续”可让模型接着输出。
-          </span>
+      ) : null}
+      {reasonKind === "max-tokens" ? (
+        <div className="turn-error-row" role="status">
+          <StateDot state="warning" className="state-dot" />
+          <div className="turn-error-copy">
+            <span className="turn-error-title">已达到输出 token 上限</span>
+            <span className="turn-error-message">
+              回答被截断，已有输出保留在对话中。发送“继续”可让模型接着输出。
+            </span>
+          </div>
         </div>
-      </div>
-    );
-  }
-  return null;
+      ) : null}
+    </>
+  );
 });
 
 function UserImages(props: { sessionId: string; refs: { attachmentId: string }[] }) {
@@ -402,6 +416,7 @@ function AssistantBody(props: {
   usage?: any;
   time?: number;
   interrupted: boolean;
+  hidden?: boolean;
 }) {
   const reasoning = props.blocks.find((b) => b.type === "reasoning");
   const text = props.blocks
@@ -409,7 +424,7 @@ function AssistantBody(props: {
     .map((b) => b.text)
     .join("");
   return (
-    <div className="message-assistant">
+    <div className="message-assistant" hidden={props.hidden || undefined}>
       {reasoning?.text ? <ThinkRow text={reasoning.text} running={props.streaming && !text} /> : null}
       {text ? (
         <Suspense fallback={<div className="message-plain">{text}</div>}>

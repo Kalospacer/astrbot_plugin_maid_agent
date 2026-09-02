@@ -2,9 +2,16 @@ import { Button, JsonTree } from "@/ui/primitives";
 import { IconBranchOutline16 } from "@/ui/primitives/icons";
 import { useApp } from "@/hooks";
 import * as app from "@/store/app";
+import { getSnapshot } from "@/store/app";
 
 export function DetailsPanel(props: { onClose?: () => void }) {
-  const session = useApp((s) => (s.current ? s.byId.get(s.current) : undefined));
+  // session 数据原地修改，订阅 stamp；stamp 不变时面板完全不重渲染
+  useApp((s) => {
+    if (!s.current) return "";
+    return `${s.current}:${s.byId.get(s.current)?.stamp ?? -1}`;
+  });
+  const state = getSnapshot();
+  const session = state.current ? state.byId.get(state.current) : undefined;
 
   if (!session) {
     return (

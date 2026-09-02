@@ -148,8 +148,9 @@ export function SessionSidebar(props: {
 }
 
 function UmoSwitcher(props: { wide: boolean }) {
-  const sessions = useApp((s) => s.sessions);
-  useApp((s) => s.presets.length);
+  // sessions Map 内部原地修改，订阅 stamp 后读取最新引用
+  useApp((s) => s.sessionsStamp);
+  const sessions = app.getSnapshot().sessions;
   const [menuOpen, setMenuOpen] = useState(false);
   const [customOpen, setCustomOpen] = useState(false);
   const [customValue, setCustomValue] = useState("");
@@ -238,7 +239,9 @@ interface RemoteSearchState {
 
 function SessionBrowser(props: { wide: boolean; expandSidebar: () => void }) {
   const { wide } = props;
-  const sessionMap = useApp((s) => s.sessions);
+  // sessions Map 内部原地修改，订阅 stamp 后读取最新引用
+  useApp((s) => s.sessionsStamp);
+  const sessionMap = app.getSnapshot().sessions;
   const current = useApp((s) => s.current);
   const umo = app.currentUmo();
 

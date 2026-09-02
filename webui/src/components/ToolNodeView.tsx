@@ -1,12 +1,16 @@
-import { useState } from "react";
+import { useState, lazy, Suspense } from "react";
 
 import {
   DiffBlock,
   DisclosureRow,
-  ReadBlock,
   TerminalBlock,
 } from "@/ui/primitives";
 import type { ToolNode } from "@/store/conversation";
+
+// ReadBlock 依赖 shiki 高亮栈，懒加载以保持入口 chunk 精简
+const ReadBlock = lazy(() =>
+  import("@/ui/primitives/ReadBlock.tsx").then((m) => ({ default: m.ReadBlock })),
+);
 
 const PARAMS_MAX_CHARS = 20_000;
 
@@ -52,12 +56,20 @@ function ToolBody(props: { node: ToolNode }) {
   if (resultView?.card === "read") {
     return (
       <div className="tool-card-body">
-        <ReadBlock
-          label={resultView.path}
-          lines={resultView.lines}
-          totalLines={resultView.totalLines}
-          lang={resultView.lang}
-        />
+        <Suspense
+          fallback={
+            <pre style={{ margin: 0, whiteSpace: "pre-wrap", wordBreak: "break-word", fontSize: 12 }}>
+              {(resultView.lines ?? []).map((l: any) => l.text ?? "").join("\n")}
+            </pre>
+          }
+        >
+          <ReadBlock
+            label={resultView.path}
+            lines={resultView.lines}
+            totalLines={resultView.totalLines}
+            lang={resultView.lang}
+          />
+        </Suspense>
       </div>
     );
   }

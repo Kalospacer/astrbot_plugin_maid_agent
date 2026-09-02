@@ -17,30 +17,30 @@ body[data-maid-dark-theme] {
 }
 
 body {
-  --maid-font-markdown-h1: 700 24px/34px var(--maid-font-family);
+  --maid-font-markdown-h1: 500 24px/34px var(--maid-font-family);
   --maid-font-markdown-h1-font-family: var(--maid-font-family);
-  --maid-font-markdown-h1-font-weight: 700;
+  --maid-font-markdown-h1-font-weight: 500;
   --maid-font-markdown-h1-line-height: 34px;
   --maid-font-markdown-h1-font-size: 24px;
   --maid-font-markdown-h1-font-style: normal;
 
-  --maid-font-markdown-h2: 700 22px/32px var(--maid-font-family);
+  --maid-font-markdown-h2: 500 22px/32px var(--maid-font-family);
   --maid-font-markdown-h2-font-family: var(--maid-font-family);
-  --maid-font-markdown-h2-font-weight: 700;
+  --maid-font-markdown-h2-font-weight: 500;
   --maid-font-markdown-h2-line-height: 32px;
   --maid-font-markdown-h2-font-size: 22px;
   --maid-font-markdown-h2-font-style: normal;
 
-  --maid-font-markdown-h3: 700 20px/30px var(--maid-font-family);
+  --maid-font-markdown-h3: 500 20px/30px var(--maid-font-family);
   --maid-font-markdown-h3-font-family: var(--maid-font-family);
-  --maid-font-markdown-h3-font-weight: 700;
+  --maid-font-markdown-h3-font-weight: 500;
   --maid-font-markdown-h3-line-height: 30px;
   --maid-font-markdown-h3-font-size: 20px;
   --maid-font-markdown-h3-font-style: normal;
 
-  --maid-font-markdown-h4: 600 16px/28px var(--maid-font-family);
+  --maid-font-markdown-h4: 500 16px/28px var(--maid-font-family);
   --maid-font-markdown-h4-font-family: var(--maid-font-family);
-  --maid-font-markdown-h4-font-weight: 600;
+  --maid-font-markdown-h4-font-weight: 500;
   --maid-font-markdown-h4-line-height: 28px;
   --maid-font-markdown-h4-font-size: 16px;
   --maid-font-markdown-h4-font-style: normal;
@@ -52,9 +52,9 @@ body {
   --maid-font-markdown-base-font-size: 16px;
   --maid-font-markdown-base-font-style: normal;
 
-  --maid-font-markdown-base-strong: 600 16px/28px var(--maid-font-family);
+  --maid-font-markdown-base-strong: 500 16px/28px var(--maid-font-family);
   --maid-font-markdown-base-strong-font-family: var(--maid-font-family);
-  --maid-font-markdown-base-strong-font-weight: 600;
+  --maid-font-markdown-base-strong-font-weight: 500;
   --maid-font-markdown-base-strong-line-height: 28px;
   --maid-font-markdown-base-strong-font-size: 16px;
   --maid-font-markdown-base-strong-font-style: normal;
@@ -66,9 +66,9 @@ body {
   --maid-font-markdown-base-italic-font-size: 16px;
   --maid-font-markdown-base-italic-font-style: italic;
 
-  --maid-font-markdown-base-strong-italic: italic 600 16px/28px var(--maid-font-family);
+  --maid-font-markdown-base-strong-italic: 500 16px/28px var(--maid-font-family);
   --maid-font-markdown-base-strong-italic-font-family: var(--maid-font-family);
-  --maid-font-markdown-base-strong-italic-font-weight: 600;
+  --maid-font-markdown-base-strong-italic-font-weight: 500;
   --maid-font-markdown-base-strong-italic-line-height: 28px;
   --maid-font-markdown-base-strong-italic-font-size: 16px;
   --maid-font-markdown-base-strong-italic-font-style: italic;
@@ -94,9 +94,9 @@ body {
   --maid-font-markdown-small-font-size: 14px;
   --maid-font-markdown-small-font-style: normal;
 
-  --maid-font-markdown-small-strong: 600 14px/24px var(--maid-font-family);
+  --maid-font-markdown-small-strong: 500 14px/24px var(--maid-font-family);
   --maid-font-markdown-small-strong-font-family: var(--maid-font-family);
-  --maid-font-markdown-small-strong-font-weight: 600;
+  --maid-font-markdown-small-strong-font-weight: 500;
   --maid-font-markdown-small-strong-line-height: 24px;
   --maid-font-markdown-small-strong-font-size: 14px;
   --maid-font-markdown-small-strong-font-style: normal;
@@ -108,9 +108,9 @@ body {
   --maid-font-markdown-small-italic-font-size: 14px;
   --maid-font-markdown-small-italic-font-style: italic;
 
-  --maid-font-markdown-small-strong-italic: italic 600 14px/24px var(--maid-font-family);
+  --maid-font-markdown-small-strong-italic: 500 14px/24px var(--maid-font-family);
   --maid-font-markdown-small-strong-italic-font-family: var(--maid-font-family);
-  --maid-font-markdown-small-strong-italic-font-weight: 600;
+  --maid-font-markdown-small-strong-italic-font-weight: 500;
   --maid-font-markdown-small-strong-italic-line-height: 24px;
   --maid-font-markdown-small-strong-italic-font-size: 14px;
   --maid-font-markdown-small-strong-italic-font-style: italic;
@@ -136,9 +136,9 @@ body {
   --maid-font-markdown-code-block-small-font-size: 12px;
   --maid-font-markdown-code-block-small-font-style: normal;
 
-  --maid-font-xl-24: 600 24px/32px var(--maid-font-family);
+  --maid-font-xl-24: 500 24px/32px var(--maid-font-family);
   --maid-font-xl-24-font-family: var(--maid-font-family);
-  --maid-font-xl-24-font-weight: 600;
+  --maid-font-xl-24-font-weight: 500;
   --maid-font-xl-24-line-height: 32px;
   --maid-font-xl-24-font-size: 24px;
   --maid-font-xl-24-font-style: normal;

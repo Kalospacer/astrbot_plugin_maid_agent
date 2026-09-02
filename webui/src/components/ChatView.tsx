@@ -1,20 +1,39 @@
-import { useEffect, useRef, useState } from "react";
+import { memo, lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
 
-import { DisclosureRow, MarkdownText, Pill, StateDot } from "@/ui/primitives";
+import { DisclosureRow, Pill, StateDot } from "@/ui/primitives";
 import { IconThinkOutline14 } from "@/ui/primitives/icons";
 import { useApp } from "@/hooks";
 import * as app from "@/store/app";
-import { foldConversation, type ChatNode } from "@/store/conversation";
+import { getSnapshot } from "@/store/app";
+import { EMPTY_FOLD, type ChatNode } from "@/store/conversation";
 import { ToolNodeView } from "@/components/ToolNodeView";
 
+// Markdown 渲染栈（micromark + katex + shiki）体积大，首屏 hero 用不到，
+// 懒加载到首个助手消息出现时再拉取；加载期间先以纯文本兜底。
+const MarkdownText = lazy(() =>
+  import("@/ui/primitives/markdown/MarkdownText.tsx").then((m) => ({ default: m.MarkdownText })),
+);
+
 export function ChatView() {
-  const session = useApp((s) => (s.current ? s.byId.get(s.current) : undefined));
+  // 订阅 stamp（原始值）：session 内部数据任何变化都会 +1；
+  // 未变化时组件完全不重渲染，流式期间也不会波及兄弟组件。
+  // 键入 sessionId 避免切换到 stamp 恰好相同的会话时不刷新。
+  const stampKey = useApp((s) => {
+    if (!s.current) return "";
+    return `${s.current}:${s.byId.get(s.current)?.stamp ?? -1}`;
+  });
+  const state = getSnapshot();
+  const session = state.current ? state.byId.get(state.current) : undefined;
+
   const innerRef = useRef<HTMLDivElement | null>(null);
   const pinnedRef = useRef(true);
 
-  const folded = session
-    ? foldConversation([...session.events.values()], session.views)
-    : { nodes: [] as ChatNode[], running: false };
+  // 增量折叠：复用 session 上的 folder，只处理新增事件
+  const folded = useMemo(
+    () => (session ? session.folder.ingest(session.events, session.views) : EMPTY_FOLD),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [session, stampKey],
+  );
 
   useEffect(() => {
     const scroller = innerRef.current?.closest("[data-conversation-scroll]");
@@ -29,7 +48,7 @@ export function ChatView() {
   useEffect(() => {
     const scroller = innerRef.current?.closest("[data-conversation-scroll]");
     if (scroller && pinnedRef.current) scroller.scrollTop = scroller.scrollHeight;
-  });
+  }, [stampKey, session?.sessionId]);
 
   if (!session) return null;
 
@@ -64,7 +83,7 @@ export function ChatView() {
   );
 }
 
-function ChatNodeView(props: { node: ChatNode; sessionId: string }) {
+const ChatNodeView = memo(function ChatNodeView(props: { node: ChatNode; sessionId: string }) {
   const node = props.node;
   if (node.kind === "user") {
     const text = node.message.content
@@ -115,7 +134,7 @@ function ChatNodeView(props: { node: ChatNode; sessionId: string }) {
       <span>{label}</span>
     </div>
   );
-}
+});
 
 function UserImages(props: { sessionId: string; refs: { attachmentId: string }[] }) {
   if (!props.sessionId || props.refs.length === 0) return null;
@@ -168,7 +187,11 @@ function AssistantBody(props: { blocks: any[]; streaming: boolean }) {
           </div>
         </DisclosureRow>
       ) : null}
-      {text ? <MarkdownText text={text} streaming={props.streaming} /> : null}
+      {text ? (
+        <Suspense fallback={<div className="message-plain">{text}</div>}>
+          <MarkdownText text={text} streaming={props.streaming} />
+        </Suspense>
+      ) : null}
       {props.streaming && !text && !reasoning?.text ? (
         <Pill>
           <span className="muted">生成中…</span>

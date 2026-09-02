@@ -15,16 +15,17 @@ export function ConversationRoot(props: {
   onToggleDetails?: () => void;
 }) {
   const current = useApp((s) => s.current);
-  const summary = useApp((s) => (s.current ? s.sessions.get(s.current) : undefined));
+  // summary 原地修改，订阅派生原始值
+  const summaryBlank = useApp((s) => (s.current ? s.sessions.get(s.current)?.blank : undefined));
+  const running = useApp((s) => (s.current ? Boolean(s.sessions.get(s.current)?.running) : false));
   const historyLoaded = useApp((s) =>
     s.current ? (s.byId.get(s.current)?.historyLoaded ?? false) : false,
   );
-  const running = Boolean(summary?.running);
 
   const hero =
     current === undefined ||
-    summary?.blank === true ||
-    (historyLoaded && (summary?.blank ?? true));
+    summaryBlank === true ||
+    (historyLoaded && (summaryBlank ?? true));
   const settling = !hero && !historyLoaded && !props.booting;
   const phase = props.booting || hero ? "hero" : settling ? "settling" : "active";
 
@@ -80,12 +81,11 @@ function HeroHeadline(props: { text: string }) {
 function PresetChipRow() {
   const presets = useApp((s) => s.presets);
   const current = useApp((s) => s.current);
-  const summary = useApp((s) => (s.current ? s.sessions.get(s.current) : undefined));
-  useApp((s) => s.presets.length);
+  const activePresetId = useApp((s) => (s.current ? s.sessions.get(s.current)?.agentPreset : undefined));
   const [open, setOpen] = useState(false);
 
   if (presets.length === 0) return null;
-  const activeId = summary?.agentPreset ?? app.chosenPreset();
+  const activeId = activePresetId ?? app.chosenPreset();
   const active = presets.find((p) => p.id === activeId);
 
   return (

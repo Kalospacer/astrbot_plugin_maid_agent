@@ -20,19 +20,12 @@ export { JsonTree } from './JsonTree.tsx'
 export type { JsonTreeProps, JsonTreeLabels } from './JsonTree.tsx'
 export { TerminalBlock, DEFAULT_TERMINAL_MAX_LINES } from './TerminalBlock.tsx'
 export type { TerminalBlockProps, TerminalBlockLabels } from './TerminalBlock.tsx'
-export { ReadBlock, DEFAULT_READ_MAX_LINES } from './ReadBlock.tsx'
-export type { ReadBlockProps, ReadBlockLine } from './ReadBlock.tsx'
 export { DiffBlock, DEFAULT_DIFF_MAX_LINES } from './DiffBlock.tsx'
 export type { DiffBlockProps, DiffHunk } from './DiffBlock.tsx'
 export { SearchBlock, DEFAULT_SEARCH_MAX_LINES } from './SearchBlock.tsx'
 export type {
   SearchBlockProps, SearchMatchesBlockProps, SearchPathsBlockProps, SearchFileGroup, SearchBlockLineMatch,
 } from './SearchBlock.tsx'
-export { CodeBlock } from './markdown/CodeBlock.tsx'
-export type { CodeBlockProps } from './markdown/CodeBlock.tsx'
-export { JsonBlock } from './markdown/JsonBlock.tsx'
-export { MarkdownText } from './markdown/MarkdownText.tsx'
-export type { MarkdownCodeLabels, MarkdownFileMentions } from './markdown/MarkdownText.tsx'
-export { extractMarkdownPlainText } from './markdown/plain-text.ts'
-export type { MarkdownPlainTextMode, MarkdownPlainTextOptions } from './markdown/plain-text.ts'
+// markdown 渲染栈（micromark/katex/shiki）与 ReadBlock（shiki）刻意不走 barrel：
+// 由使用方 React.lazy 动态引入，避免重型依赖被 barrel 的副作用牵引进入口 chunk。
 export * from './icons/index.tsx'

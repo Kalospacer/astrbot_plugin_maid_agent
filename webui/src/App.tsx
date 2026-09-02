@@ -11,12 +11,15 @@ import { SettingsDialog } from "@/components/SettingsDialog";
 export function App() {
   const connection = useApp((s) => s.connection);
   const booting = useApp((s) => s.booting);
-  const current = useApp((s) => s.current);
-  const sessionState = useApp((s) => (s.current ? s.byId.get(s.current) : undefined));
+  // summary 是原地修改的，订阅派生布尔值而不是对象引用
+  const hasActiveSession = useApp((s) => {
+    if (!s.current) return false;
+    const session = s.byId.get(s.current);
+    return Boolean(session && !session.summary.blank);
+  });
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [detailsOpen, setDetailsOpen] = useState(false);
 
-  const hasActiveSession = Boolean(current && sessionState && !sessionState.summary.blank);
   const detailsActive = detailsOpen && hasActiveSession;
 
   const details = useMemo(

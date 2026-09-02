@@ -35,18 +35,25 @@ body {
   padding: 24px 16px 8px;
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  gap: 16px;
 }
 
 .message-user {
   align-self: flex-end;
   max-width: 86%;
-  background: rgba(65, 118, 230, 0.08);
-  border-radius: 14px 14px 4px 14px;
-  padding: 10px 14px;
+  /* Kimi 设计语言：交互/内容强调用中性灰，品牌蓝只留给语义状态 */
+  background: var(--maid-specific-bubble);
+  border-radius: 12px 12px 4px 12px;
+  padding: 8px 12px;
   white-space: pre-wrap;
   word-break: break-word;
   font-size: 14px;
+}
+
+.message-plain {
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--maid-alias-label-secondary);
 }
 
 .message-assistant {
@@ -56,7 +63,7 @@ body {
 .turn-tail {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 8px;
   color: var(--maid-alias-label-tertiary);
   font-size: 12px;
 }
@@ -67,7 +74,7 @@ body {
 .working-line {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 8px;
   color: var(--maid-alias-label-tertiary);
   font-size: 12px;
 }
@@ -98,9 +105,11 @@ body {
 .stats-line {
   display: flex;
   gap: 12px;
-  font-size: 11.5px;
+  font-size: 12px;
   color: var(--maid-alias-label-tertiary);
-  margin-top: -6px;
+  margin-top: -4px;
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum" 1;
 }
 
 .attach-rail {
@@ -179,6 +188,8 @@ body {
 .details-kv dd {
   margin: 0;
   word-break: break-all;
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum" 1;
 }
 
 .row {

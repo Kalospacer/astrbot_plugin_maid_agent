@@ -38,6 +38,13 @@ button.leading {
   cursor: pointer;
 }
 
+/* DSH 对齐：流行的行内字形以 14px 渲染在 16px 盒内（CSS 边覆盖 svg 自身尺寸）；
+   StateDot（svg 带 data-state）保持原样——它是状态记号，不是文本配件 */
+.leading svg:not([data-state]) {
+  width: 14px;
+  height: 14px;
+}
+
 .iconIdle {
   display: inline-flex;
   opacity: 1;
@@ -62,7 +69,8 @@ button.leading {
 
 .title {
   flex: none;
-  font-size: 14px;
+  /* DSH 对齐：流行标题读次级内容档（13px），行高保持 24px */
+  font-size: 13px;
   line-height: 24px;
   color: var(--maid-alias-label-secondary);
 }

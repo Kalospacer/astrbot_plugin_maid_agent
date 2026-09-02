@@ -29,6 +29,8 @@ const COLLAPSE_SETTLE_MS = 150;
 const EXPAND_SLIDE_MS = 300;
 const SEARCH_DEBOUNCE_MS = 250;
 const SEARCH_QUERY_MAX_CODE_UNITS = 500;
+/** 指针离开侧栏后滚动条保留显示的时长（DSH SCROLLBAR_LINGER_MS）。 */
+const SCROLLBAR_LINGER_MS = 2000;
 
 function sanitizeSearchQuery(value: string): string {
   const withoutNul = value.replaceAll("\0", "");
@@ -90,15 +92,60 @@ export function SessionSidebar(props: {
   const everWide = useRef(!collapsed);
   if (!collapsed) everWide.current = true;
 
+  // 指针跟随滚动条（DSH quietBars）：指针在列内时显示 thumb，
+  // 离开后保留 2 秒再隐藏；离开判定看列的 BOX 而非 DOM 包含（portal 菜单也在内）。
+  const columnRef = useRef<HTMLDivElement | null>(null);
+  const [pointerInside, setPointerInside] = useState(false);
+  const lingerRef = useRef<number | undefined>(undefined);
+  const armLinger = () => {
+    if (lingerRef.current !== undefined) return;
+    lingerRef.current = window.setTimeout(() => {
+      lingerRef.current = undefined;
+      setPointerInside(false);
+    }, SCROLLBAR_LINGER_MS);
+  };
+  const cancelLinger = () => {
+    window.clearTimeout(lingerRef.current);
+    lingerRef.current = undefined;
+  };
+  useEffect(() => {
+    if (!pointerInside) return;
+    const onMove = (event: PointerEvent) => {
+      const rect = columnRef.current?.getBoundingClientRect();
+      if (rect === undefined) return;
+      const inside =
+        event.clientX >= rect.left &&
+        event.clientX < rect.right &&
+        event.clientY >= rect.top &&
+        event.clientY < rect.bottom;
+      if (inside) cancelLinger();
+      else armLinger();
+    };
+    document.addEventListener("pointermove", onMove);
+    return () => {
+      document.removeEventListener("pointermove", onMove);
+      cancelLinger();
+    };
+  }, [pointerInside]);
+
   return (
     <div
+      ref={columnRef}
       className={clsx(
         css.root,
         !wide && css.collapsed,
         !wide && everWide.current && css.railIn,
         collapsed && wide && css.fading,
+        !pointerInside && css.quietBars,
       )}
       style={wide ? { width: collapsed ? lastWideWidth.current : width } : undefined}
+      onPointerEnter={() => {
+        cancelLinger();
+        setPointerInside(true);
+      }}
+      onPointerLeave={() => {
+        armLinger();
+      }}
     >
       <div className={css.logoRow}>
         {wide && (

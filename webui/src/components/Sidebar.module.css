@@ -17,6 +17,11 @@
   padding: 18px 10px 6px;
 }
 
+.root.quietBars {
+  --maid-scrollbar-thumb: transparent;
+  --maid-scrollbar-thumb-hover: transparent;
+}
+
 .fading > * {
   opacity: 0;
   transition: opacity 150ms var(--maid-ease-in-out);
@@ -195,15 +200,16 @@
   align-items: center;
   gap: 8px;
   width: 100%;
-  height: 36px;
-  padding: 0 8px;
+  height: 42px;
+  padding: 0 10px 0 8px;
   border: none;
-  border-radius: 8px;
+  border-radius: 12px;
   background: transparent;
   color: var(--maid-alias-label-secondary);
-  font-size: 13px;
+  font-size: 14px;
   cursor: pointer;
   box-sizing: border-box;
+  overflow: hidden;
 }
 
 .settingsButton:hover {
@@ -216,6 +222,7 @@
   height: 36px;
   padding: 0;
   justify-content: center;
+  gap: 0;
   border-radius: 50%;
 }
 

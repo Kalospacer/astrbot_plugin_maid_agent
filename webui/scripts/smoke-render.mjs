@@ -161,6 +161,24 @@ async function runMockTurn(session) {
     usage: { inputTokens: 120, outputTokens: answer.length },
   });
   append(session, "step/end", { turn: 1, step: 1 });
+  // 工具调用一轮（真实后端形状：结果正文嵌在 tool-result 块内层）
+  append(session, "step/start", { turn: 1, step: 2 });
+  append(session, "tool/call", {
+    turn: 1, step: 2, callId: "call_1", name: "web_search",
+    arguments: JSON.stringify({ query: "今天天气" }),
+  });
+  append(session, "tool/result", {
+    turn: 1, step: 2,
+    message: {
+      id: "t1", role: "user",
+      content: [{
+        type: "tool-result", toolCallId: "call_1", isError: false,
+        content: [{ type: "text", text: "晴，26 度，适合出门。" }],
+      }],
+      source: { kind: "tool", callId: "call_1" },
+    },
+  });
+  append(session, "step/end", { turn: 1, step: 2 });
   append(session, "turn/end", { turn: 1, reason: { kind: "completed" } });
   session.running = false;
   broadcast("host", { type: "host/session-status", sessionId: session.sessionId, running: false });
@@ -223,10 +241,23 @@ const afterText = document.getElementById("root").textContent;
 const checks = [
   ["用户消息上屏", afterText.includes("你好，女仆")],
   ["流式回复渲染", afterText.includes("正在处理")],
-  ["回合完成标记", afterText.includes("回合完成")],
-  ["token 统计行", afterText.includes("↑") && afterText.includes("↓")],
+  // DSH 移植后 completed 轮渲染为过程折叠条（信息由用量 pill 承载）
+  ["回合过程折叠条", afterText.includes("已思考")],
+  ["工具行标题与摘要", afterText.includes("搜索") && afterText.includes("今天天气")],
+  ["助手尾部操作行", afterText.includes("复制") || document.querySelector(".assistant-actions") !== null],
+  ["用量 pill", afterText.includes("用量")],
 ];
 for (const [label, ok] of checks) console.log(`${ok ? "PASS" : "FAIL"} ${label}`);
+
+// 展开工具行验证输出卡（默认收起，io-card 不在 DOM）
+let outputOk = false;
+const toolRowBtn = document.querySelector(".tool-row .disclosure-row");
+if (toolRowBtn) {
+  toolRowBtn.dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+  await delay(300);
+  outputOk = document.getElementById("root").textContent.includes("晴，26 度，适合出门。");
+}
+console.log(`${outputOk ? "PASS" : "FAIL"} 工具输出正文`);
 
 // Node/jsdom 中懒加载 chunk 的 URL 解析依赖浏览器环境（fetch http://localhost/...），
 // 属于测试环境限制而非应用缺陷——真实浏览器中这些 chunk 由 vite preview/插件页正常服务
@@ -243,6 +274,6 @@ if (runtimeErrors.length) {
   console.log("PASS 无未捕获运行时错误");
 }
 
-const allOk = heroOk && checks.every(([, ok]) => ok) && runtimeErrors.length === 0;
+const allOk = heroOk && checks.every(([, ok]) => ok) && outputOk && runtimeErrors.length === 0;
 console.log(allOk ? "\nSMOKE OK" : "\nSMOKE FAILED");
 process.exit(allOk ? 0 : 1);

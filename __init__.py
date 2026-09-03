@@ -6,7 +6,7 @@
 main 的导入放在 try 里，测试环境缺 astrbot/quart 时不阻塞子模块导入。
 """
 
-__version__ = "3.0.0"
+__version__ = "2.0.4"
 
 try:  # pragma: no cover - AstrBot 运行时才可用
     from .main import MaidAgent  # noqa: F401

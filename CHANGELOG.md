@@ -1,6 +1,6 @@
 # Changelog
 
-## 3.0.0 — 2026-09-03
+## Unreleased — 2026-09-03
 
 Breaking release. The legacy two-tool control plane and all migration, alias, default-Agent, timeout-switch and automatic-repair paths were removed.
 

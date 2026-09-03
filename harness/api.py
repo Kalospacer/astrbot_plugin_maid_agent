@@ -19,6 +19,7 @@ from . import tools_view
 from .history import derive_surface, history_page, visible_events
 from ..config import ConfigValidationError
 from .rpc import RpcError, bad_request, session_not_found
+from .store import new_session_id
 
 SETTINGS_NS = "maid"
 
@@ -137,20 +138,21 @@ class ApiProxy:
             raise RpcError("agent-preset-not-allowed", f"Agent 不在允许列表: {preset}", {"agentPreset": preset})
         umo = DASHBOARD_UMO
         sender_id = "dashboard"
+        session_id = new_session_id()
         log = self.store.create_session(
+            session_id=session_id,
             agent_preset=preset,
             meta={
                 "umo": umo,
                 "senderId": sender_id,
                 "agentName": preset,
-                "agentId": "",
+                "agentId": session_id,
                 "executionMode": "background",
                 "sourceKind": "dashboard",
                 "backgroundReason": "dashboard-isolated-sandbox",
                 "notify": False,
             },
         )
-        log.update_meta(agentId=log.session_id)
         driver = self.registry.attach(str(log.session_id))
         driver.umo, driver.agent_name, driver.sender_id = umo, preset, sender_id
         self.registry.publish_host_frame(

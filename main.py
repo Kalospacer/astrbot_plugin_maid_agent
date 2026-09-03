@@ -321,6 +321,14 @@ class MaidAgent(Star):
 
     def _patch_llm_tool_schemas(self) -> None:
         manager = self.context.get_llm_tool_manager()
+        for tool_name in (
+            MAID_AGENT_TOOL_NAME,
+            MAID_SEND_MESSAGE_TOOL_NAME,
+            MAID_TASK_OUTPUT_TOOL_NAME,
+            MAID_TASK_STOP_TOOL_NAME,
+        ):
+            if manager is not None and manager.get_func(tool_name) is None:
+                logger.warning("[maid] 工具 %s 未注册，模型将看到空参数 schema。", tool_name)
         agent_tool = manager.get_func(MAID_AGENT_TOOL_NAME) if manager else None
         if agent_tool is not None:
             agent_tool.parameters = {
@@ -567,7 +575,6 @@ class MaidAgent(Star):
                 umo, agent_name, execution_mode=item["execution_mode"], dispatch_id=item["dispatch_id"], background_reason=item["background_reason"],
             )
         driver = self.registry.attach(session_id)
-        driver.execution_mode = item["execution_mode"]
         if item["execution_mode"] == "foreground":
             driver.log.update_meta(foregroundLease=item["dispatch_id"])
 
@@ -590,9 +597,34 @@ class MaidAgent(Star):
         if item["execution_mode"] == "background":
             return {"status": "running", "agent_id": session_id, "task_id": task_id, "dispatch_id": item["dispatch_id"], "mode": "background", **({"background_reason": item["background_reason"]} if item["background_reason"] else {})}
 
-        result = await driver.wait_next_turn_result(timeout=None)
+        # 前台等待预算：留 10 秒余量先于 Core 的 tool_call_timeout 返回，
+        # 避免工具调用被 Core 的 asyncio.wait_for 掐断后结果永久丢失。
+        fg_timeout = max(1, self._main_tool_call_timeout(umo) - 10)
+        try:
+            result = await driver.wait_next_turn_result(timeout=fg_timeout)
+        except asyncio.TimeoutError:
+            # 等待降级：任务继续在真实 event 环境里跑，改为通知兜底 + 可续读。
+            driver.log.update_meta(notify=True, deliveryStatus="pending")
+            await driver.emit_delivery("main-summary", "pending", "foreground-await-timeout")
+            return {
+                "status": "running",
+                "agent_id": session_id,
+                "task_id": task_id,
+                "dispatch_id": item["dispatch_id"],
+                "mode": "foreground-timeout",
+                "background_reason": "foreground-await-timeout",
+            }
         await driver.emit_delivery("main-summary", "skipped")
         return {"status": result.get("status", "completed"), "agent_id": session_id, "task_id": task_id, "dispatch_id": item["dispatch_id"], "mode": "foreground", "result": result.get("result", ""), "error": result.get("error", "")}
+
+    def _main_tool_call_timeout(self, umo: str) -> int:
+        """主模型本地工具超时（秒）。Core 在该时限后强制取消 tool call。"""
+        try:
+            cfg = self.context.get_config(umo=umo)
+            settings = cfg.get("provider_settings", {}) if isinstance(cfg, dict) else {}
+            return _safe_int(settings.get("tool_call_timeout", 120), 120)
+        except Exception:  # noqa: BLE001
+            return 120
 
     async def _on_turn_terminal(self, driver, result: dict) -> None:
         meta = driver.log.load_meta()
@@ -606,6 +638,7 @@ class MaidAgent(Star):
             await self._notify_main_agent(driver, result)
             await driver.emit_delivery("main-summary", "sent")
         except Exception as exc:  # noqa: BLE001
+            driver.log.update_meta(notified=False)
             await driver.emit_delivery("main-summary", "failed", str(exc))
             logger.error("[maid] notification 唤醒主 agent 失败: session=%s err=%s", driver.session_id[:8], exc, exc_info=True)
 
@@ -723,12 +756,13 @@ class MaidAgent(Star):
             meta = self.store.log(agent_id).load_meta()
             if meta.get("sourceKind") != "chat" or meta.get("umo") != umo:
                 continue
-            driver = self.registry.attach(agent_id)
+            # 仅查询运行态时才碰 driver；存量会话避免 attach 触发全事件流读（heal_orphan_turn）。
+            driver = self.registry.driver(agent_id)
             agents.append({
                 "agent_id": agent_id,
                 "task_id": meta.get("activeTaskId", ""),
                 "subagent_type": meta.get("agentName", ""),
-                "status": "running" if driver.running else meta.get("lastStatus", "idle"),
+                "status": "running" if driver is not None and driver.running else meta.get("lastStatus", "idle"),
                 "mode": meta.get("executionMode", "background"),
                 "dispatch_id": meta.get("activeDispatchId", meta.get("dispatchId", "")),
             })
@@ -748,8 +782,13 @@ class MaidAgent(Star):
                 result = await driver.wait_next_turn_result(timeout=timeout_ms / 1000)
             except asyncio.TimeoutError:
                 return self._json_outcome({"status": "running", "agent_id": agent_id, "task_id": task_id, "query_status": "timeout"})
+            # 模型已亲自读到终态，认领通知避免完成时重复唤醒主模型。
+            if result.get("status") != "running":
+                driver.log.update_meta(notified=True)
             return self._json_outcome({"agent_id": agent_id, "task_id": task_id, **result})
         meta = driver.log.load_meta()
+        if not driver.running and meta.get("notify") and not meta.get("notified"):
+            driver.log.update_meta(notified=True)
         return self._json_outcome({"agent_id": agent_id, "task_id": task_id, "status": "running" if driver.running else meta.get("lastStatus", "completed"), "result": meta.get("lastResult", ""), "error": meta.get("lastError", "")})
 
     @filter.llm_tool(name=MAID_TASK_STOP_TOOL_NAME)

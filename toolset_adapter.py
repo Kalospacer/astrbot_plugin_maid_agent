@@ -34,7 +34,7 @@ if TYPE_CHECKING:
     from astrbot.api.star import Context
     from astrbot.core.agent.handoff import HandoffTool
 
-from .constants import MAID_TOOL_NAMES, PLUGIN_DATA_DIR_NAME
+from .constants import MAID_AGENT_TOOL_NAME, MAID_TOOL_NAMES, PLUGIN_DATA_DIR_NAME
 
 MEMORY_SUBDIR = "memory"
 MEMORY_INDEX_FILENAME = "MEMORY.md"
@@ -118,7 +118,7 @@ def apply_main_tool_policy(
         return None
     if not hide_native_tools and not hide_transfer_tools:
         return toolset
-    if toolset.get_tool("maid_agent") is None:
+    if toolset.get_tool(MAID_AGENT_TOOL_NAME) is None:
         return toolset
     if hide_native_tools:
         keep = MAID_TOOL_NAMES

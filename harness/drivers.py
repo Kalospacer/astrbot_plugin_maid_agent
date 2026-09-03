@@ -251,7 +251,6 @@ class SessionDriver:
         self._interrupted = False
         self.turn_started_at: float | None = None
         self.last_turn: dict = {}
-        self.execution_mode = str(meta.get("executionMode") or "background")
         self._pending_run_context: dict | None = None
         self._current_run_context: dict = {}
 
@@ -349,10 +348,26 @@ class SessionDriver:
                 pass
             return
         if not self.running:
+            if not self.inbox:
+                return
+            stopped_task_ids = [
+                str((item.get("run_context") or {}).get("task_id") or "")
+                for item in self.inbox
+            ]
             for item in self.inbox:
                 self._release_foreground_lease(item.get("run_context") or {})
             self.inbox.clear()
             self._settle_turn({"status": "stopped", "result": "", "error": "task stopped before execution"})
+            # 队列任务被取消也要在事件流留痕：前端与 maid_task_output 靠它感知终态。
+            for task_id in stopped_task_ids:
+                if task_id:
+                    try:
+                        event = self.log.append("maid/task", {"taskId": task_id, "status": "stopped-before-run"}, ignorable=True)
+                        self.registry.publish_event_frame(self.session_id, event)
+                    except Exception:  # noqa: BLE001
+                        pass
+            self.log.update_meta(activeTaskId="", deliveryStatus="stopped")
+            self.registry.notify_turn_terminal(self, self.last_turn)
             self._publish_queue()
 
     def interrupt(self) -> None:
@@ -1015,6 +1030,13 @@ class DriverRegistry:
         task = asyncio.create_task(callback(driver, result), name=f"maid-terminal-{driver.session_id[:8]}")
         self._background_tasks.add(task)
         task.add_done_callback(self._background_tasks.discard)
+
+        def _log_terminal_failure(done: asyncio.Task) -> None:
+            exc = done.exception()
+            if exc is not None:
+                logger.error("[maid] turn 终态回调失败: session=%s err=%s", driver.session_id[:8], exc)
+
+        task.add_done_callback(_log_terminal_failure)
 
     async def shutdown(self) -> None:
         for driver in list(self.drivers.values()):

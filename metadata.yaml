@@ -10,7 +10,9 @@ astrbot_version: ">=4.20.0"
 # ============================================================
 # 本插件需要配合 AstrBot 的 subagent 功能使用：
 #
-# 1. 必须在 AstrBot 配置中启用至少一个可用的 subagent
+# 1. 无需手动配置 subagent：一个都没有时，插件会自动创建一个默认管家
+#    subagent（名称取插件配置的 `default_agent_name`，默认 `butler`，
+#    不限制工具、跟随当前聊天 provider）
 # 2. 插件实际调度目标由插件配置中的 `allowed_agent_names` 以及主模型对
 #    `maid_agent` 的调用参数一起决定；每次任务必须显式指定 agent
 # 3. subagent 配置示例：

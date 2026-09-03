@@ -49,6 +49,7 @@ from .harness.rpc import (
 )
 from .harness.store import SessionStore
 from .katex_fonts import materialize_katex_fonts
+from .maid_dispatcher import ensure_default_subagent
 from .toolset_adapter import apply_main_tool_policy
 
 __version__ = "2.0.5"
@@ -123,6 +124,7 @@ class MaidAgent(Star):
         self._patch_llm_tool_schemas()
         self._register_web_apis()
         self._materialize_katex_fonts()
+        await ensure_default_subagent(self.context, self.maid_mode_config)
         self._schedule_retention_cleanup()
         self._schedule_turn_watchdog()
         logger.info(
@@ -540,6 +542,7 @@ class MaidAgent(Star):
     async def _dispatch_chat_task(
         self, event, umo: str, true_user_input: str, item: dict, *, skip_capacity_check: bool = False
     ) -> dict:
+        await ensure_default_subagent(self.context, self.maid_mode_config)
         agent_name = item["subagent_type"].strip()
         allowed = self.maid_mode_config.allowed_agent_names
         if agent_name not in allowed:

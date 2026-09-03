@@ -17,7 +17,7 @@ from astrbot.core.astr_agent_context import AgentContextWrapper, AstrAgentContex
 from astrbot.core.astr_agent_tool_exec import FunctionToolExecutor
 from astrbot.core.utils.llm_metadata import LLM_METADATAS
 
-from .config import _safe_int
+from .config import MAID_AGENT_PERSONA, _safe_int
 
 _provider_config_locks: WeakKeyDictionary[Any, asyncio.Lock] = WeakKeyDictionary()
 
@@ -70,6 +70,44 @@ def _resolve_handoff(
             return fallback, str(fallback_name)
 
     raise ValueError(f"未找到可用的子 agent: {agent_name}")
+
+
+def _default_subagent_entry(name: str) -> dict[str, Any]:
+    # tools/provider_id 留空 = 不限制工具、跟随当前聊天 provider，与官方 Dashboard 保存行为一致
+    return {
+        "name": name,
+        "enabled": True,
+        "system_prompt": MAID_AGENT_PERSONA,
+        "public_description": "把任务转交给管家执行",
+        "provider_id": None,
+        "tools": None,
+    }
+
+
+async def ensure_default_subagent(context: Context, config: Any) -> bool:
+    """一个 subagent 都没有时，自动创建默认管家 subagent。
+
+    幂等：只看 subagent_orchestrator.agents，已有任何条目（即使全部禁用）绝不覆盖；
+    也不改 main_enable——本插件走 handoff 派发，与路由模式无关。失败只警告，不阻塞派发。
+    """
+    try:
+        orchestrator = getattr(context, "subagent_orchestrator", None)
+        if orchestrator is None:
+            return False
+        cfg = context.get_config()
+        orch_cfg = dict(cfg.get("subagent_orchestrator", {}) or {})
+        if orch_cfg.get("agents"):
+            return False
+        name = str(getattr(config, "default_agent_name", "") or "butler").strip() or "butler"
+        orch_cfg["agents"] = [_default_subagent_entry(name)]
+        cfg["subagent_orchestrator"] = orch_cfg
+        cfg.save_config()
+        await orchestrator.reload_from_config(orch_cfg)
+        logger.warning("[大小姐模式] 未配置任何 subagent，已自动创建默认 subagent: %s", name)
+        return True
+    except Exception as exc:
+        logger.warning("[大小姐模式] 自动创建默认 subagent 失败，派发将按白名单报错: %s", exc)
+        return False
 
 
 def _normalize_begin_dialogs(dialogs: Any) -> list[Message] | None:

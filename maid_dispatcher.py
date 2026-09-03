@@ -46,11 +46,28 @@ def _find_handoff(context: Context, agent_name: str) -> HandoffTool | None:
 def _resolve_handoff(
     context: Context,
     agent_name: str,
+    fallback_agent_name: str | None = None,
 ) -> tuple[HandoffTool, str]:
     handoff = _find_handoff(context, agent_name)
     if handoff is not None:
         resolved_name = getattr(getattr(handoff, "agent", None), "name", None) or agent_name
         return handoff, str(resolved_name)
+
+    if (
+        fallback_agent_name
+        and fallback_agent_name.strip().casefold() != agent_name.strip().casefold()
+    ):
+        fallback = _find_handoff(context, fallback_agent_name)
+        if fallback is not None:
+            fallback_name = (
+                getattr(getattr(fallback, "agent", None), "name", None) or fallback_agent_name
+            )
+            logger.warning(
+                "[大小姐模式] 未找到名为 %s 的子 agent，已回退到默认子 agent: %s",
+                agent_name,
+                fallback_name,
+            )
+            return fallback, str(fallback_name)
 
     raise ValueError(f"未找到可用的子 agent: {agent_name}")
 

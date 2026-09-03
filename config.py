@@ -13,6 +13,7 @@ from .constants import MISTRESS_REQUEST_BLOCK_LABEL, USER_INPUT_BLOCK_LABEL
 logger = logging.getLogger("astrbot_plugin_maid_agent.config")
 
 DEFAULT_ALLOWED_AGENT_NAMES = ("butler",)
+DEFAULT_MAID_AGENT_NAME = "butler"
 DEFAULT_MAX_ACTIVE_PER_UMO = 5
 DEFAULT_MAX_ACTIVE_GLOBAL = 20
 DEFAULT_RETENTION_DAYS = 30
@@ -37,6 +38,7 @@ class ConfigValidationError(ValueError):
 @dataclass(slots=True, frozen=True)
 class MaidModeConfig:
     allowed_agent_names: tuple[str, ...] = DEFAULT_ALLOWED_AGENT_NAMES
+    default_agent_name: str = DEFAULT_MAID_AGENT_NAME
     hide_native_tools: bool = True
     hide_transfer_tools: bool = True
     include_raw_user_input: bool = True
@@ -161,6 +163,14 @@ def load_maid_mode_config(config: Mapping[str, Any] | None = None, *, strict: bo
     cfg = dict(config or {})
     if not strict:
         allowed = _tolerant_names(cfg, "allowed_agent_names", DEFAULT_ALLOWED_AGENT_NAMES, allow_empty=False)
+        default_name = str(cfg.get("default_agent_name", DEFAULT_MAID_AGENT_NAME) or "").strip()
+        if not default_name or default_name not in allowed:
+            logger.warning(
+                "[maid] 配置项 default_agent_name 无效，已改用 %s: %r",
+                allowed[0],
+                cfg.get("default_agent_name"),
+            )
+            default_name = allowed[0]
         memory = _tolerant_names(cfg, "memory_agent_names", (), allow_empty=True)
         unknown_memory_agents = sorted(set(memory) - set(allowed))
         if unknown_memory_agents:
@@ -168,6 +178,7 @@ def load_maid_mode_config(config: Mapping[str, Any] | None = None, *, strict: bo
             memory = ()
         return MaidModeConfig(
             allowed_agent_names=allowed,
+            default_agent_name=default_name,
             hide_native_tools=_tolerant_bool(cfg, "hide_native_tools", True),
             hide_transfer_tools=_tolerant_bool(cfg, "hide_transfer_tools", True),
             include_raw_user_input=_tolerant_bool(cfg, "include_raw_user_input", True),
@@ -181,6 +192,13 @@ def load_maid_mode_config(config: Mapping[str, Any] | None = None, *, strict: bo
             max_turn_seconds=_tolerant_int(cfg, "max_turn_seconds", DEFAULT_MAX_TURN_SECONDS, minimum=0),
         )
     allowed = _strict_names(cfg.get("allowed_agent_names", DEFAULT_ALLOWED_AGENT_NAMES), "allowed_agent_names", allow_empty=False)
+    default_name = str(cfg.get("default_agent_name", DEFAULT_MAID_AGENT_NAME) or "").strip()
+    if not default_name:
+        raise ConfigValidationError({"default_agent_name": "必须是非空字符串。"})
+    if default_name not in allowed:
+        raise ConfigValidationError(
+            {"default_agent_name": f"必须属于 allowed_agent_names: {', '.join(allowed)}"}
+        )
     memory = _strict_names(cfg.get("memory_agent_names", ()), "memory_agent_names", allow_empty=True)
     unknown_memory_agents = sorted(set(memory) - set(allowed))
     if unknown_memory_agents:
@@ -192,6 +210,7 @@ def load_maid_mode_config(config: Mapping[str, Any] | None = None, *, strict: bo
         raise ConfigValidationError({"dispatch_session_mode": "必须是 foreground 或 background。"})
     return MaidModeConfig(
         allowed_agent_names=allowed,
+        default_agent_name=default_name,
         hide_native_tools=_strict_bool(cfg, "hide_native_tools", True),
         hide_transfer_tools=_strict_bool(cfg, "hide_transfer_tools", True),
         include_raw_user_input=_strict_bool(cfg, "include_raw_user_input", True),

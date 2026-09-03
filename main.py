@@ -488,9 +488,6 @@ class MaidAgent(Star):
 
         batch_size = len(batch)
         for item in batch:
-            agent_name = item["subagent_type"].strip()
-            if agent_name not in self.maid_mode_config.allowed_agent_names:
-                return self._json_outcome({"status": "error", "error": f"subagent_type 不在允许列表: {agent_name}"})
             resume_agent_id = str(item.get("resume_agent_id") or "").strip()
             if resume_agent_id:
                 if not self.store.exists(resume_agent_id):
@@ -544,9 +541,15 @@ class MaidAgent(Star):
         self, event, umo: str, true_user_input: str, item: dict, *, skip_capacity_check: bool = False
     ) -> dict:
         agent_name = item["subagent_type"].strip()
-        if agent_name not in self.maid_mode_config.allowed_agent_names:
+        allowed = self.maid_mode_config.allowed_agent_names
+        if agent_name not in allowed:
+            agent_name = self.maid_mode_config.default_agent_name
+        if agent_name not in allowed:
             self.registry.release_foreground_lease(umo, item["dispatch_id"])
-            return {"status": "error", "error": f"subagent_type 不在允许列表: {agent_name}"}
+            return {
+                "status": "error",
+                "error": f"subagent_type 不在允许列表: {item['subagent_type'].strip()}（可用 agents: {', '.join(allowed)}）",
+            }
         if not skip_capacity_check and not self.registry.capacity_available(umo):
             return {"status": "error", "error": "并发上限已满，稍后再试。"}
 

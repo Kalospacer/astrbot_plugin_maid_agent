@@ -24,6 +24,7 @@ SETTINGS_NS = "maid"
 
 SETTINGS_KEYS = {
     "allowed_agent_names",
+    "default_agent_name",
     "hide_native_tools",
     "hide_transfer_tools",
     "include_raw_user_input",

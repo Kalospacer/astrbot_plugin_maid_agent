@@ -1053,7 +1053,14 @@ class DriverRegistry:
     def resolve_handoff(self, agent_name: str):
         from ..maid_dispatcher import _resolve_handoff
 
-        return _resolve_handoff(self.context, agent_name)
+        fallback = getattr(self.config, "default_agent_name", "") or ""
+        try:
+            return _resolve_handoff(self.context, agent_name, fallback_agent_name=fallback or None)
+        except ValueError as exc:
+            allowed = getattr(self.config, "allowed_agent_names", None)
+            if allowed:
+                raise ValueError(f"{exc}（可用 agents: {', '.join(allowed)}）") from exc
+            raise
 
     def build_child_event(self, umo: str, sender_id: str, *, execution_mode: str, source_event=None):
         if execution_mode == "foreground":

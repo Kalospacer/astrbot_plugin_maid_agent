@@ -9,3 +9,4 @@ Breaking release. The legacy two-tool control plane and all migration, alias, de
 - Added strict `dispatch_session_mode` with stable `foreground` real-event execution and `background` isolated harness execution.
 - Added one foreground lease per UMO, deterministic batch allocation, lifecycle release, delivery tracing, and Console runtime metadata.
 - Console configuration now honors schema options, reports strict settings errors, requires a selected Agent, and labels its tasks as isolated sandboxes.
+- Loading existing settings is now tolerant: removed legacy keys are ignored and invalid stored values fall back to defaults with a warning, so a pre-2.0.5 config cannot block plugin startup; saving stays strict and persists a normalized settings object.

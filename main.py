@@ -20,7 +20,7 @@ from astrbot.api.event import MessageChain, filter
 from astrbot.api.star import Star, StarTools
 from astrbot.core.utils.history_saver import persist_agent_history
 
-from .config import ConfigValidationError, _safe_int, load_maid_mode_config, render_dispatch_prompt
+from .config import _safe_int, load_maid_mode_config, render_dispatch_prompt
 from .constants import (
     MAID_AGENT_TOOL_NAME,
     MAID_LIST_AGENTS_TOOL_NAME,
@@ -81,10 +81,12 @@ class _ConfigHolder:
         return {"type": "object", "properties": _load_settings_schema()}
 
     def save_config(self, patch: dict) -> dict:
-        candidate = dict(self.plugin.config)
+        effective = load_maid_mode_config(self.plugin.config, strict=False)
+        candidate = asdict(effective)
         candidate.update(patch)
         validated = load_maid_mode_config(candidate)
-        self.plugin.config.update(patch)
+        self.plugin.config.clear()
+        self.plugin.config.update(candidate)
         try:
             self.plugin.config.save_config()
         except Exception as exc:  # noqa: BLE001
@@ -103,7 +105,7 @@ class MaidAgent(Star):
     def __init__(self, context, config: dict | None = None):
         super().__init__(context)
         self.config = config if config is not None else {}
-        self.maid_mode_config = load_maid_mode_config(self.config)
+        self.maid_mode_config = load_maid_mode_config(self.config, strict=False)
         self._active_asyncio_tasks: set[asyncio.Task] = set()
 
         data_root = Path(StarTools.get_data_dir(PLUGIN_DATA_DIR_NAME))

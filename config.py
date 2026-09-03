@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Mapping
 from dataclasses import dataclass
 from string import Formatter
 from typing import Any
 
 from .constants import MISTRESS_REQUEST_BLOCK_LABEL, USER_INPUT_BLOCK_LABEL
+
+logger = logging.getLogger("astrbot_plugin_maid_agent.config")
 
 DEFAULT_ALLOWED_AGENT_NAMES = ("butler",)
 DEFAULT_MAX_ACTIVE_PER_UMO = 5
@@ -99,9 +102,84 @@ def _strict_int(cfg: Mapping[str, Any], key: str, default: int, *, minimum: int)
     return value
 
 
-def load_maid_mode_config(config: Mapping[str, Any] | None = None) -> MaidModeConfig:
-    """Validate plugin settings without coercion, repair, aliases, or hidden fallbacks."""
+def _tolerant_bool(cfg: Mapping[str, Any], key: str, default: bool) -> bool:
+    value = cfg.get(key, default)
+    if isinstance(value, bool):
+        return value
+    logger.warning("[maid] 配置项 %s 不是布尔值，已改用默认值: %r", key, value)
+    return default
+
+
+def _tolerant_int(cfg: Mapping[str, Any], key: str, default: int, *, minimum: int) -> int:
+    value = cfg.get(key, default)
+    if isinstance(value, int) and not isinstance(value, bool) and value >= minimum:
+        return value
+    logger.warning("[maid] 配置项 %s 无效，已改用默认值: %r", key, value)
+    return default
+
+
+def _tolerant_names(cfg: Mapping[str, Any], key: str, default: tuple[str, ...], *, allow_empty: bool) -> tuple[str, ...]:
+    value = cfg.get(key, default)
+    if (
+        isinstance(value, (list, tuple))
+        and (allow_empty or value)
+        and all(isinstance(name, str) and name.strip() for name in value)
+        and len({name.casefold() for name in value}) == len(value)
+    ):
+        return tuple(name.strip() for name in value)
+    logger.warning("[maid] 配置项 %s 无效，已改用默认值: %r", key, value)
+    return default
+
+
+def _tolerant_mode(cfg: Mapping[str, Any]) -> str:
+    value = cfg.get("dispatch_session_mode", DEFAULT_DISPATCH_SESSION_MODE)
+    if value in {"foreground", "background"}:
+        return value
+    logger.warning("[maid] 配置项 dispatch_session_mode 无效，已改用默认值: %r", value)
+    return DEFAULT_DISPATCH_SESSION_MODE
+
+
+def _tolerant_template(cfg: Mapping[str, Any]) -> str:
+    value = cfg.get("dispatch_prompt_template", DEFAULT_DISPATCH_PROMPT_TEMPLATE)
+    try:
+        return _validate_template(value)
+    except ConfigValidationError as exc:
+        logger.warning(
+            "[maid] 配置项 dispatch_prompt_template 无效，已改用默认模板: %s",
+            exc.errors["dispatch_prompt_template"],
+        )
+        return DEFAULT_DISPATCH_PROMPT_TEMPLATE
+
+
+def load_maid_mode_config(config: Mapping[str, Any] | None = None, *, strict: bool = True) -> MaidModeConfig:
+    """加载插件配置。
+
+    ``strict=True`` 用于保存路径：无效字段抛 ConfigValidationError，失败不落盘。
+    ``strict=False`` 用于启动加载：旧版本遗留键被忽略，无效存量值回退默认，
+    保证有旧配置时插件仍能启动；不做迁移，也不改变任何派发语义。
+    """
     cfg = dict(config or {})
+    if not strict:
+        allowed = _tolerant_names(cfg, "allowed_agent_names", DEFAULT_ALLOWED_AGENT_NAMES, allow_empty=False)
+        memory = _tolerant_names(cfg, "memory_agent_names", (), allow_empty=True)
+        unknown_memory_agents = sorted(set(memory) - set(allowed))
+        if unknown_memory_agents:
+            logger.warning("[maid] memory_agent_names 含未允许的 agent，已清空: %s", ", ".join(unknown_memory_agents))
+            memory = ()
+        return MaidModeConfig(
+            allowed_agent_names=allowed,
+            hide_native_tools=_tolerant_bool(cfg, "hide_native_tools", True),
+            hide_transfer_tools=_tolerant_bool(cfg, "hide_transfer_tools", True),
+            include_raw_user_input=_tolerant_bool(cfg, "include_raw_user_input", True),
+            log_raw_llm_io=_tolerant_bool(cfg, "log_raw_llm_io", False),
+            dispatch_prompt_template=_tolerant_template(cfg),
+            dispatch_session_mode=_tolerant_mode(cfg),
+            memory_agent_names=memory,
+            max_active_per_umo=_tolerant_int(cfg, "max_active_per_umo", DEFAULT_MAX_ACTIVE_PER_UMO, minimum=1),
+            max_active_global=_tolerant_int(cfg, "max_active_global", DEFAULT_MAX_ACTIVE_GLOBAL, minimum=1),
+            retention_days=_tolerant_int(cfg, "retention_days", DEFAULT_RETENTION_DAYS, minimum=1),
+            max_turn_seconds=_tolerant_int(cfg, "max_turn_seconds", DEFAULT_MAX_TURN_SECONDS, minimum=0),
+        )
     allowed = _strict_names(cfg.get("allowed_agent_names", DEFAULT_ALLOWED_AGENT_NAMES), "allowed_agent_names", allow_empty=False)
     memory = _strict_names(cfg.get("memory_agent_names", ()), "memory_agent_names", allow_empty=True)
     unknown_memory_agents = sorted(set(memory) - set(allowed))

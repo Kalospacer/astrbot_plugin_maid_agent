@@ -842,7 +842,12 @@ class SessionDriver:
             elif etype == "tool/result":
                 message = data.get("message") or {}
                 block = (message.get("content") or [{}])[0] if message.get("content") else {}
-                text = block.get("text", "") if isinstance(block, dict) else ""
+                result_content = block.get("content", []) if isinstance(block, dict) else []
+                text = "".join(
+                    part.get("text", "")
+                    for part in result_content
+                    if isinstance(part, dict) and part.get("type") == "text"
+                )
                 contexts.append(
                     Message(
                         role="tool",

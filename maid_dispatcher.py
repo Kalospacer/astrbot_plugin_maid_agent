@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import asyncio
 from typing import TYPE_CHECKING, Any
-from weakref import WeakValueDictionary
+from weakref import WeakKeyDictionary
 
 from astrbot.api import logger
 from astrbot.api.provider import ProviderRequest
@@ -19,7 +19,7 @@ from astrbot.core.utils.llm_metadata import LLM_METADATAS
 
 from .config import _safe_int
 
-_provider_config_locks: WeakValueDictionary[int, asyncio.Lock] = WeakValueDictionary()
+_provider_config_locks: WeakKeyDictionary[Any, asyncio.Lock] = WeakKeyDictionary()
 
 if TYPE_CHECKING:
     from astrbot.api.event import AstrMessageEvent
@@ -161,9 +161,9 @@ async def _build_runner(
         system_prompt=system_prompt,
         session_id=session_id,
     )
-    original_max_context_tokens = provider.provider_config.get("max_context_tokens")
-    provider_lock = _provider_config_locks.setdefault(id(provider), asyncio.Lock())
+    provider_lock = _provider_config_locks.setdefault(provider, asyncio.Lock())
     async with provider_lock:
+        original_max_context_tokens = provider.provider_config.get("max_context_tokens")
         if max_context_tokens > 0:
             provider.provider_config["max_context_tokens"] = max_context_tokens
         try:

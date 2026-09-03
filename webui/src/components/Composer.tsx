@@ -30,14 +30,16 @@ export function Composer(props: {
   const [sending, setSending] = useState(false);
   const [error, setError] = useState("");
   const fileRef = useRef<HTMLInputElement | null>(null);
+  const sendingRef = useRef(false);
 
   const steering = queue.filter((item) => item.placement === "steering");
   const mode: "queue" | "steer" = props.running ? "steer" : "queue";
   const disabled = props.disabled === true;
+  const draftDisabled = disabled || sending;
   const empty = !text.trim() && images.length === 0;
 
   async function onSend() {
-    if (sending || disabled || busy) return;
+    if (sendingRef.current || disabled || busy) return;
     const trimmed = text.trim();
     if (!trimmed && images.length === 0) return;
     const parts: PromptContentPart[] = [];
@@ -46,6 +48,7 @@ export function Composer(props: {
       parts.push({ type: "image", mediaType: image.mediaType, data: image.data, name: image.name });
     }
     const pendingImages = images;
+    sendingRef.current = true;
     setSending(true);
     setError("");
     setText("");
@@ -58,17 +61,25 @@ export function Composer(props: {
       setImages(pendingImages);
       setError(error instanceof Error ? error.message : "发送失败，请重试。");
     } finally {
+      sendingRef.current = false;
       setSending(false);
     }
   }
 
   async function onPickImages(files: FileList | null) {
-    if (!files) return;
+    if (!files || sendingRef.current) {
+      if (fileRef.current) fileRef.current.value = "";
+      return;
+    }
     const next: PendingImage[] = [];
     for (const file of Array.from(files).slice(0, 5)) {
       if (!file.type.startsWith("image/")) continue;
       const data = await fileToBase64(file);
       next.push({ name: file.name, mediaType: file.type, data, preview: `data:${file.type};base64,${data}` });
+    }
+    if (sendingRef.current) {
+      if (fileRef.current) fileRef.current.value = "";
+      return;
     }
     if (next.length) setImages((prev) => [...prev, ...next].slice(0, 5));
     setError("");
@@ -107,7 +118,7 @@ export function Composer(props: {
             <textarea
               className={css.input}
               value={text}
-              disabled={disabled}
+              disabled={draftDisabled}
               rows={2}
               placeholder={
                 mode === "steer"
@@ -135,7 +146,7 @@ export function Composer(props: {
                 type="button"
                 className={css.add}
                 aria-label="附加图片"
-                disabled={disabled}
+                disabled={draftDisabled}
                 onClick={() => fileRef.current?.click()}
               >
                 <IconPlusOutline16 size={14} />
@@ -147,6 +158,7 @@ export function Composer(props: {
               accept="image/png,image/jpeg,image/webp,image/gif"
               multiple
               hidden
+              disabled={draftDisabled}
               onChange={(e) => void onPickImages(e.target.files)}
             />
             {current ? <ModelChip sessionId={current} /> : null}

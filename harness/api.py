@@ -163,7 +163,12 @@ class ApiProxy:
                     entry["view"] = c.tool_event_view_call(view)
             elif etype == "tool/result":
                 block = (data.get("message", {}).get("content") or [{}])[0] if data.get("message", {}).get("content") else {}
-                text = block.get("text", "") if isinstance(block, dict) else ""
+                result_content = block.get("content", []) if isinstance(block, dict) else []
+                text = "".join(
+                    part.get("text", "")
+                    for part in result_content
+                    if isinstance(part, dict) and part.get("type") == "text"
+                )
                 name, arguments = call_args.get(data.get("message", {}).get("source", {}).get("callId", ""), ("", None))
                 view = tv.present_result(data.get("error", {}).get("name") or name, text, arguments)
                 if view:

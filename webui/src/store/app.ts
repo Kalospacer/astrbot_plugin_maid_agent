@@ -358,6 +358,15 @@ export async function renameSession(sessionId: SessionId, title: string): Promis
   await refreshSessions();
 }
 
+export async function deleteSession(sessionId: SessionId): Promise<void> {
+  await call("session.delete", { sessionId });
+  state.sessions.delete(sessionId);
+  state.byId.delete(sessionId);
+  if (state.current === sessionId) state.current = undefined;
+  touchSessions();
+  emit();
+}
+
 export async function forkSession(sessionId: SessionId): Promise<SessionId> {
   const { sessionId: child } = await call<{ sessionId: SessionId }>("session.fork", { sessionId });
   await refreshSessions();

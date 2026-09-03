@@ -132,8 +132,19 @@ async function respond(method: string, payload: any): Promise<any> {
       child.steps = source.steps;
       return { sessionId: child.sessionId };
     }
+    case "session.delete": {
+      const session = sessions.get(payload.sessionId);
+      if (!session) throw Object.assign(new Error("会话不存在"), { code: "session-not-found" });
+      if (session.running) throw Object.assign(new Error("运行中的会话不能删除，请先停止任务。"), { code: "session-running" });
+      sessions.delete(payload.sessionId);
+      broadcast("host", { type: "host/session-removed", sessionId: payload.sessionId });
+      return { deleted: true };
+    }
     case "session.models":
-      return { current: { provider: "mock", model: "mock-1" }, routable: true, groups: [], failures: [] };
+      return {
+        current: { provider: "mock", model: "mock-1", override: false },
+        providers: [],
+      };
     case "session.search": {
       const query = String(payload.query ?? "").trim().toLowerCase();
       if (!query) return { items: [], hasMore: false };

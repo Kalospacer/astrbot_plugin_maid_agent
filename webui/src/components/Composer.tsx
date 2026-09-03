@@ -27,6 +27,8 @@ export function Composer(props: {
   const queue = useApp((s) => (s.current ? s.byId.get(s.current) : undefined)?.queue) ?? EMPTY_QUEUE;
   const [text, setText] = useState("");
   const [images, setImages] = useState<PendingImage[]>([]);
+  const [sending, setSending] = useState(false);
+  const [error, setError] = useState("");
   const fileRef = useRef<HTMLInputElement | null>(null);
 
   const steering = queue.filter((item) => item.placement === "steering");
@@ -35,6 +37,7 @@ export function Composer(props: {
   const empty = !text.trim() && images.length === 0;
 
   async function onSend() {
+    if (sending || disabled || busy) return;
     const trimmed = text.trim();
     if (!trimmed && images.length === 0) return;
     const parts: PromptContentPart[] = [];
@@ -42,6 +45,9 @@ export function Composer(props: {
     for (const image of images) {
       parts.push({ type: "image", mediaType: image.mediaType, data: image.data, name: image.name });
     }
+    const pendingImages = images;
+    setSending(true);
+    setError("");
     setText("");
     setImages([]);
     try {
@@ -49,6 +55,10 @@ export function Composer(props: {
     } catch (error) {
       console.error(error);
       setText(trimmed);
+      setImages(pendingImages);
+      setError(error instanceof Error ? error.message : "发送失败，请重试。");
+    } finally {
+      setSending(false);
     }
   }
 
@@ -61,6 +71,7 @@ export function Composer(props: {
       next.push({ name: file.name, mediaType: file.type, data, preview: `data:${file.type};base64,${data}` });
     }
     if (next.length) setImages((prev) => [...prev, ...next].slice(0, 5));
+    setError("");
     if (fileRef.current) fileRef.current.value = "";
   }
 
@@ -71,6 +82,7 @@ export function Composer(props: {
           {steering.length} 条补充要求等待注入…
         </div>
       )}
+      {error !== "" && <div className={css.error} role="alert">{error}</div>}
       <div className={css.card} data-composer-card="">
         {images.length > 0 && (
           <div className={css.attachments}>
@@ -102,7 +114,10 @@ export function Composer(props: {
                   ? "补充要求，发送后注入运行中的任务…"
                   : "描述任务，Enter 发送 / Shift+Enter 换行"
               }
-              onChange={(e) => setText(e.target.value)}
+              onChange={(e) => {
+                setText(e.target.value);
+                setError("");
+              }}
               onKeyDown={(e) => {
                 if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
                   e.preventDefault();
@@ -156,7 +171,7 @@ export function Composer(props: {
                 type="button"
                 className={css.primary}
                 aria-label="发送"
-                disabled={disabled || busy || empty}
+                disabled={disabled || busy || sending || empty}
                 onClick={() => void onSend()}
               >
                 <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden>

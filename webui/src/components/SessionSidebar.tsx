@@ -71,10 +71,17 @@ export function SessionSidebar(props: {
   onOpenSettings: () => void;
 }) {
   const { collapsed, width } = props;
+  const [startError, setStartError] = useState("");
   const startSession = () => {
-    void app.createSession(app.chosenPreset()).catch((error) => {
-      window.alert(error instanceof Error ? error.message : "无法创建控制台任务。");
-    });
+    void app
+      .createSession(app.chosenPreset())
+      .catch((error) => {
+        const message = error instanceof Error ? error.message : "无法创建控制台任务。";
+        setStartError(message);
+        window.setTimeout(() => setStartError(""), 3000);
+        // 预设死路修复：没选过 Agent 时把界面带回 hero 态，那里有预设选择入口。
+        if (message.includes("请先选择 Agent")) void app.selectSession(undefined);
+      });
   };
 
   const [settled, setSettled] = useState(collapsed);
@@ -178,6 +185,9 @@ export function SessionSidebar(props: {
           {wide && <span className={clsx(css.newSessionLabel, css.wide)}>新会话</span>}
         </button>
       </Tooltip>
+      {startError !== "" && wide && (
+        <div className={css.startError} role="alert">{startError}</div>
+      )}
 
       <div className={css.regionArea}>
         <SessionBrowser wide={wide} expandSidebar={() => { if (collapsed) props.onToggle(); }} />

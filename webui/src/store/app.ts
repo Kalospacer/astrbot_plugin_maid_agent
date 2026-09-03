@@ -241,15 +241,13 @@ export function applyMuxFrame(frame: MuxFrame): void {
     session.summary.updatedAt = Math.max(session.summary.updatedAt, frame.event.time);
     if (frame.event.type === "turn/start") session.summary.blank = false;
     if (frame.event.type === "maid/delivery") {
-      const delivery = (frame.event.data ?? {}) as SessionRuntimeMetadata;
+      // drivers.emit_delivery 写的键是 status/agentId/taskId（不是 deliveryStatus）
+      const delivery = frame.event.data ?? {};
       applyRuntimeMetadata(session.summary, {
-        deliveryStatus: delivery.deliveryStatus,
+        deliveryStatus: typeof delivery.status === "string" ? delivery.status : undefined,
         agentId: delivery.agentId,
         taskId: delivery.taskId,
       });
-      if (session.summary.deliveryStatus === undefined && typeof (frame.event.data as any)?.status === "string") {
-        session.summary.deliveryStatus = (frame.event.data as any).status;
-      }
     }
     touchSession(session);
     touchSessions();

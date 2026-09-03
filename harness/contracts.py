@@ -124,6 +124,8 @@ KNOWN_EVENT_TYPES = SURFACE_EVENT_TYPES | {
     "request/context",
     "session/end-seed",
     "session/title",
+    "maid/task",
+    "maid/delivery",
     "maid/rewind",
     "maid/notification",
 }

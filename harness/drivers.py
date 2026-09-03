@@ -31,7 +31,7 @@ except ImportError:
         def __init__(self, *args, **kwargs):
             pass
 
-from ..constants import normalize_umo
+from ..constants import DASHBOARD_UMO
 from . import contracts as c
 from . import tools_view
 from ._log import dump_raw_llm_output, dump_raw_llm_request
@@ -243,7 +243,7 @@ class SessionDriver:
         self._stop_fn = None
         self._turn_result_waiters: list[asyncio.Future] = []
         meta = self.log.load_meta()
-        self.umo = normalize_umo(meta.get("umo"))
+        self.umo = str(meta.get("umo") or DASHBOARD_UMO)
         self.provider_id = str(meta.get("providerId") or "")
         self.agent_name = str(meta.get("agentName") or "")
         self.sender_id = str(meta.get("senderId") or "")
@@ -251,6 +251,9 @@ class SessionDriver:
         self._interrupted = False
         self.turn_started_at: float | None = None
         self.last_turn: dict = {}
+        self.execution_mode = str(meta.get("executionMode") or "background")
+        self._pending_run_context: dict | None = None
+        self._current_run_context: dict = {}
 
 
     @property
@@ -274,8 +277,13 @@ class SessionDriver:
             self.session_id, c.frame_session_queue(self.session_id, items)
         )
 
-    def enqueue(self, message: dict, placement: str = "queued", item_id: str | None = None) -> str:
-        item = {"id": item_id or str(message.get("id") or c.new_id()), "placement": placement, "message": message}
+    def enqueue(self, message: dict, placement: str = "queued", item_id: str | None = None, run_context: dict | None = None) -> str:
+        item = {
+            "id": item_id or str(message.get("id") or c.new_id()),
+            "placement": placement,
+            "message": message,
+            "run_context": run_context or {},
+        }
         self.inbox.append(item)
         self._publish_queue()
         self._kick()
@@ -305,7 +313,8 @@ class SessionDriver:
             if item["id"] != item_id:
                 continue
             if kind == "remove":
-                self.inbox.pop(index)
+                removed = self.inbox.pop(index)
+                self._release_foreground_lease(removed.get("run_context") or {})
             elif kind == "edit":
                 item["message"]["content"] = action.get("content") or item["message"]["content"]
             elif kind == "steer":
@@ -338,11 +347,20 @@ class SessionDriver:
                 self._stop_fn()
             except Exception:  # noqa: BLE001
                 pass
+            return
+        if not self.running:
+            for item in self.inbox:
+                self._release_foreground_lease(item.get("run_context") or {})
+            self.inbox.clear()
+            self._settle_turn({"status": "stopped", "result": "", "error": "task stopped before execution"})
+            self._publish_queue()
 
     def interrupt(self) -> None:
         """插件停用：标记 interrupted 并停循环。"""
         self._interrupted = True
         self.request_stop()
+        if self._task is not None and not self._task.done():
+            self._task.cancel()
 
     def watchdog_cancel(self) -> None:
         """看门狗超时：取消当前 turn 任务（_pump 会补写终态并继续存活）。"""
@@ -401,6 +419,7 @@ class SessionDriver:
             self.inbox.remove(item)
             self._publish_queue()
             try:
+                self._pending_run_context = item.get("run_context") or {}
                 await self.run_turn(item["message"])
             except asyncio.CancelledError:
                 if self._interrupted:
@@ -409,6 +428,7 @@ class SessionDriver:
                 async with self.log.lock:
                     await self._emit("turn/end", {"turn": self._count_turns(), "reason": c.reason_interrupted()})
                 self._settle_turn({"status": "interrupted", "error": "turn watchdog timeout", "result": ""})
+                self.registry.notify_turn_terminal(self, self.last_turn)
                 for waiter in list(self._turn_result_waiters):
                     if not waiter.done():
                         waiter.set_result(dict(self.last_turn))
@@ -417,12 +437,15 @@ class SessionDriver:
                 async with self.log.lock:
                     await self._emit("turn/end", {"turn": self._count_turns(), "reason": c.reason_error(str(exc))})
                 self._settle_turn({"status": "failed", "error": str(exc), "result": ""})
+                self.registry.notify_turn_terminal(self, self.last_turn)
+            finally:
+                self._pending_run_context = None
             for waiter in list(self._turn_result_waiters):
                 if not waiter.done():
                     waiter.set_result(dict(self.last_turn))
 
     async def wait_next_turn_result(self, timeout: float | None = None) -> dict:
-        """前台等待本轮结果（chat 侧 call_maid 用）。"""
+        """前台等待本轮结果（chat 侧 maid_agent 用）。"""
         waiter = asyncio.get_running_loop().create_future()
         self._turn_result_waiters.append(waiter)
         try:
@@ -448,6 +471,7 @@ class SessionDriver:
 
     async def run_turn(self, user_message: dict) -> dict:
         """执行一个 turn。返回 {status, result, error}。"""
+        self._current_run_context = self._pending_run_context or {}
         turn = self._count_turns() + 1
         self.state = "running"
         self.turn_started_at = time.monotonic()
@@ -467,8 +491,11 @@ class SessionDriver:
 
             result = await self._execute_turn(turn)
             self._settle_turn(result)
+            self.registry.notify_turn_terminal(self, result)
             return result
         finally:
+            self._release_foreground_lease(self._current_run_context)
+            self._current_run_context = {}
             self.turn_started_at = None
             self.state = "idle"
             self.registry.publish_host_frame(
@@ -482,11 +509,19 @@ class SessionDriver:
         from ..maid_dispatcher import _build_runner
 
         context = self.registry.context
-        agent_name = self.agent_name or self.registry.default_agent_name
+        agent_name = self.agent_name
+        if not agent_name:
+            raise ValueError("会话缺少 subagent_type。")
         umo = self.umo
 
         handoff, resolved_name = self.registry.resolve_handoff(agent_name)
-        child_event = self.registry.build_child_event(umo, self.sender_id)
+        execution_mode = str(self._current_run_context.get("execution_mode") or "background")
+        child_event = self.registry.build_child_event(
+            umo,
+            self.sender_id,
+            execution_mode=execution_mode,
+            source_event=self._current_run_context.get("source_event"),
+        )
 
         provider_id = (
             self.provider_id
@@ -517,6 +552,10 @@ class SessionDriver:
 
         prompt_text = self._prompt_text_of_last_user_message()
         image_paths = self.registry.image_paths_for_message(self.session_id, self.log.read_events())
+        if execution_mode == "foreground":
+            from ..toolset_adapter import collect_child_image_urls
+
+            image_paths = await collect_child_image_urls(child_event, image_paths)
 
         provider_settings = self.registry.load_provider_settings(umo)
         step_holder = {"step": 0}
@@ -557,7 +596,6 @@ class SessionDriver:
             return str(getattr(ticket, "seq", "")) if ticket is not None else None
 
         def _stop_handler():
-            child_event.set_extra("agent_stop_requested", True)
             runner.request_stop()
 
         self._steer_fn = _steer_handler
@@ -573,7 +611,7 @@ class SessionDriver:
             prev_usage = _usage_value(getattr(getattr(runner, "stats", None), "token_usage", None))
             step = 0
             chunk_index: dict[str, int] = {}
-            stop_requested_flag = lambda: child_event.get_extra("agent_stop_requested") or self._stop_requested  # noqa: E731
+            stop_requested_flag = lambda: self._stop_requested  # noqa: E731
 
             while not runner.done() and step < agent_max_step and not self._interrupted:
                 step += 1
@@ -653,7 +691,8 @@ class SessionDriver:
             self._steer_fn = None
             self._stop_fn = None
             await hooks.close_unfinished()
-            child_event.cleanup_temporary_local_files()
+            if execution_mode == "background":
+                child_event.cleanup_temporary_local_files()
 
         async with self.log.lock:
             await self._emit("turn/end", {"turn": turn, "reason": reason})
@@ -792,6 +831,28 @@ class SessionDriver:
     def publish_frame(self, payload: dict) -> None:
         self.registry.publish_frame(self.session_id, payload)
 
+    async def emit_delivery(self, channel: str, status: str, error: str = "") -> None:
+        """Persist delivery metadata without persisting live message events or attachments."""
+        async with self.log.lock:
+            await self._emit(
+                "maid/delivery",
+                {
+                    "channel": channel,
+                    "status": status,
+                    "agentId": self.session_id,
+                    "taskId": self.log.load_meta().get("activeTaskId", ""),
+                    **({"error": error} if error else {}),
+                },
+            )
+        self._meta_update(deliveryStatus=status)
+
+    def _release_foreground_lease(self, run_context: dict) -> None:
+        dispatch_id = str(run_context.get("dispatch_id") or "")
+        if run_context.get("execution_mode") != "foreground" or not dispatch_id:
+            return
+        self.registry.release_foreground_lease(self.umo, dispatch_id)
+        self._meta_update(foregroundLease=None)
+
     def _clear_steering_items(self) -> None:
         if any(item["placement"] == "steering" for item in self.inbox):
             self.inbox = [item for item in self.inbox if item["placement"] != "steering"]
@@ -904,6 +965,7 @@ class DriverRegistry:
         self.host_hub = host_hub
         self.config = config
         self.drivers: dict[str, SessionDriver] = {}
+        self._foreground_leases: dict[str, str] = {}
         self._background_tasks: set[asyncio.Task] = set()
         self.on_turn_terminal = None
 
@@ -925,10 +987,6 @@ class DriverRegistry:
             raise KeyError(session_id)
         return driver
 
-    @property
-    def default_agent_name(self) -> str:
-        return str(getattr(self.config, "default_agent_name", "") or "butler")
-
     def running_count(self) -> int:
         return sum(1 for d in self.drivers.values() if d.running)
 
@@ -939,6 +997,24 @@ class DriverRegistry:
         per_umo = int(getattr(self.config, "max_active_per_umo", 5) or 5)
         global_cap = int(getattr(self.config, "max_active_global", 20) or 20)
         return self.running_count_for_umo(umo) < per_umo and self.running_count() < global_cap
+
+    def acquire_foreground_lease(self, umo: str, dispatch_id: str) -> bool:
+        if not umo or not dispatch_id or umo in self._foreground_leases:
+            return False
+        self._foreground_leases[umo] = dispatch_id
+        return True
+
+    def release_foreground_lease(self, umo: str, dispatch_id: str) -> None:
+        if self._foreground_leases.get(umo) == dispatch_id:
+            self._foreground_leases.pop(umo, None)
+
+    def notify_turn_terminal(self, driver: SessionDriver, result: dict) -> None:
+        callback = self.on_turn_terminal
+        if callback is None:
+            return
+        task = asyncio.create_task(callback(driver, result), name=f"maid-terminal-{driver.session_id[:8]}")
+        self._background_tasks.add(task)
+        task.add_done_callback(self._background_tasks.discard)
 
     async def shutdown(self) -> None:
         for driver in list(self.drivers.values()):
@@ -977,12 +1053,16 @@ class DriverRegistry:
     def resolve_handoff(self, agent_name: str):
         from ..maid_dispatcher import _resolve_handoff
 
-        return _resolve_handoff(self.context, agent_name, fallback_agent_name=self.default_agent_name)
+        return _resolve_handoff(self.context, agent_name)
 
-    def build_child_event(self, umo: str, sender_id: str):
+    def build_child_event(self, umo: str, sender_id: str, *, execution_mode: str, source_event=None):
+        if execution_mode == "foreground":
+            if source_event is None:
+                raise ValueError("foreground 任务缺少真实聊天 event。")
+            return source_event
         from .events_shim import DashboardMaidEvent
 
-        return DashboardMaidEvent(unified_msg_origin=normalize_umo(umo), sender_id=sender_id or "dashboard", message_text="")
+        return DashboardMaidEvent(unified_msg_origin=umo or DASHBOARD_UMO, sender_id=sender_id or "dashboard", message_text="")
 
     def build_toolset(self, *, handoff, umo: str, agent_name: str):
         from ..toolset_adapter import build_child_toolset

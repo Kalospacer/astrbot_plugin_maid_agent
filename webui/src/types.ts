@@ -107,14 +107,30 @@ export interface QueuedInboxItem {
   message: Message;
 }
 
+export type ExecutionMode = "foreground" | "background";
+export type SessionSourceKind = "chat" | "dashboard";
+export type DeliveryStatus = "pending" | "sending" | "sent" | "failed" | "skipped" | (string & {});
+
+/** Runtime metadata shared by session snapshots and host lifecycle frames. */
+export interface SessionRuntimeMetadata {
+  executionMode?: ExecutionMode;
+  sourceKind?: SessionSourceKind;
+  backgroundReason?: string;
+  dispatchId?: string;
+  agentId?: string;
+  taskId?: string;
+  foregroundLease?: string | null;
+  deliveryStatus?: DeliveryStatus;
+}
+
 export type HostFrame =
-  | { type: "host/session-added"; sessionId: SessionId; blank: boolean; agentPreset?: string }
+  | ({ type: "host/session-added"; sessionId: SessionId; blank: boolean; agentPreset?: string } & SessionRuntimeMetadata)
   | { type: "host/session-removed"; sessionId: SessionId }
-  | { type: "host/session-status"; sessionId: SessionId; running: boolean }
+  | ({ type: "host/session-status"; sessionId: SessionId; running: boolean } & SessionRuntimeMetadata)
   | { type: "host/agent-error"; sessionId: SessionId; message: string }
   | { type: "stream/error"; error: { code: string; message: string } };
 
-export interface SessionSummary {
+export interface SessionSummary extends SessionRuntimeMetadata {
   sessionId: SessionId;
   updatedAt: number;
   running: boolean;
@@ -132,7 +148,6 @@ export interface HistoryEntry {
 export interface AgentPresetEntry {
   id: string;
   trust: "system" | "user";
-  isDefault: boolean;
   name?: string;
   description?: string;
 }
@@ -141,9 +156,19 @@ export type PromptContentPart =
   | { type: "text"; text: string }
   | { type: "image"; mediaType: string; data: string; name?: string };
 
+export interface SettingsFieldSchema {
+  description?: string;
+  hint?: string;
+  type?: string;
+  options?: string[];
+}
+
 export interface SettingsNamespaceView {
   ns: string;
-  schema: unknown;
+  schema: {
+    type?: string;
+    properties?: Record<string, SettingsFieldSchema>;
+  };
   value: Record<string, unknown>;
   applies: "live" | "restart";
   revision: number;

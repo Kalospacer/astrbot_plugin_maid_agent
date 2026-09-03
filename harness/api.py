@@ -13,27 +13,28 @@ from typing import Any
 
 from ._log import logger
 
-from ..constants import normalize_umo
+from ..constants import DASHBOARD_UMO
 from . import contracts as c
 from . import tools_view
 from .history import derive_surface, history_page, visible_events
+from ..config import ConfigValidationError
 from .rpc import RpcError, bad_request, session_not_found
 
 SETTINGS_NS = "maid"
 
 SETTINGS_KEYS = {
-    "default_agent_name",
     "allowed_agent_names",
     "hide_native_tools",
     "hide_transfer_tools",
     "include_raw_user_input",
     "log_raw_llm_io",
     "dispatch_prompt_template",
-    "foreground_timeout_seconds",
+    "dispatch_session_mode",
     "memory_agent_names",
     "max_active_per_umo",
     "max_active_global",
     "retention_days",
+    "max_turn_seconds",
 }
 
 
@@ -105,7 +106,7 @@ class ApiProxy:
         items = []
         for sid in self.store.list_session_ids():
             log = self.store.log(sid)
-            if umo_filter and normalize_umo(log.load_meta().get("umo")) != umo_filter:
+            if umo_filter and str(log.load_meta().get("umo") or "") != umo_filter:
                 continue
             best = ""
             for event in derive_surface(log.read_events()):
@@ -130,13 +131,37 @@ class ApiProxy:
     async def session_create(self, payload: dict) -> dict:
         preset = str(payload.get("agentPreset") or "").strip()
         if not preset:
-            preset = self.config_holder.default_agent_name()
-        umo = normalize_umo(payload.get("umo"))
-        sender_id = str(payload.get("senderId") or "").strip() or "dashboard"
-        log = self.store.create_session(agent_preset=preset, meta={"umo": umo, "senderId": sender_id, "agentName": preset})
+            raise RpcError("agent-preset-required", "控制台任务必须显式选择 Agent。", {})
+        if preset not in getattr(self.registry.config, "allowed_agent_names", ()):
+            raise RpcError("agent-preset-not-allowed", f"Agent 不在允许列表: {preset}", {"agentPreset": preset})
+        umo = DASHBOARD_UMO
+        sender_id = "dashboard"
+        log = self.store.create_session(
+            agent_preset=preset,
+            meta={
+                "umo": umo,
+                "senderId": sender_id,
+                "agentName": preset,
+                "agentId": "",
+                "executionMode": "background",
+                "sourceKind": "dashboard",
+                "backgroundReason": "dashboard-isolated-sandbox",
+                "notify": False,
+            },
+        )
+        log.update_meta(agentId=log.session_id)
         driver = self.registry.attach(str(log.session_id))
         driver.umo, driver.agent_name, driver.sender_id = umo, preset, sender_id
-        self.registry.publish_host_frame(c.frame_host_session_added(log.session_id, True, agentPreset=preset))
+        self.registry.publish_host_frame(
+            c.frame_host_session_added(
+                log.session_id,
+                True,
+                agentPreset=preset,
+                executionMode="background",
+                sourceKind="dashboard",
+                backgroundReason="dashboard-isolated-sandbox",
+            )
+        )
         return {"sessionId": log.session_id, "agentPreset": preset}
 
     async def session_history(self, payload: dict) -> dict:
@@ -192,13 +217,13 @@ class ApiProxy:
         agent_name = (driver.agent_name if driver else "") or str(meta.get("agentName") or "")
         try:
             handoff, _ = self.registry.resolve_handoff(
-                agent_name or self.registry.default_agent_name
+                agent_name
             )
             handoff_provider = str(getattr(handoff, "provider_id", None) or "")
         except Exception:  # noqa: BLE001
             pass
 
-        umo = normalize_umo(meta.get("umo"))
+        umo = str(meta.get("umo") or DASHBOARD_UMO)
         effective = (
             override
             or handoff_provider
@@ -405,7 +430,6 @@ class ApiProxy:
 
 
     def _preset_entries(self) -> list[dict]:
-        default_name = self.config_holder.default_agent_name()
         entries: dict[str, dict] = {}
         try:
             orchestrator = getattr(self.registry.context, "subagent_orchestrator", None)
@@ -420,14 +444,12 @@ class ApiProxy:
                 entries[name] = {
                     "id": name,
                     "trust": "system",
-                    "isDefault": name == default_name,
                     "name": name,
                 }
         except Exception as exc:  # noqa: BLE001
             logger.warning("[maid] 读取 subagent 列表失败: %s", exc)
-        if not entries:
-            entries[default_name] = {"id": default_name, "trust": "system", "isDefault": True, "name": default_name}
-        return sorted(entries.values(), key=lambda e: e["id"])
+        allowed = set(getattr(self.registry.config, "allowed_agent_names", ()))
+        return sorted((entry for name, entry in entries.items() if name in allowed), key=lambda e: e["id"])
 
     async def preset_list(self, payload: dict) -> dict:
         return {"presets": self._preset_entries(), "authorable": False, "hasDocument": False}
@@ -442,7 +464,7 @@ class ApiProxy:
                 "会话已开始对话，不能更换 agent 组合。",
                 {"sessionId": session_id, "agentPreset": preset},
             )
-        if preset and preset not in {entry["id"] for entry in self._preset_entries()}:
+        if not preset or preset not in {entry["id"] for entry in self._preset_entries()}:
             raise RpcError(
                 "agent-preset-not-found",
                 f"未知的 agent 组合: {preset}",
@@ -492,7 +514,10 @@ class ApiProxy:
         unknown = [key for key in patch if key not in SETTINGS_KEYS]
         if unknown:
             raise RpcError("settings-rejected", f"未知配置键: {','.join(unknown)}", {"ns": ns})
-        self.config_holder.save_config(patch)
+        try:
+            self.config_holder.save_config(patch)
+        except ConfigValidationError as exc:
+            raise RpcError("settings-rejected", "配置验证失败。", {"errors": exc.errors}) from exc
         self._settings_revision += 1
         return self._settings_view()
 

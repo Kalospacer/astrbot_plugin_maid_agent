@@ -9,6 +9,7 @@ import {
 } from "@/ui/primitives/icons";
 import { useApp } from "@/hooks";
 import * as app from "@/store/app";
+import type { SettingsFieldSchema } from "@/types";
 import css from "./SettingsDialog.module.css";
 
 /** 设置分区（DSH SettingsRoot nav 行）：代理女仆只有两个分区。 */
@@ -61,10 +62,7 @@ export function SettingsDialog(props: { open: boolean; onClose: () => void }) {
 
   if (!props.open) return null;
   const value = draft ?? { ...(settings?.value ?? {}) };
-  const schema = (settings?.schema ?? {}) as {
-    properties?: Record<string, { description?: string; type?: string; hint?: string }>;
-  };
-  const properties = schema?.properties ?? {};
+  const properties = settings?.schema.properties ?? {};
 
   async function onSave() {
     setSaving(true);
@@ -137,28 +135,54 @@ export function SettingsDialog(props: { open: boolean; onClose: () => void }) {
                 ) : null}
                 {settings !== null &&
                   Object.entries(value).map(([key, current]) => {
-                    const meta = properties[key] ?? {};
+                    const meta: SettingsFieldSchema = properties[key] ?? {};
                     const label = meta.description ?? key;
-                    if (typeof current === "boolean") {
+                    const hintId = `setting-hint-${key}`;
+                    const inputId = `setting-input-${key}`;
+                    const stringOptions = Array.isArray(meta.options)
+                      ? meta.options.filter((option): option is string => typeof option === "string")
+                      : [];
+                    const hint = meta.hint ? <span id={hintId} className={css.hint}>{meta.hint}</span> : null;
+                    if (typeof current === "boolean" || meta.type === "bool") {
                       return (
-                        <label key={key} className={css.checkRow}>
-                          <span>{label}</span>
-                          <input
-                            type="checkbox"
-                            className={css.checkbox}
-                            checked={current}
-                            onChange={(e) => setDraft({ ...value, [key]: e.target.checked })}
-                          />
-                        </label>
+                        <div key={key} className={css.field}>
+                          <label className={css.checkRow} htmlFor={inputId}>
+                            <span>{label}</span>
+                            <input
+                              id={inputId}
+                              type="checkbox"
+                              className={css.checkbox}
+                              checked={Boolean(current)}
+                              aria-describedby={meta.hint ? hintId : undefined}
+                              onChange={(e) => setDraft({ ...value, [key]: e.target.checked })}
+                            />
+                          </label>
+                          {hint}
+                        </div>
                       );
                     }
                     return (
-                      <label key={key} className={css.field}>
-                        <span className={css.label}>{label}</span>
-                        {Array.isArray(current) ? (
+                      <div key={key} className={css.field}>
+                        <label className={css.label} htmlFor={inputId}>{label}</label>
+                        {stringOptions.length > 0 ? (
+                          <select
+                            id={inputId}
+                            className={css.select}
+                            value={String(current ?? "")}
+                            aria-describedby={meta.hint ? hintId : undefined}
+                            onChange={(e) => setDraft({ ...value, [key]: e.target.value })}
+                          >
+                            {!stringOptions.includes(String(current ?? "")) && current !== undefined ? (
+                              <option value={String(current)} disabled>{String(current)}</option>
+                            ) : null}
+                            {stringOptions.map((option) => <option key={option} value={option}>{option}</option>)}
+                          </select>
+                        ) : Array.isArray(current) || meta.type === "list" ? (
                           <Input
-                            value={(current as string[]).join(", ")}
+                            id={inputId}
+                            value={Array.isArray(current) ? current.join(", ") : String(current ?? "")}
                             placeholder="逗号分隔"
+                            aria-describedby={meta.hint ? hintId : undefined}
                             onChange={(e) =>
                               setDraft({
                                 ...value,
@@ -169,26 +193,33 @@ export function SettingsDialog(props: { open: boolean; onClose: () => void }) {
                               })
                             }
                           />
-                        ) : typeof current === "number" ? (
+                        ) : typeof current === "number" || meta.type === "int" ? (
                           <Input
+                            id={inputId}
                             type="number"
                             value={String(current)}
+                            aria-describedby={meta.hint ? hintId : undefined}
                             onChange={(e) => setDraft({ ...value, [key]: Number(e.target.value) })}
                           />
                         ) : key === "dispatch_prompt_template" ? (
                           <textarea
+                            id={inputId}
                             className={css.textarea}
                             value={String(current ?? "")}
                             rows={4}
+                            aria-describedby={meta.hint ? hintId : undefined}
                             onChange={(e) => setDraft({ ...value, [key]: e.target.value })}
                           />
                         ) : (
                           <Input
+                            id={inputId}
                             value={String(current ?? "")}
+                            aria-describedby={meta.hint ? hintId : undefined}
                             onChange={(e) => setDraft({ ...value, [key]: e.target.value })}
                           />
                         )}
-                      </label>
+                        {hint}
+                      </div>
                     );
                   })}
                 {error ? <p className="error-text">{error}</p> : null}

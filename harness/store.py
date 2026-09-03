@@ -15,7 +15,6 @@ import time
 import uuid
 from pathlib import Path
 
-from ..constants import normalize_umo
 from .contracts import now_ms
 from .event_log import SessionLog
 from .history import derive_surface, visible_events
@@ -145,13 +144,25 @@ class SessionStore:
             "blank": not has_turn,
         }
         if meta.get("umo"):
-            item["umo"] = normalize_umo(meta["umo"])
+            item["umo"] = str(meta["umo"] or "")
         if header.get("parentSession"):
             item["parentSessionId"] = header["parentSession"]
         if header.get("origin"):
             item["origin"] = header["origin"]
         if header.get("agentPreset"):
             item["agentPreset"] = header["agentPreset"]
+        for meta_key, summary_key in (
+            ("executionMode", "executionMode"),
+            ("sourceKind", "sourceKind"),
+            ("backgroundReason", "backgroundReason"),
+            ("dispatchId", "dispatchId"),
+            ("agentId", "agentId"),
+            ("activeTaskId", "taskId"),
+            ("foregroundLease", "foregroundLease"),
+            ("deliveryStatus", "deliveryStatus"),
+        ):
+            if meta.get(meta_key) not in (None, ""):
+                item[summary_key] = meta[meta_key]
         if with_projections:
             item["projections"] = self.projections.compute(session_id, events)
         return item

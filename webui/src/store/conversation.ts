@@ -1,5 +1,5 @@
 
-import type { ContentBlock, SessionEvent, ToolEventView } from "@/types";
+import type { ContentBlock, DeliveryStatus, SessionEvent, ToolEventView } from "@/types";
 
 export interface AssistantPartial {
   kind: "assistant-partial";
@@ -58,6 +58,7 @@ export interface TurnTailNode {
   /** 本轮过程统计（折叠条标签）：工具调用数 / 过程内助手消息数。 */
   toolCallCount: number;
   messageCount: number;
+  deliveryCount: number;
 }
 
 export interface UsageNode {
@@ -69,7 +70,18 @@ export interface UsageNode {
   time: number;
 }
 
-export type ChatNode = UserNode | AssistantNode | ToolNode | TurnTailNode | AssistantPartial | UsageNode;
+export interface DeliveryNode {
+  kind: "delivery";
+  key: string;
+  turn: number;
+  status?: DeliveryStatus;
+  taskId?: string;
+  agentId?: string;
+  time: number;
+  inProcess?: boolean;
+}
+
+export type ChatNode = UserNode | AssistantNode | ToolNode | TurnTailNode | AssistantPartial | UsageNode | DeliveryNode;
 
 export interface FoldResult {
   nodes: ChatNode[];
@@ -102,6 +114,7 @@ export class ConversationFolder {
   /** 本轮过程统计（折叠条标签用）。 */
   private turnToolCount = 0;
   private turnMessageCount = 0;
+  private turnDeliveryCount = 0;
   /** 本轮折叠条节点：首个过程行出现时创建在行之前（DSH TurnProcess 位置）。 */
   private turnBar: TurnTailNode | null = null;
 
@@ -155,6 +168,7 @@ export class ConversationFolder {
     this.viewsCount = 0;
     this.turnToolCount = 0;
     this.turnMessageCount = 0;
+    this.turnDeliveryCount = 0;
     this.turnBar = null;
   }
 
@@ -178,6 +192,7 @@ export class ConversationFolder {
       time,
       toolCallCount: 0,
       messageCount: 0,
+      deliveryCount: 0,
     };
     this.push(this.turnBar);
   }
@@ -190,6 +205,7 @@ export class ConversationFolder {
         this.running = true;
         this.turnToolCount = 0;
         this.turnMessageCount = 0;
+        this.turnDeliveryCount = 0;
         this.turnBar = null;
         break;
       }
@@ -208,6 +224,7 @@ export class ConversationFolder {
             time: event.time,
             toolCallCount: this.turnToolCount,
             messageCount: this.turnMessageCount,
+            deliveryCount: this.turnDeliveryCount,
           });
         } else if (reason?.kind !== undefined && reason?.kind !== "completed") {
           // 纯文本轮的失败/中断也要有终态行
@@ -219,6 +236,7 @@ export class ConversationFolder {
             time: event.time,
             toolCallCount: 0,
             messageCount: 0,
+            deliveryCount: 0,
           });
         }
         break;
@@ -381,6 +399,24 @@ export class ConversationFolder {
             turn: data.turn ?? this.lastTurn,
           });
         }
+        break;
+      }
+      case "maid/delivery": {
+        const inProcess = this.running || this.turnBar !== null;
+        if (inProcess) {
+          this.ensureTurnBar(event.time);
+          this.turnDeliveryCount += 1;
+        }
+        this.push({
+          kind: "delivery",
+          key: `d${event.seq}`,
+          turn: data.turn ?? this.lastTurn,
+          status: data.status ?? data.deliveryStatus,
+          taskId: data.taskId,
+          agentId: data.agentId,
+          time: event.time,
+          inProcess: inProcess || undefined,
+        });
         break;
       }
       default:

@@ -11,6 +11,7 @@ import type {
   QueuedInboxItem,
   SessionEvent,
   SessionId,
+  SessionRuntimeMetadata,
   SessionSummary,
   SettingsNamespaceView,
   ToolEventView,
@@ -106,6 +107,22 @@ function touchSession(session: SessionState): void {
 /** 标记会话列表/摘要已变化。 */
 function touchSessions(): void {
   state.sessionsStamp += 1;
+}
+
+function applyRuntimeMetadata(summary: SessionSummary, metadata: SessionRuntimeMetadata): void {
+  const keys: (keyof SessionRuntimeMetadata)[] = [
+    "executionMode",
+    "sourceKind",
+    "backgroundReason",
+    "dispatchId",
+    "agentId",
+    "taskId",
+    "foregroundLease",
+    "deliveryStatus",
+  ];
+  for (const key of keys) {
+    if (metadata[key] !== undefined) summary[key] = metadata[key] as never;
+  }
 }
 
 export function subscribe(listener: Listener): () => void {
@@ -223,6 +240,17 @@ export function applyMuxFrame(frame: MuxFrame): void {
     if (frame.view) session.views.set(frame.event.seq, frame.view);
     session.summary.updatedAt = Math.max(session.summary.updatedAt, frame.event.time);
     if (frame.event.type === "turn/start") session.summary.blank = false;
+    if (frame.event.type === "maid/delivery") {
+      const delivery = (frame.event.data ?? {}) as SessionRuntimeMetadata;
+      applyRuntimeMetadata(session.summary, {
+        deliveryStatus: delivery.deliveryStatus,
+        agentId: delivery.agentId,
+        taskId: delivery.taskId,
+      });
+      if (session.summary.deliveryStatus === undefined && typeof (frame.event.data as any)?.status === "string") {
+        session.summary.deliveryStatus = (frame.event.data as any).status;
+      }
+    }
     touchSession(session);
     touchSessions();
     if (state.current === frame.sessionId) emit();
@@ -254,20 +282,39 @@ export function applyMuxFrame(frame: MuxFrame): void {
 
 export function applyHostFrame(frame: HostFrame): void {
   if (frame.type === "host/session-status") {
-    const summary = state.sessions.get(frame.sessionId);
-    if (summary) {
-      summary.running = frame.running;
-      if (frame.running) summary.blank = false;
-    }
+    const summary = state.sessions.get(frame.sessionId) ?? {
+      sessionId: frame.sessionId,
+      updatedAt: Date.now(),
+      running: false,
+      blank: true,
+    };
+    state.sessions.set(frame.sessionId, summary);
+    summary.running = frame.running;
+    if (frame.running) summary.blank = false;
+    applyRuntimeMetadata(summary, frame);
     const session = state.byId.get(frame.sessionId);
     if (session) {
       session.summary.running = frame.running;
+      applyRuntimeMetadata(session.summary, frame);
       touchSession(session);
     }
     touchSessions();
     emit();
   }
   if (frame.type === "host/session-added") {
+    const summary = state.sessions.get(frame.sessionId) ?? {
+      sessionId: frame.sessionId,
+      updatedAt: Date.now(),
+      running: false,
+      blank: frame.blank,
+      agentPreset: frame.agentPreset,
+    };
+    summary.blank = frame.blank;
+    if (frame.agentPreset !== undefined) summary.agentPreset = frame.agentPreset;
+    applyRuntimeMetadata(summary, frame);
+    state.sessions.set(frame.sessionId, summary);
+    touchSessions();
+    emit();
     void refreshSessions();
   }
   if (frame.type === "host/session-removed") {
@@ -284,23 +331,23 @@ export function setConnection(connection: ConnectionState): void {
   emit();
 }
 
-export async function createSession(agentPreset?: string): Promise<SessionId> {
+export async function createSession(agentPreset: string): Promise<SessionId> {
+  if (!agentPreset.trim()) {
+    throw new Error("请先选择 Agent，再创建控制台任务。");
+  }
   const { sessionId } = await call<{ sessionId: SessionId }>("session.create", {
-    agentPreset: agentPreset || chosenPreset() || undefined,
-    umo: currentUmo(),
+    agentPreset,
   });
   await refreshSessions();
   await selectSession(sessionId);
   return sessionId;
 }
 
-const LEGACY_WEBID_UMO = "dashboard:WebId:dashboard";
 export const DEFAULT_UMO = "dashboard:FriendMessage:dashboard";
 
 let umoChoice = "";
 try {
   umoChoice = localStorage.getItem("maid-umo") ?? "";
-  if (umoChoice === LEGACY_WEBID_UMO) umoChoice = "";
 } catch {
   /* sandboxed iframe */
 }
@@ -323,7 +370,7 @@ export function setUmo(umo: string): void {
 
 let presetChoice = "";
 export function chosenPreset(): string {
-  return presetChoice || state.presets.find((p) => p.isDefault)?.id || "";
+  return presetChoice;
 }
 export function setPresetChoice(id: string): void {
   presetChoice = id;
@@ -340,7 +387,7 @@ export async function sendPrompt(
   try {
     let target = sessionId;
     if (!target) {
-      target = await createSession(state.presets.find((p) => p.isDefault)?.id);
+      target = await createSession(chosenPreset());
     }
     await call("session.prompt", { sessionId: target, mode, content: parts });
   } finally {

@@ -24,6 +24,7 @@ import {
 import { useApp } from "@/hooks";
 import * as app from "@/store/app";
 import type { SessionId, SessionSummary } from "@/types";
+import { deliveryStatusLabel, sessionRuntimeBadge, sessionRuntimeDescription } from "@/ui/chrome/session-runtime";
 import css from "./Sidebar.module.css";
 
 const COLLAPSE_SETTLE_MS = 150;
@@ -70,10 +71,10 @@ export function SessionSidebar(props: {
   onOpenSettings: () => void;
 }) {
   const { collapsed, width } = props;
-  const presets = useApp((s) => s.presets);
-  const defaultPreset = presets.find((p) => p.isDefault)?.id;
   const startSession = () => {
-    void app.createSession(defaultPreset).catch(() => undefined);
+    void app.createSession(app.chosenPreset()).catch((error) => {
+      window.alert(error instanceof Error ? error.message : "无法创建控制台任务。");
+    });
   };
 
   const [settled, setSettled] = useState(collapsed);
@@ -532,6 +533,9 @@ function SessionRow(props: { item: SessionSummary; currentId: SessionId | undefi
   const selected = item.sessionId === props.currentId;
   const title = summaryTitle(item);
   const status = item.running ? "ongoing" : "done";
+  const runtimeBadge = sessionRuntimeBadge(item);
+  const runtimeDescription = sessionRuntimeDescription(item);
+  const delivery = deliveryStatusLabel(item.deliveryStatus);
 
   const ownRow = (
     <div
@@ -544,6 +548,7 @@ function SessionRow(props: { item: SessionSummary; currentId: SessionId | undefi
         <StateDot state={status} />
       </span>
       <span className={css.rowTitle}>{title}</span>
+      {runtimeBadge ? <span className={css.runtimeBadge} title={runtimeDescription}>{runtimeBadge}</span> : null}
       {!item.blank && <span className={css.time}>{timeLabel(item.updatedAt, now)}</span>}
       {!item.blank && (
         <span className={css.rowActions}>
@@ -601,6 +606,12 @@ function SessionRow(props: { item: SessionSummary; currentId: SessionId | undefi
               <StateDot state={status} />
               <span>{item.running ? "运行中" : item.blank ? "空会话" : "已完成"}</span>
             </div>
+            {runtimeDescription ? <div className={css.hoverDetail}>{runtimeDescription}</div> : null}
+            {item.backgroundReason ? <div className={css.hoverDetail}>转后台原因：{item.backgroundReason}</div> : null}
+            {delivery ? <div className={css.hoverDetail}>投递：{delivery}</div> : null}
+            {item.agentId ? <div className={css.hoverDetail}>Agent：{item.agentId}</div> : null}
+            {item.taskId ? <div className={css.hoverDetail}>任务：{item.taskId}</div> : null}
+            {item.foregroundLease ? <div className={css.hoverDetail}>前台租约：{item.foregroundLease}</div> : null}
           </div>
         }
         copyText={item.blank ? undefined : title}

@@ -33,12 +33,21 @@ interface MockSession {
   steps: number;
   usage: { inputTokens: number; outputTokens: number };
   umo: string;
+  executionMode: "foreground" | "background";
+  sourceKind: "chat" | "dashboard";
+  backgroundReason?: string;
+  agentId: string;
+  taskId: string;
+  foregroundLease?: string;
+  deliveryStatus: "pending" | "sending" | "sent" | "failed";
 }
 
 const sessions = new Map<string, MockSession>();
 
-function newSession(agentPreset = "butler", umo = "dashboard:WebId:dashboard"): MockSession {
+function newSession(agentPreset: string, umo = "dashboard:FriendMessage:dashboard"): MockSession {
   const sessionId = Array.from({ length: 32 }, () => Math.floor(Math.random() * 16).toString(16)).join("");
+  const sourceKind = "dashboard";
+  const executionMode = "background";
   const session: MockSession = {
     sessionId,
     updatedAt: Date.now(),
@@ -51,6 +60,12 @@ function newSession(agentPreset = "butler", umo = "dashboard:WebId:dashboard"): 
     steps: 0,
     usage: { inputTokens: 0, outputTokens: 0 },
     umo,
+    executionMode,
+    sourceKind,
+    backgroundReason: "dashboard-isolated-sandbox",
+    agentId: `agent_${sessionId.slice(0, 8)}`,
+    taskId: `task_${sessionId.slice(0, 8)}`,
+    deliveryStatus: "pending",
   };
   sessions.set(sessionId, session);
   return session;
@@ -82,6 +97,12 @@ function summary(session: MockSession) {
     blank: session.blank,
     agentPreset: session.agentPreset,
     umo: session.umo,
+    executionMode: session.executionMode,
+    sourceKind: session.sourceKind,
+    backgroundReason: session.backgroundReason,
+    agentId: session.agentId,
+    taskId: session.taskId,
+    deliveryStatus: session.deliveryStatus,
     projections: projectionsBlock(session),
   };
 }
@@ -91,8 +112,15 @@ async function respond(method: string, payload: any): Promise<any> {
     case "session.list":
       return { items: [...sessions.values()].sort((a, b) => b.updatedAt - a.updatedAt).map(summary) };
     case "session.create": {
-      const session = newSession(payload.agentPreset, String(payload.umo ?? "") || "dashboard:WebId:dashboard");
-      broadcast("host", { type: "host/session-added", sessionId: session.sessionId, blank: true, agentPreset: session.agentPreset });
+      if (typeof payload.agentPreset !== "string" || !payload.agentPreset.trim()) {
+        throw new Error("控制台任务必须显式选择 Agent。");
+      }
+      const session = newSession(payload.agentPreset);
+      broadcast("host", {
+        type: "host/session-added", sessionId: session.sessionId, blank: true, agentPreset: session.agentPreset,
+        executionMode: session.executionMode, sourceKind: session.sourceKind, agentId: session.agentId,
+        taskId: session.taskId, deliveryStatus: session.deliveryStatus,
+      });
       return { sessionId: session.sessionId, agentPreset: session.agentPreset };
     }
     case "session.history": {
@@ -105,7 +133,8 @@ async function respond(method: string, payload: any): Promise<any> {
       };
     }
     case "session.prompt": {
-      const session = sessions.get(payload.sessionId) ?? newSession();
+      const session = sessions.get(payload.sessionId);
+      if (!session) throw new Error("会话不存在");
       void runMockTurn(session, payload.content ?? []);
       return { accepted: true };
     }
@@ -123,7 +152,8 @@ async function respond(method: string, payload: any): Promise<any> {
       return { title: payload.title, seq: 0 };
     }
     case "session.fork": {
-      const source = sessions.get(payload.sessionId) ?? newSession();
+      const source = sessions.get(payload.sessionId);
+      if (!source) throw new Error("会话不存在");
       const child = newSession(source.agentPreset, source.umo);
       child.events = source.events.map((e, i) => ({ ...e, seq: i }));
       child.blank = source.blank;
@@ -172,8 +202,8 @@ async function respond(method: string, payload: any): Promise<any> {
     case "agentPreset.list":
       return {
         presets: [
-          { id: "butler", trust: "system", isDefault: true, name: "butler" },
-          { id: "muiceagent", trust: "system", isDefault: false, name: "muiceagent" },
+          { id: "butler", trust: "system", name: "butler" },
+          { id: "muiceagent", trust: "system", name: "muiceagent" },
         ],
         authorable: false,
         hasDocument: false,
@@ -187,20 +217,33 @@ async function respond(method: string, payload: any): Promise<any> {
         namespaces: [
           {
             ns: "maid",
-            schema: { type: "object", properties: {} },
+            schema: { type: "object", properties: {
+              allowed_agent_names: { description: "允许调度的 Agent 白名单", hint: "以逗号分隔。", type: "list" },
+              hide_native_tools: { description: "隐藏主模型原生工具", hint: "仅保留女仆调度工具。", type: "bool" },
+              hide_transfer_tools: { description: "隐藏 transfer_to_* 工具", type: "bool" },
+              include_raw_user_input: { description: "附带用户原话", type: "bool" },
+              log_raw_llm_io: { description: "记录完整 LLM 原始请求/响应", hint: "可能包含敏感信息。", type: "bool" },
+              dispatch_prompt_template: { description: "管家调度提示模板", hint: "支持调度占位符。", type: "string" },
+              dispatch_session_mode: { description: "聊天任务执行环境", hint: "控制台任务始终使用隔离 sandbox。", type: "string", options: ["foreground", "background"] },
+              memory_agent_names: { description: "启用记忆的 Agent 名称", type: "list" },
+              max_active_per_umo: { description: "每个会话最大并发活跃 run 数", type: "int" },
+              max_active_global: { description: "全局最大并发活跃 run 数", type: "int" },
+              retention_days: { description: "runtime 轨迹保留天数", type: "int" },
+              max_turn_seconds: { description: "单 turn 看门狗超时（秒）", type: "int" },
+            } },
             value: {
-              default_agent_name: "butler",
-              allowed_agent_names: [],
+              allowed_agent_names: ["butler", "muiceagent"],
               hide_native_tools: true,
               hide_transfer_tools: true,
               include_raw_user_input: false,
               log_raw_llm_io: false,
               dispatch_prompt_template: "",
-              foreground_timeout_seconds: 50,
+              dispatch_session_mode: "background",
               memory_agent_names: [],
               max_active_per_umo: 5,
               max_active_global: 20,
               retention_days: 30,
+              max_turn_seconds: 1800,
             },
             applies: "live",
             secrets: [],
@@ -209,7 +252,11 @@ async function respond(method: string, payload: any): Promise<any> {
         ],
       };
     case "settings.update":
-      return { ok: true };
+      return respond("settings.describe", {}).then((view) => ({
+        ...view.namespaces[0],
+        value: { ...view.namespaces[0].value, ...(payload.patch ?? {}) },
+        revision: view.namespaces[0].revision + 1,
+      }));
     case "host.describe":
       return { version: "mock", cwd: "/mock", attachedSessions: 0, canOpenPath: false };
     default:
@@ -222,7 +269,11 @@ async function runMockTurn(session: MockSession, content: any[]) {
   session.running = true;
   session.blank = false;
   session.updatedAt = Date.now();
-  broadcast("host", { type: "host/session-status", sessionId: session.sessionId, running: true });
+  broadcast("host", {
+    type: "host/session-status", sessionId: session.sessionId, running: true,
+    executionMode: session.executionMode, sourceKind: session.sourceKind, agentId: session.agentId,
+    taskId: session.taskId, foregroundLease: session.foregroundLease, deliveryStatus: "sending",
+  });
   const turn = ++session.turns;
   append(session, "turn/start", { turn });
   append(session, "user/message", {
@@ -270,6 +321,10 @@ async function runMockTurn(session: MockSession, content: any[]) {
     },
     usage: { inputTokens: 120, outputTokens: answer.length },
   });
+  session.deliveryStatus = "sent";
+  append(session, "maid/delivery", {
+    turn, status: session.deliveryStatus, agentId: session.agentId, taskId: session.taskId,
+  });
   append(session, "step/end", { turn, step });
   append(session, "turn/end", { turn, reason: { kind: "completed" } });
   session.title = text.slice(0, 12) || "新任务";
@@ -283,7 +338,11 @@ async function runMockTurn(session: MockSession, content: any[]) {
 
   session.running = false;
   session.updatedAt = Date.now();
-  broadcast("host", { type: "host/session-status", sessionId: session.sessionId, running: false });
+  broadcast("host", {
+    type: "host/session-status", sessionId: session.sessionId, running: false,
+    executionMode: session.executionMode, sourceKind: session.sourceKind, agentId: session.agentId,
+    taskId: session.taskId, foregroundLease: session.foregroundLease, deliveryStatus: session.deliveryStatus,
+  });
 }
 
 function sleep(ms: number): Promise<void> {

@@ -215,6 +215,26 @@ class TestSessionsApi:
             await proxy.dispatch("wat.method", {})
 
     @sync
+    async def test_delete_completed_session(self, api):
+        proxy, store = api
+        sid = (await proxy.dispatch("session.create", {}))["sessionId"]
+
+        assert await proxy.dispatch("session.delete", {"sessionId": sid}) == {"deleted": True}
+        assert not store.exists(sid)
+        assert sid not in proxy.registry.drivers
+
+    @sync
+    async def test_delete_rejects_running_session(self, api):
+        proxy, store = api
+        sid = (await proxy.dispatch("session.create", {}))["sessionId"]
+        proxy.registry.attach(sid).running = True
+
+        with pytest.raises(rpc.RpcError, match="运行中的会话") as excinfo:
+            await proxy.dispatch("session.delete", {"sessionId": sid})
+        assert excinfo.value.code == "session-running"
+        assert store.exists(sid)
+
+    @sync
     async def test_settings_update(self, api):
         proxy, _ = api
         described = await proxy.dispatch("settings.describe", {})

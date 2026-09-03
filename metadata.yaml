@@ -1,5 +1,5 @@
 name: astrbot_plugin_maid_agent
-version: "3.0.0"
+version: "2.0.4"
 description: "大小姐+管家模式子代理系统：由五个 Claude 风格 maid 工具调度隔离或真实聊天会话的 subagent。"
 author: "Kalo"
 repo: "https://github.com/Kalospacer/astrbot_plugin_maid_agent"

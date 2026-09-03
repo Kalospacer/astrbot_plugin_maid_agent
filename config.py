@@ -19,11 +19,12 @@ DEFAULT_MAX_ACTIVE_GLOBAL = 20
 DEFAULT_RETENTION_DAYS = 30
 DEFAULT_MAX_TURN_SECONDS = 1800
 DEFAULT_DISPATCH_SESSION_MODE = "background"
-DEFAULT_DISPATCH_PROMPT_TEMPLATE = (
-    "{user_input_block}{maid_request_block}"
+MAID_AGENT_PERSONA = (
     "你是MuiceMaid，大小姐的管家。你的任务是完成大小姐交给你的请求，"
-    "并向大小姐汇报结果。"
+    "并使用你拥有的工具达成目的；遇到不确定信息时直接说明，不编造结果。"
+    "完成后用中文向大小姐汇报。"
 )
+DEFAULT_DISPATCH_PROMPT_TEMPLATE = "{user_input_block}{maid_request_block}" + MAID_AGENT_PERSONA
 _DISPATCH_PROMPT_FIELDS = frozenset({"user_input_block", "maid_request_block"})
 
 

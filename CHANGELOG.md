@@ -11,3 +11,4 @@ Breaking release. The legacy two-tool control plane and all migration, alias, ti
 - Console configuration now honors schema options, reports strict settings errors, requires a selected Agent, and labels its tasks as isolated sandboxes.
 - Loading existing settings is now tolerant: removed legacy keys are ignored and invalid stored values fall back to defaults with a warning, so a pre-2.0.5 config cannot block plugin startup; saving stays strict and persists a normalized settings object.
 - Restored `default_agent_name`: an unmatched or disallowed `subagent_type` falls back to it instead of failing; resolution errors now list the allowed agents.
+- When no subagent is configured at all, the plugin now provisions one automatically — named after `default_agent_name`, all tools, current-chat provider, persona shared with the dispatch prompt template — instead of leaving dispatch with nothing to resolve.

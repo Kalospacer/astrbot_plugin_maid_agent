@@ -2,15 +2,13 @@
 
 from __future__ import annotations
 
-import logging
 from collections.abc import Mapping
 from dataclasses import dataclass
 from string import Formatter
 from typing import Any
 
 from .constants import MISTRESS_REQUEST_BLOCK_LABEL, USER_INPUT_BLOCK_LABEL
-
-logger = logging.getLogger("astrbot_plugin_maid_agent.config")
+from .harness._log import logger
 
 DEFAULT_ALLOWED_AGENT_NAMES = ("butler",)
 DEFAULT_MAID_AGENT_NAME = "butler"
@@ -175,8 +173,9 @@ def load_maid_mode_config(config: Mapping[str, Any] | None = None, *, strict: bo
         memory = _tolerant_names(cfg, "memory_agent_names", (), allow_empty=True)
         unknown_memory_agents = sorted(set(memory) - set(allowed))
         if unknown_memory_agents:
-            logger.warning("[maid] memory_agent_names 含未允许的 agent，已清空: %s", ", ".join(unknown_memory_agents))
-            memory = ()
+            logger.warning("[maid] memory_agent_names 含未允许的 agent，已忽略: %s", ", ".join(unknown_memory_agents))
+            allowed_casefolded = {name.casefold() for name in allowed}
+            memory = tuple(name for name in memory if name.casefold() in allowed_casefolded)
         return MaidModeConfig(
             allowed_agent_names=allowed,
             default_agent_name=default_name,

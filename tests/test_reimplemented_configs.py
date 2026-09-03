@@ -47,6 +47,36 @@ def test_policy_does_not_mutate_unrelated_toolset():
     assert _names(tools) == {"send_message_to_user", "web_search"}
 
 
+def test_legacy_keys_and_invalid_stored_values_load_with_defaults():
+    cfg = load_maid_mode_config(
+        {
+            "default_agent_name": "butler",
+            "foreground_timeout_seconds": 50,
+            "resume_session_id": "x",
+            "allowed_agent_names": None,
+            "hide_native_tools": "true",
+            "max_active_per_umo": 0,
+            "memory_agent_names": "butler",
+            "dispatch_session_mode": "eventual",
+            "dispatch_prompt_template": "{broken}",
+        },
+        strict=False,
+    )
+    assert cfg.allowed_agent_names == ("butler",)
+    assert cfg.hide_native_tools is True
+    assert cfg.max_active_per_umo == 5
+    assert cfg.memory_agent_names == ()
+    assert cfg.dispatch_session_mode == "background"
+    assert cfg.dispatch_prompt_template
+
+
+def test_strict_mode_rejects_unknown_enum_but_tolerant_mode_defaults_it():
+    with pytest.raises(ConfigValidationError):
+        load_maid_mode_config({"dispatch_session_mode": "eventual"})
+    cfg = load_maid_mode_config({"dispatch_session_mode": "eventual"}, strict=False)
+    assert cfg.dispatch_session_mode == "background"
+
+
 @pytest.mark.parametrize(
     ("patch", "field"),
     [

@@ -1,191 +1,76 @@
-"""重接后配置的行为测试：主模型工具可见性策略、原话开关、LLM 原始请求日志。
-
-覆盖 2.0 重写时被架空、现已重新实现的四个配置项：
-- ``hide_native_tools`` / ``hide_transfer_tools`` → ``apply_main_tool_policy``
-- ``include_raw_user_input`` → ``render_dispatch_prompt``
-- ``log_raw_llm_io`` → ``harness._log`` 的 DEBUG dump 助手
-"""
+"""Strict plugin configuration and main-tool visibility tests."""
 
 from __future__ import annotations
 
-from astrbot_plugin_maid_agent.config import render_dispatch_prompt
-from astrbot_plugin_maid_agent.constants import CALL_MAID_TOOL_NAME, MAID_TASK_TOOL_NAME
+import pytest
+
+from astrbot_plugin_maid_agent.config import ConfigValidationError, load_maid_mode_config, render_dispatch_prompt
+from astrbot_plugin_maid_agent.constants import MAID_TOOL_NAMES
 from astrbot_plugin_maid_agent.toolset_adapter import apply_main_tool_policy
 
-from astrbot.core.agent.tool import FunctionTool, ToolSet
+
+class _Tool:
+    def __init__(self, name: str):
+        self.name = name
 
 
-def _tool(name: str) -> FunctionTool:
-    return FunctionTool(
-        name=name,
-        description="",
-        parameters={"type": "object", "properties": {}},
-    )
+class _Toolset:
+    def __init__(self, *names: str):
+        self.tools = [_Tool(name) for name in names]
+
+    def get_tool(self, name: str):
+        return next((tool for tool in self.tools if tool.name == name), None)
+
+    def remove_tool(self, name: str):
+        self.tools = [tool for tool in self.tools if tool.name != name]
 
 
-def _toolset(*names: str) -> ToolSet:
-    toolset = ToolSet()
-    for name in names:
-        toolset.add_tool(_tool(name))
-    return toolset
-
-
-def _names(toolset: ToolSet) -> set[str]:
+def _names(toolset: _Toolset) -> set[str]:
     return {tool.name for tool in toolset.tools}
 
 
-class TestApplyMainToolPolicy:
-    def test_both_off_unchanged(self):
-        toolset = _toolset("send_message_to_user", CALL_MAID_TOOL_NAME, "transfer_to_butler")
-        apply_main_tool_policy(
-            toolset,
-            hide_native_tools=False,
-            hide_transfer_tools=False,
-        )
-        assert _names(toolset) == {
-            "send_message_to_user",
-            CALL_MAID_TOOL_NAME,
-            "transfer_to_butler",
-        }
-
-    def test_hide_native_keeps_only_maid_tools(self):
-        toolset = _toolset(
-            "send_message_to_user",
-            CALL_MAID_TOOL_NAME,
-            MAID_TASK_TOOL_NAME,
-            "transfer_to_butler",
-            "web_search",
-        )
-        apply_main_tool_policy(
-            toolset,
-            hide_native_tools=True,
-            hide_transfer_tools=True,
-        )
-        assert _names(toolset) == {CALL_MAID_TOOL_NAME, MAID_TASK_TOOL_NAME}
-
-    def test_hide_transfer_only_when_native_off(self):
-        toolset = _toolset(
-            "send_message_to_user",
-            CALL_MAID_TOOL_NAME,
-            "transfer_to_butler",
-            "transfer_to_researcher",
-            "web_search",
-        )
-        apply_main_tool_policy(
-            toolset,
-            hide_native_tools=False,
-            hide_transfer_tools=True,
-        )
-        assert _names(toolset) == {"send_message_to_user", CALL_MAID_TOOL_NAME, "web_search"}
-
-    def test_guard_no_call_maid_means_no_change(self):
-        # 工具集里没有 call_maid（第三方 runner 自行组装的请求）时绝不动它
-        toolset = _toolset("send_message_to_user", "web_search")
-        apply_main_tool_policy(
-            toolset,
-            hide_native_tools=True,
-            hide_transfer_tools=False,
-        )
-        assert _names(toolset) == {"send_message_to_user", "web_search"}
-
-    def test_none_input(self):
-        assert (
-            apply_main_tool_policy(
-                None,
-                hide_native_tools=True,
-                hide_transfer_tools=False,
-            )
-            is None
-        )
+def test_hide_native_keeps_exactly_five_maid_tools():
+    tools = _Toolset("send_message_to_user", *MAID_TOOL_NAMES, "transfer_to_butler", "web_search")
+    apply_main_tool_policy(tools, hide_native_tools=True, hide_transfer_tools=True)
+    assert _names(tools) == set(MAID_TOOL_NAMES)
 
 
-class TestRenderDispatchPrompt:
-    def test_include_raw_user_input(self):
-        prompt = render_dispatch_prompt(
-            "{user_input_block}{maid_request_block}请办妥",
-            true_user_input="帮我看看今天天气",
-            request_text="查一下今天的天气",
-            include_raw_user_input=True,
-        )
-        assert "【对方原话】" in prompt
-        assert "帮我看看今天天气" in prompt
-        assert "【大小姐请求】" in prompt
-        assert "查一下今天的天气" in prompt
-        assert prompt.endswith("请办妥")
-
-    def test_exclude_raw_user_input(self):
-        prompt = render_dispatch_prompt(
-            "{user_input_block}{maid_request_block}请办妥",
-            true_user_input="帮我看看今天天气",
-            request_text="查一下今天的天气",
-            include_raw_user_input=False,
-        )
-        assert "对方原话" not in prompt
-        assert "帮我看看今天天气" not in prompt
-        assert "查一下今天的天气" in prompt
-
-    def test_empty_user_input_never_adds_block(self):
-        prompt = render_dispatch_prompt(
-            "{user_input_block}{maid_request_block}请办妥",
-            true_user_input="   ",
-            request_text="x",
-            include_raw_user_input=True,
-        )
-        assert "对方原话" not in prompt
-
-    def test_invalid_template_falls_back_to_default(self):
-        prompt = render_dispatch_prompt(
-            "{broken",  # 无法解析的模板 → 回退默认
-            true_user_input="帮我看看今天天气",
-            request_text="查一下今天的天气",
-            include_raw_user_input=True,
-        )
-        assert "【对方原话】" in prompt
-        assert "【大小姐请求】" in prompt
+def test_native_visible_keeps_maid_tools_and_removes_transfer_tools():
+    tools = _Toolset("send_message_to_user", *MAID_TOOL_NAMES, "transfer_to_butler", "web_search")
+    apply_main_tool_policy(tools, hide_native_tools=False, hide_transfer_tools=True)
+    assert _names(tools) == {"send_message_to_user", *MAID_TOOL_NAMES, "web_search"}
 
 
-class TestRawLlmDump:
-    def test_dump_request_and_output(self, monkeypatch):
-        from astrbot_plugin_maid_agent.harness import _log as raw_log
+def test_policy_does_not_mutate_unrelated_toolset():
+    tools = _Toolset("send_message_to_user", "web_search")
+    apply_main_tool_policy(tools, hide_native_tools=True, hide_transfer_tools=False)
+    assert _names(tools) == {"send_message_to_user", "web_search"}
 
-        calls: list[tuple] = []
 
-        class _FakeLogger:
-            def debug(self, *args, **_kwargs):
-                calls.append(args)
+@pytest.mark.parametrize(
+    ("patch", "field"),
+    [
+        ({"allowed_agent_names": []}, "allowed_agent_names"),
+        ({"hide_native_tools": "true"}, "hide_native_tools"),
+        ({"dispatch_session_mode": "eventual"}, "dispatch_session_mode"),
+        ({"max_active_per_umo": 0}, "max_active_per_umo"),
+        ({"dispatch_prompt_template": "{unknown}"}, "dispatch_prompt_template"),
+        ({"memory_agent_names": ["other"]}, "memory_agent_names"),
+    ],
+)
+def test_invalid_configuration_is_rejected_without_repair(patch, field):
+    with pytest.raises(ConfigValidationError) as excinfo:
+        load_maid_mode_config(patch)
+    assert field in excinfo.value.errors
 
-        monkeypatch.setattr(raw_log, "logger", _FakeLogger())
 
-        class _Req:
-            prompt = "帮我查天气"
-            system_prompt = "你是大小姐的管家"
-            contexts = [{"role": "user", "content": "帮我看看今天天气"}]
-            func_tool = None
+def test_valid_configuration_is_not_coerced_or_given_a_default_agent():
+    cfg = load_maid_mode_config({"allowed_agent_names": ["worker"], "dispatch_session_mode": "foreground"})
+    assert cfg.allowed_agent_names == ("worker",)
+    assert not hasattr(cfg, "default_agent_name")
+    assert cfg.dispatch_session_mode == "foreground"
 
-        raw_log.dump_raw_llm_request(_Req(), source="maid")
-        raw_log.dump_raw_llm_output("今天晴，28 度", source="maid")
 
-        assert len(calls) == 2
-        assert "原始请求" in calls[0][0]
-        # 参数顺序: fmt, source, prompt, system_prompt, contexts, tools
-        assert calls[0][1] == "maid"
-        assert calls[0][2] == "帮我查天气"
-        assert calls[0][3] == "你是大小姐的管家"
-        assert "模型输出" in calls[1][0]
-        assert calls[1][1] == "maid"
-        assert calls[1][2] == "今天晴，28 度"
-
-    def test_dump_tolerates_missing_attrs(self, monkeypatch):
-        from astrbot_plugin_maid_agent.harness import _log as raw_log
-
-        calls: list[tuple] = []
-
-        class _FakeLogger:
-            def debug(self, *args, **_kwargs):
-                calls.append(args)
-
-        monkeypatch.setattr(raw_log, "logger", _FakeLogger())
-
-        raw_log.dump_raw_llm_request(None, source="main")
-        assert len(calls) == 1
-        assert "原始请求" in calls[0][0]
+def test_prompt_template_errors_at_render_time_instead_of_falling_back():
+    with pytest.raises(ConfigValidationError):
+        render_dispatch_prompt("{invalid}", true_user_input="u", request_text="p", include_raw_user_input=True)

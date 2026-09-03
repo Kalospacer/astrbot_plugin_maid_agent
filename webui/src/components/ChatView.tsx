@@ -21,6 +21,7 @@ import * as app from "@/store/app";
 import { getSnapshot } from "@/store/app";
 import { EMPTY_FOLD, type ChatNode, type ToolNode } from "@/store/conversation";
 import { formatMessageClock, formatRunDuration } from "@/ui/chrome/format";
+import { deliveryStatusLabel, sessionRuntimeBadge, sessionRuntimeDescription } from "@/ui/chrome/session-runtime";
 import { toolRowModel, type ToolRowVariant } from "@/ui/chrome/tool-row-model";
 import { TurnRail } from "@/components/TurnRail";
 import { StatPanel } from "@/components/StatPanel";
@@ -209,6 +210,7 @@ export function ChatView() {
   return (
     <TurnOpenContext.Provider value={processCtx}>
     <div className="chat-inner" ref={innerRef}>
+      <SessionRuntimeNotice summary={session.summary} />
       <TurnRail nodes={folded.nodes} scrollerQuery="[data-conversation-scroll]" />
       {session.hasMore && (
         <button
@@ -313,6 +315,9 @@ const ChatNodeView = memo(function ChatNodeView(props: {
   if (node.kind === "usage") {
     return <UsageLine usage={node.usage} />;
   }
+  if (node.kind === "delivery") {
+    return <DeliveryTrace node={node} hidden={Boolean(node.inProcess) && !process.isOpen(node.turn)} />;
+  }
   // 折叠条节点：位置在轮首（用户消息下方、过程行之前，DSH TurnProcess 几何）。
   // 有过程行时渲染折叠按钮；有终态（失败/中断/截断）时在其下渲染终态行。
   const reasonKind = node.reason?.kind ?? "completed";
@@ -320,6 +325,7 @@ const ChatNodeView = memo(function ChatNodeView(props: {
   const labels: string[] = [];
   if (node.toolCallCount > 0) labels.push(`${node.toolCallCount} 次工具调用`);
   if (node.messageCount > 0) labels.push(`${node.messageCount} 条消息`);
+  if (node.deliveryCount > 0) labels.push(`${node.deliveryCount} 次投递`);
   return (
     <>
       {labels.length > 0 ? (
@@ -372,6 +378,33 @@ const ChatNodeView = memo(function ChatNodeView(props: {
     </>
   );
 });
+
+function SessionRuntimeNotice(props: { summary: import("@/types").SessionSummary }) {
+  const description = sessionRuntimeDescription(props.summary);
+  const badge = sessionRuntimeBadge(props.summary);
+  const delivery = deliveryStatusLabel(props.summary.deliveryStatus);
+  if (!description) return null;
+  return (
+    <div className="session-runtime-notice" role="status">
+      {badge ? <span className="session-runtime-badge">{badge}</span> : null}
+      <span>{description}</span>
+      {props.summary.backgroundReason ? <span>· {props.summary.backgroundReason}</span> : null}
+      {delivery ? <span>· 投递{delivery}</span> : null}
+    </div>
+  );
+}
+
+function DeliveryTrace(props: { node: Extract<ChatNode, { kind: "delivery" }>; hidden: boolean }) {
+  const label = deliveryStatusLabel(props.node.status) ?? "投递状态已更新";
+  return (
+    <div className="delivery-trace" hidden={props.hidden} role="status">
+      <StateDot state={props.node.status === "failed" ? "error" : props.node.status === "sent" ? "done" : "ongoing"} />
+      <span>结果投递：{label}</span>
+      {props.node.agentId ? <code>Agent {props.node.agentId}</code> : null}
+      {props.node.taskId ? <code>任务 {props.node.taskId}</code> : null}
+    </div>
+  );
+}
 
 function UserImages(props: { sessionId: string; refs: { attachmentId: string }[] }) {
   if (!props.sessionId || props.refs.length === 0) return null;

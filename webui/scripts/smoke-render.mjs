@@ -2,6 +2,8 @@
 // 能完整渲染首屏（hero 阶段），并模拟一次 mock 会话流式回合。
 // 用法: node scripts/smoke-render.mjs
 import { JSDOM } from "jsdom";
+import { resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
 
 const dom = new JSDOM(`<!doctype html><html><body><div id="root"></div></body></html>`, {
@@ -77,9 +79,18 @@ function broadcast(kind, payload) {
   }
 }
 
-function newSession(umo = "dashboard:FriendMessage:dashboard") {
+function newSession(agentPreset) {
   const sessionId = Array.from({ length: 32 }, () => Math.floor(Math.random() * 16).toString(16)).join("");
-  const s = { sessionId, updatedAt: Date.now(), running: false, blank: true, events: [], umo, title: null };
+  const umo = "dashboard:FriendMessage:dashboard";
+  const sourceKind = "dashboard";
+  const executionMode = "background";
+  const s = {
+    sessionId, updatedAt: Date.now(), running: false, blank: true, events: [], umo, title: null,
+    sourceKind, executionMode, backgroundReason: "dashboard-isolated-sandbox",
+    agentId: `agent_${sessionId.slice(0, 8)}`,
+    taskId: `task_${sessionId.slice(0, 8)}`,
+    deliveryStatus: "pending",
+  };
   sessions.set(sessionId, s);
   return s;
 }
@@ -106,6 +117,9 @@ function summary(s) {
   return {
     sessionId: s.sessionId, updatedAt: s.updatedAt, running: s.running, blank: s.blank,
     agentPreset: "butler", umo: s.umo, projections: projections(s),
+    sourceKind: s.sourceKind, executionMode: s.executionMode, agentId: s.agentId,
+    taskId: s.taskId, foregroundLease: s.foregroundLease, backgroundReason: s.backgroundReason,
+    deliveryStatus: s.deliveryStatus,
   };
 }
 
@@ -114,9 +128,10 @@ async function respond(method, payload) {
     case "session.list":
       return { items: [...sessions.values()].map(summary) };
     case "session.create": {
-      const s = newSession(String(payload.umo ?? ""));
-      broadcast("host", { type: "host/session-added", sessionId: s.sessionId });
-      return { sessionId: s.sessionId, agentPreset: "butler" };
+      if (typeof payload.agentPreset !== "string" || !payload.agentPreset.trim()) throw new Error("控制台任务必须显式选择 Agent。");
+      const s = newSession(payload.agentPreset);
+      broadcast("host", { type: "host/session-added", sessionId: s.sessionId, blank: true, agentPreset: payload.agentPreset, executionMode: s.executionMode, sourceKind: s.sourceKind, backgroundReason: s.backgroundReason });
+      return { sessionId: s.sessionId, agentPreset: payload.agentPreset };
     }
     case "session.history": {
       const s = sessions.get(payload.sessionId);
@@ -130,9 +145,17 @@ async function respond(method, payload) {
     case "session.cancel": return { accepted: true };
     case "session.models": return { current: { provider: "mock", model: "mock-1", override: false }, providers: [] };
     case "agentPreset.list":
-      return { presets: [{ id: "butler", trust: "system", isDefault: true, name: "butler" }], authorable: false };
+      return { presets: [{ id: "butler", trust: "system", name: "butler" }], authorable: false };
     case "settings.describe":
-      return { namespaces: [{ ns: "maid", schema: { type: "object", properties: {} }, value: {}, applies: "live", secrets: [], revision: 1 }] };
+      return {
+        namespaces: [{
+          ns: "maid",
+          schema: { type: "object", properties: {
+            dispatch_session_mode: { description: "聊天任务执行环境", hint: "控制台任务始终使用隔离 sandbox。", type: "string", options: ["foreground", "background"] },
+          } },
+          value: { dispatch_session_mode: "background" }, applies: "live", secrets: [], revision: 1,
+        }],
+      };
     default:
       return {};
   }
@@ -178,6 +201,10 @@ async function runMockTurn(session) {
       source: { kind: "tool", callId: "call_1" },
     },
   });
+  session.deliveryStatus = "sent";
+  append(session, "maid/delivery", {
+    turn: 1, status: session.deliveryStatus, agentId: session.agentId, taskId: session.taskId,
+  });
   append(session, "step/end", { turn: 1, step: 2 });
   append(session, "turn/end", { turn: 1, reason: { kind: "completed" } });
   session.running = false;
@@ -215,7 +242,8 @@ const errors = [];
 window.addEventListener("error", (e) => errors.push(String(e.error ?? e.message)));
 process.on("unhandledRejection", (e) => errors.push(`unhandledRejection: ${e?.stack ?? e}`));
 
-await import("../../pages/console/assets/console.js");
+const buildDir = resolve(process.env.MAID_CONSOLE_BUILD_DIR ?? "../pages/console");
+await import(pathToFileURL(resolve(buildDir, "assets/console.js")).href);
 await delay(800);
 
 const rootText = document.getElementById("root").textContent;
@@ -223,6 +251,28 @@ console.log("== 首屏（hero）文本 ==");
 console.log(rootText.slice(0, 200));
 const heroOk = rootText.includes("派一个新任务");
 console.log(heroOk ? "PASS hero 渲染" : "FAIL hero 未渲染");
+
+// 配置对象直接以 key -> metadata 形式下发：字符串 options 必须成为原生 select，hint 必须可见。
+const settingsButton = document.querySelector('button[aria-label="设置"]');
+settingsButton?.dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+await delay(150);
+const settingsSelect = document.querySelector("select#setting-input-dispatch_session_mode");
+const settingsOk =
+  settingsSelect?.getAttribute("aria-describedby") === "setting-hint-dispatch_session_mode" &&
+  settingsSelect.querySelectorAll("option").length === 2 &&
+  document.getElementById("root").textContent.includes("控制台任务始终使用隔离 sandbox。");
+console.log(`${settingsOk ? "PASS" : "FAIL"} 配置选项与提示`);
+window.dispatchEvent(new window.KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+await delay(50);
+
+// Console tasks must be explicitly assigned to an Agent before sending.
+const presetButton = document.querySelector('button[aria-label="选择代理预设"]');
+presetButton?.dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+await delay(50);
+const butlerPreset = [...document.querySelectorAll('button[role="menuitem"]')]
+  .find((button) => button.textContent?.includes("butler"));
+butlerPreset?.dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+await delay(50);
 
 // 模拟发送一条消息，走一遍流式回合
 const textarea = document.querySelector("textarea");
@@ -246,6 +296,7 @@ const checks = [
   ["工具行标题与摘要", afterText.includes("搜索") && afterText.includes("今天天气")],
   ["助手尾部操作行", afterText.includes("复制") || document.querySelector(".assistant-actions") !== null],
   ["用量 pill", afterText.includes("用量")],
+  ["控制台独立沙箱说明", afterText.includes("控制台会话 · 独立沙箱")],
 ];
 for (const [label, ok] of checks) console.log(`${ok ? "PASS" : "FAIL"} ${label}`);
 
@@ -256,6 +307,7 @@ console.log(`${collapsedOk ? "PASS" : "FAIL"} 完成后过程行收起`);
 
 let expandOk = false;
 let outputOk = false;
+let deliveryOk = false;
 const barBtn = document.querySelector(".turn-process");
 if (barBtn && toolRow) {
   barBtn.dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
@@ -267,9 +319,11 @@ if (barBtn && toolRow) {
     await delay(300);
     outputOk = document.getElementById("root").textContent.includes("晴，26 度，适合出门。");
   }
+  deliveryOk = document.getElementById("root").textContent.includes("结果投递：已发送");
 }
 console.log(`${expandOk ? "PASS" : "FAIL"} 折叠条展开过程行`);
 console.log(`${outputOk ? "PASS" : "FAIL"} 工具输出正文`);
+console.log(`${deliveryOk ? "PASS" : "FAIL"} 投递状态轨迹`);
 
 // Node/jsdom 中懒加载 chunk 的 URL 解析依赖浏览器环境（fetch http://localhost/...），
 // 属于测试环境限制而非应用缺陷——真实浏览器中这些 chunk 由 vite preview/插件页正常服务
@@ -288,10 +342,12 @@ if (runtimeErrors.length) {
 
 const allOk =
   heroOk &&
+  settingsOk &&
   checks.every(([, ok]) => ok) &&
   collapsedOk &&
   expandOk &&
   outputOk &&
+  deliveryOk &&
   runtimeErrors.length === 0;
 console.log(allOk ? "\nSMOKE OK" : "\nSMOKE FAILED");
 process.exit(allOk ? 0 : 1);

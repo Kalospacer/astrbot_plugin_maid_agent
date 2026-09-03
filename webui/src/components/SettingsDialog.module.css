@@ -163,6 +163,29 @@
   color: var(--maid-alias-label-secondary);
 }
 
+.hint {
+  color: var(--maid-alias-label-tertiary);
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.select {
+  box-sizing: border-box;
+  width: 100%;
+  height: 32px;
+  padding: 0 28px 0 8px;
+  border: 1px solid var(--maid-alias-border-l2);
+  border-radius: 8px;
+  outline: none;
+  background: var(--maid-alias-bg-layer-1);
+  color: var(--maid-alias-label-primary);
+  font: inherit;
+}
+
+.select:focus {
+  border-color: var(--maid-alias-brand-primary);
+}
+
 .checkRow {
   display: flex;
   align-items: center;

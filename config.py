@@ -1,6 +1,4 @@
-"""
-大小姐管家模式插件 - 配置读取
-"""
+"""大小姐管家模式插件的严格配置契约。"""
 
 from __future__ import annotations
 
@@ -9,51 +7,125 @@ from dataclasses import dataclass
 from string import Formatter
 from typing import Any
 
-from astrbot.api import logger
+from .constants import MISTRESS_REQUEST_BLOCK_LABEL, USER_INPUT_BLOCK_LABEL
 
-from .constants import (
-    DEFAULT_MAID_AGENT_NAME,
-    MISTRESS_REQUEST_BLOCK_LABEL,
-    USER_INPUT_BLOCK_LABEL,
-)
-
-DEFAULT_FOREGROUND_TIMEOUT_SECONDS = 50
+DEFAULT_ALLOWED_AGENT_NAMES = ("butler",)
 DEFAULT_MAX_ACTIVE_PER_UMO = 5
 DEFAULT_MAX_ACTIVE_GLOBAL = 20
 DEFAULT_RETENTION_DAYS = 30
 DEFAULT_MAX_TURN_SECONDS = 1800
+DEFAULT_DISPATCH_SESSION_MODE = "background"
 DEFAULT_DISPATCH_PROMPT_TEMPLATE = (
-    "{user_input_block}"
-    "{maid_request_block}"
-    "你是MuiceMaid，一个全能的管家AIagent助手，擅长从大小姐的话语中理解大小姐的意图，并提取出大小姐的需求主动完成大小姐的愿望。"
-    "你需要综合考虑大小姐和对方的对话，提取他们是否需要执行某些实际操作，并综合以上信息完成任务，请判断对方的需求，和大小姐的意图，"
-    "如果大小姐误解了对方的需求，你以对方的需求为准完成任务，如果大小姐拒绝了对方的请求，你应当停止工作并汇报结束，"
-    "如果大小姐和对方的需求一致，结合两者的需求准确完成任务。你的汇报对象是大小姐，不是对方。"
+    "{user_input_block}{maid_request_block}"
+    "你是MuiceMaid，一个全能的管家 AI agent 助手。综合大小姐和对方的需求完成任务，"
+    "并向大小姐汇报结果。"
 )
-
 _DISPATCH_PROMPT_FIELDS = frozenset({"user_input_block", "maid_request_block"})
-_warned_invalid_prompt_templates: set[str] = set()
 
 
-@dataclass(slots=True)
+class ConfigValidationError(ValueError):
+    """配置不符合公开契约，errors 使用字段名作为 key。"""
+
+    def __init__(self, errors: dict[str, str]):
+        self.errors = errors
+        super().__init__("; ".join(f"{key}: {message}" for key, message in errors.items()))
+
+
+@dataclass(slots=True, frozen=True)
 class MaidModeConfig:
-    default_agent_name: str = DEFAULT_MAID_AGENT_NAME
-    allowed_agent_names: list[str] | None = None
+    allowed_agent_names: tuple[str, ...] = DEFAULT_ALLOWED_AGENT_NAMES
     hide_native_tools: bool = True
     hide_transfer_tools: bool = True
     include_raw_user_input: bool = True
     log_raw_llm_io: bool = False
     dispatch_prompt_template: str = DEFAULT_DISPATCH_PROMPT_TEMPLATE
-    foreground_timeout_seconds: int = DEFAULT_FOREGROUND_TIMEOUT_SECONDS
-    memory_agent_names: list[str] | None = None
+    dispatch_session_mode: str = DEFAULT_DISPATCH_SESSION_MODE
+    memory_agent_names: tuple[str, ...] = ()
     max_active_per_umo: int = DEFAULT_MAX_ACTIVE_PER_UMO
     max_active_global: int = DEFAULT_MAX_ACTIVE_GLOBAL
     retention_days: int = DEFAULT_RETENTION_DAYS
     max_turn_seconds: int = DEFAULT_MAX_TURN_SECONDS
 
 
-def _render_default_dispatch_prompt(values: Mapping[str, str]) -> str:
-    return DEFAULT_DISPATCH_PROMPT_TEMPLATE.format_map(values).strip()
+def _safe_int(value: Any, default: int) -> int:
+    """AstrBot provider settings use loose values; plugin config never uses this helper."""
+    try:
+        if isinstance(value, bool):
+            return default
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _validate_template(template: Any) -> str:
+    if not isinstance(template, str) or not template.strip():
+        raise ConfigValidationError({"dispatch_prompt_template": "必须是非空字符串。"})
+    try:
+        fields = [field for _, field, _, _ in Formatter().parse(template) if field is not None]
+    except ValueError as exc:
+        raise ConfigValidationError({"dispatch_prompt_template": f"模板格式无效: {exc}"}) from exc
+    unknown = sorted(set(fields) - _DISPATCH_PROMPT_FIELDS)
+    if unknown:
+        raise ConfigValidationError(
+            {"dispatch_prompt_template": f"包含未知占位符: {', '.join(unknown)}"}
+        )
+    return template
+
+
+def _strict_names(value: Any, field: str, *, allow_empty: bool) -> tuple[str, ...]:
+    if not isinstance(value, (list, tuple)):
+        raise ConfigValidationError({field: "必须是字符串列表。"})
+    names = tuple(value)
+    if not allow_empty and not names:
+        raise ConfigValidationError({field: "不能为空。"})
+    if any(not isinstance(name, str) or not name.strip() for name in names):
+        raise ConfigValidationError({field: "每项必须是非空字符串。"})
+    if len({name.casefold() for name in names}) != len(names):
+        raise ConfigValidationError({field: "不能包含重复名称。"})
+    return tuple(name.strip() for name in names)
+
+
+def _strict_bool(cfg: Mapping[str, Any], key: str, default: bool) -> bool:
+    value = cfg.get(key, default)
+    if not isinstance(value, bool):
+        raise ConfigValidationError({key: "必须是布尔值。"})
+    return value
+
+
+def _strict_int(cfg: Mapping[str, Any], key: str, default: int, *, minimum: int) -> int:
+    value = cfg.get(key, default)
+    if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
+        raise ConfigValidationError({key: f"必须是不小于 {minimum} 的整数。"})
+    return value
+
+
+def load_maid_mode_config(config: Mapping[str, Any] | None = None) -> MaidModeConfig:
+    """Validate plugin settings without coercion, repair, aliases, or hidden fallbacks."""
+    cfg = dict(config or {})
+    allowed = _strict_names(cfg.get("allowed_agent_names", DEFAULT_ALLOWED_AGENT_NAMES), "allowed_agent_names", allow_empty=False)
+    memory = _strict_names(cfg.get("memory_agent_names", ()), "memory_agent_names", allow_empty=True)
+    unknown_memory_agents = sorted(set(memory) - set(allowed))
+    if unknown_memory_agents:
+        raise ConfigValidationError(
+            {"memory_agent_names": f"必须属于 allowed_agent_names: {', '.join(unknown_memory_agents)}"}
+        )
+    mode = cfg.get("dispatch_session_mode", DEFAULT_DISPATCH_SESSION_MODE)
+    if mode not in {"foreground", "background"}:
+        raise ConfigValidationError({"dispatch_session_mode": "必须是 foreground 或 background。"})
+    return MaidModeConfig(
+        allowed_agent_names=allowed,
+        hide_native_tools=_strict_bool(cfg, "hide_native_tools", True),
+        hide_transfer_tools=_strict_bool(cfg, "hide_transfer_tools", True),
+        include_raw_user_input=_strict_bool(cfg, "include_raw_user_input", True),
+        log_raw_llm_io=_strict_bool(cfg, "log_raw_llm_io", False),
+        dispatch_prompt_template=_validate_template(cfg.get("dispatch_prompt_template", DEFAULT_DISPATCH_PROMPT_TEMPLATE)),
+        dispatch_session_mode=mode,
+        memory_agent_names=memory,
+        max_active_per_umo=_strict_int(cfg, "max_active_per_umo", DEFAULT_MAX_ACTIVE_PER_UMO, minimum=1),
+        max_active_global=_strict_int(cfg, "max_active_global", DEFAULT_MAX_ACTIVE_GLOBAL, minimum=1),
+        retention_days=_strict_int(cfg, "retention_days", DEFAULT_RETENTION_DAYS, minimum=1),
+        max_turn_seconds=_strict_int(cfg, "max_turn_seconds", DEFAULT_MAX_TURN_SECONDS, minimum=0),
+    )
 
 
 def render_dispatch_prompt(
@@ -63,192 +135,15 @@ def render_dispatch_prompt(
     request_text: str,
     include_raw_user_input: bool,
 ) -> str:
-    """Render a configured dispatch prompt for the maid subagent.
-
-    Blocks: the mistress's natural-language request, plus the user's raw
-    input when ``include_raw_user_input`` is on (and the input is non-empty).
-
-    Unknown or malformed placeholders fall back to the default template so a
-    stale user configuration cannot turn an otherwise valid runtime run into
-    an immediate failure.
-    """
+    """Render an already-validated task prompt; invalid templates are errors, never repaired."""
+    validated = _validate_template(template)
+    request = request_text.strip()
+    if not request:
+        raise ValueError("prompt 不能为空。")
     user_input_block = ""
-    if include_raw_user_input and (true_user_input or "").strip():
+    if include_raw_user_input and true_user_input.strip():
         user_input_block = f"【{USER_INPUT_BLOCK_LABEL}】\n{true_user_input}\n\n"
-    maid_request_block = f"【{MISTRESS_REQUEST_BLOCK_LABEL}】\n{request_text}\n\n"
-    values = {
-        "user_input_block": user_input_block,
-        "maid_request_block": maid_request_block,
-    }
-    normalized_template = str(template or "")
-    if not normalized_template.strip():
-        return _render_default_dispatch_prompt(values)
-
-    try:
-        parsed_fields = [
-            field_name
-            for _, field_name, _, _ in Formatter().parse(normalized_template)
-            if field_name is not None
-        ]
-    except ValueError as exc:
-        if normalized_template not in _warned_invalid_prompt_templates:
-            _warned_invalid_prompt_templates.add(normalized_template)
-            logger.warning(
-                "[大小姐模式] dispatch_prompt_template 格式无效，已回退默认模板: %s",
-                exc,
-            )
-        return _render_default_dispatch_prompt(values)
-
-    unknown_fields = sorted(
-        {field_name for field_name in parsed_fields if field_name not in _DISPATCH_PROMPT_FIELDS}
-    )
-    if unknown_fields:
-        if normalized_template not in _warned_invalid_prompt_templates:
-            _warned_invalid_prompt_templates.add(normalized_template)
-            logger.warning(
-                "[大小姐模式] dispatch_prompt_template 包含未知占位符 %s，已回退默认模板。",
-                ", ".join(repr(field) for field in unknown_fields),
-            )
-        return _render_default_dispatch_prompt(values)
-
-    try:
-        return normalized_template.format_map(values).strip()
-    except (AttributeError, KeyError, TypeError, ValueError) as exc:
-        if normalized_template not in _warned_invalid_prompt_templates:
-            _warned_invalid_prompt_templates.add(normalized_template)
-            logger.warning(
-                "[大小姐模式] dispatch_prompt_template 渲染失败，已回退默认模板: %s",
-                exc,
-            )
-        return _render_default_dispatch_prompt(values)
-
-
-def _parse_bool(value: Any, default: bool) -> bool:
-    if isinstance(value, bool):
-        return value
-    if value is None:
-        return default
-    if isinstance(value, (int, float)):
-        return bool(value)
-    if isinstance(value, str):
-        normalized = value.strip().casefold()
-        if normalized in {"1", "true", "yes", "on"}:
-            return True
-        if normalized in {"0", "false", "no", "off", ""}:
-            return False
-    return default
-
-
-def _safe_int(value: Any, default: int) -> int:
-    try:
-        if isinstance(value, bool):
-            return default
-        return int(value)
-    except (TypeError, ValueError):
-        return default
-
-
-def load_maid_mode_config(config: Mapping[str, Any] | None = None) -> MaidModeConfig:
-    """从插件注入配置中读取 maid agent 配置。"""
-    cfg = dict(config or {})
-
-    default_agent_name = str(cfg.get("default_agent_name", DEFAULT_MAID_AGENT_NAME)).strip()
-    if not default_agent_name:
-        default_agent_name = DEFAULT_MAID_AGENT_NAME
-
-    allowed = cfg.get("allowed_agent_names", [default_agent_name])
-    if not isinstance(allowed, (list, tuple, set)):
-        allowed = [default_agent_name]
-    allowed_agent_names: list[str] = []
-    seen_agent_names: set[str] = set()
-    for item in allowed:
-        normalized = str(item).strip()
-        if not normalized:
-            continue
-        key = normalized.casefold()
-        if key in seen_agent_names:
-            continue
-        seen_agent_names.add(key)
-        allowed_agent_names.append(normalized)
-    if default_agent_name.casefold() not in seen_agent_names:
-        allowed_agent_names.append(default_agent_name)
-
-    hide_native_tools = _parse_bool(cfg.get("hide_native_tools", True), True)
-    hide_transfer_tools = _parse_bool(cfg.get("hide_transfer_tools", True), True)
-    include_raw_user_input = _parse_bool(cfg.get("include_raw_user_input", True), True)
-    log_raw_llm_io = _parse_bool(cfg.get("log_raw_llm_io", False), False)
-    dispatch_prompt_template = str(
-        cfg.get("dispatch_prompt_template", DEFAULT_DISPATCH_PROMPT_TEMPLATE)
-    )
-    if not dispatch_prompt_template.strip():
-        dispatch_prompt_template = DEFAULT_DISPATCH_PROMPT_TEMPLATE
-
-    foreground_timeout_seconds = _safe_int(
-        cfg.get("foreground_timeout_seconds", DEFAULT_FOREGROUND_TIMEOUT_SECONDS),
-        DEFAULT_FOREGROUND_TIMEOUT_SECONDS,
-    )
-    if not 1 <= foreground_timeout_seconds <= 55:
-        logger.warning(
-            "[大小姐模式] foreground_timeout_seconds=%s 越界，已重置为默认 %s",
-            foreground_timeout_seconds,
-            DEFAULT_FOREGROUND_TIMEOUT_SECONDS,
-        )
-        foreground_timeout_seconds = DEFAULT_FOREGROUND_TIMEOUT_SECONDS
-
-    max_active_per_umo = _safe_int(
-        cfg.get("max_active_per_umo", DEFAULT_MAX_ACTIVE_PER_UMO),
-        DEFAULT_MAX_ACTIVE_PER_UMO,
-    )
-    if max_active_per_umo <= 0:
-        max_active_per_umo = DEFAULT_MAX_ACTIVE_PER_UMO
-
-    max_active_global = _safe_int(
-        cfg.get("max_active_global", DEFAULT_MAX_ACTIVE_GLOBAL),
-        DEFAULT_MAX_ACTIVE_GLOBAL,
-    )
-    if max_active_global <= 0:
-        max_active_global = DEFAULT_MAX_ACTIVE_GLOBAL
-
-    retention_days = _safe_int(
-        cfg.get("retention_days", DEFAULT_RETENTION_DAYS),
-        DEFAULT_RETENTION_DAYS,
-    )
-    if retention_days < 0:
-        retention_days = DEFAULT_RETENTION_DAYS
-
-    max_turn_seconds = _safe_int(
-        cfg.get("max_turn_seconds", DEFAULT_MAX_TURN_SECONDS),
-        DEFAULT_MAX_TURN_SECONDS,
-    )
-    if max_turn_seconds < 0:
-        max_turn_seconds = DEFAULT_MAX_TURN_SECONDS
-
-    memory_agent_names_raw = cfg.get("memory_agent_names")
-    memory_agent_names: list[str] | None = None
-    if isinstance(memory_agent_names_raw, (list, tuple, set)):
-        seen: set[str] = set()
-        for item in memory_agent_names_raw:
-            normalized = str(item).strip()
-            if not normalized:
-                continue
-            key = normalized.casefold()
-            if key in seen:
-                continue
-            seen.add(key)
-            memory_agent_names = (memory_agent_names or []) + [normalized]
-
-    return MaidModeConfig(
-        default_agent_name=default_agent_name,
-        allowed_agent_names=allowed_agent_names,
-        hide_native_tools=hide_native_tools,
-        hide_transfer_tools=hide_transfer_tools,
-        include_raw_user_input=include_raw_user_input,
-        log_raw_llm_io=log_raw_llm_io,
-        dispatch_prompt_template=dispatch_prompt_template,
-        foreground_timeout_seconds=foreground_timeout_seconds,
-        memory_agent_names=memory_agent_names,
-        max_active_per_umo=max_active_per_umo,
-        max_active_global=max_active_global,
-        retention_days=retention_days,
-        max_turn_seconds=max_turn_seconds,
-    )
+    maid_request_block = f"【{MISTRESS_REQUEST_BLOCK_LABEL}】\n{request}\n\n"
+    return validated.format_map(
+        {"user_input_block": user_input_block, "maid_request_block": maid_request_block}
+    ).strip()

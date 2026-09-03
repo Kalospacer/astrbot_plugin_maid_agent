@@ -1,9 +1,6 @@
-"""
-大小姐管家模式插件 —— 事件溯源架构重写版（2.0）
-
-后端：RPC 信封 + seq 事件溯源会话日志 +
-投影 + events.mux/events.host SSE 流。聊天侧集成（五个 maid 控制工具、
-命令、通知投递、记忆）在新核心上实现。
+"""大小姐管家模式插件：RPC 信封 + seq 事件溯源会话日志 +
+投影 + events.mux/events.host SSE 流。聊天侧集成五个 maid 控制工具、
+命令、通知投递与记忆。
 """
 
 from __future__ import annotations
@@ -101,7 +98,7 @@ class _ConfigHolder:
 
 
 class MaidAgent(Star):
-    """大小姐管家模式插件（事件溯源架构）"""
+    """大小姐管家模式插件。"""
 
     def __init__(self, context, config: dict | None = None):
         super().__init__(context)
@@ -499,8 +496,8 @@ class MaidAgent(Star):
                 meta = self.store.log(resume_agent_id).load_meta()
                 if meta.get("sourceKind") != "chat" or meta.get("umo") != umo:
                     return self._json_outcome({"status": "error", "error": "agent_id 不属于当前聊天会话。"})
-        per_umo_cap = _safe_int(getattr(self.maid_mode_config, "max_active_per_umo", 5), 5)
-        global_cap = _safe_int(getattr(self.maid_mode_config, "max_active_global", 20), 20)
+        per_umo_cap = self.maid_mode_config.max_active_per_umo
+        global_cap = self.maid_mode_config.max_active_global
         if (
             self.registry.running_count_for_umo(umo) + batch_size > per_umo_cap
             or self.registry.running_count() + batch_size > global_cap

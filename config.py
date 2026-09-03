@@ -17,7 +17,7 @@ DEFAULT_MAX_TURN_SECONDS = 1800
 DEFAULT_DISPATCH_SESSION_MODE = "background"
 DEFAULT_DISPATCH_PROMPT_TEMPLATE = (
     "{user_input_block}{maid_request_block}"
-    "你是MuiceMaid，一个全能的管家 AI agent 助手。综合大小姐和对方的需求完成任务，"
+    "你是MuiceMaid，大小姐的管家。你的任务是完成大小姐交给你的请求，"
     "并向大小姐汇报结果。"
 )
 _DISPATCH_PROMPT_FIELDS = frozenset({"user_input_block", "maid_request_block"})

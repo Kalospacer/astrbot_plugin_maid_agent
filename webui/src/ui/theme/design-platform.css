@@ -2,7 +2,7 @@
 /* ==========================================================================
    Kimi 设计语言 · 静态调色板
    黑白为主、灰色承担层级，品牌蓝仅用于语义强调与数据可视化。
-   静态色不随主题变化，只定义一次（旧版在 light/dark 各重复了一份）。
+   静态色只定义一次，不随主题变化。
    ========================================================================== */
 
 :root {
@@ -165,7 +165,7 @@ body {
   --maid-alias-state-warn-tertiary: var(--maid-static-amber-100);
   --maid-alias-toast-bg: var(--maid-static-neutral-bluish-800);
   --maid-alias-tooltip-bg: var(--maid-static-neutral-bluish-850);
-  /* 用户气泡：中性灰而非品牌蓝染色（蓝色只留给语义强调） */
+  /* 用户气泡：中性灰，不用品牌蓝染色 */
   --maid-specific-bubble-highlight: var(--maid-static-neutral-bluish-150);
   --maid-specific-bubble: var(--maid-static-neutral-bluish-100);
   --maid-specific-input-major: var(--maid-static-neutral-bluish-00);

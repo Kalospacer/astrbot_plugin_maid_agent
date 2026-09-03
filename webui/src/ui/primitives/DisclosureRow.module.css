@@ -38,8 +38,7 @@ button.leading {
   cursor: pointer;
 }
 
-/* DSH 对齐：流行的行内字形以 14px 渲染在 16px 盒内（CSS 边覆盖 svg 自身尺寸）；
-   StateDot（svg 带 data-state）保持原样——它是状态记号，不是文本配件 */
+/* DSH 对齐：流行的行内字形以 14px 渲染在 16px 盒内；StateDot 是状态记号不是文本配件，保持原样 */
 .leading svg:not([data-state]) {
   width: 14px;
   height: 14px;

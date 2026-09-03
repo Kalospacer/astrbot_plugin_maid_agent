@@ -94,10 +94,12 @@ def test_invalid_configuration_is_rejected_without_repair(patch, field):
     assert field in excinfo.value.errors
 
 
-def test_valid_configuration_is_not_coerced_or_given_a_default_agent():
-    cfg = load_maid_mode_config({"allowed_agent_names": ["worker"], "dispatch_session_mode": "foreground"})
+def test_valid_configuration_is_not_coerced():
+    cfg = load_maid_mode_config(
+        {"allowed_agent_names": ["worker"], "default_agent_name": "worker", "dispatch_session_mode": "foreground"}
+    )
     assert cfg.allowed_agent_names == ("worker",)
-    assert not hasattr(cfg, "default_agent_name")
+    assert cfg.default_agent_name == "worker"
     assert cfg.dispatch_session_mode == "foreground"
 
 

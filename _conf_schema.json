@@ -5,6 +5,12 @@
     "type": "list",
     "default": ["butler"]
   },
+  "default_agent_name": {
+    "description": "默认回退 Agent",
+    "hint": "maid_agent 指定的名称不在 allowed_agent_names 内时，任务回退到该 subagent。必须属于白名单。",
+    "type": "string",
+    "default": "butler"
+  },
   "hide_native_tools": {
     "description": "隐藏主模型原生工具",
     "hint": "开启后，主模型只保留 maid_agent、maid_send_message、maid_list_agents、maid_task_output、maid_task_stop。关闭后维持 AstrBot 原有工具暴露策略。",

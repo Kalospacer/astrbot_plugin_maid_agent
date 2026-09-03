@@ -5,7 +5,7 @@
 ## 前提与配置
 
 - AstrBot `>=4.20.0`，且已启用至少一个 SubAgent。
-- `allowed_agent_names` 必须包含允许使用的 SubAgent 名称。每次创建任务都必须显式指定名称；没有默认 Agent，也不会回退到其他 Agent。
+- `allowed_agent_names` 包含可调度的 SubAgent 名称，不能为空。每次任务仍须显式指定名称；名称不在白名单或没有对应 subagent 时，任务回退到 `default_agent_name`（默认 `butler`）。
 - 保存配置时严格校验：类型、范围、名单或提示模板错误会被整单拒绝，并返回字段级错误，不会被静默修复。
 - 加载存量配置时容错：旧版本遗留的配置键会被忽略，无效的存量值回退到该键默认值并记录警告，不会导致插件无法加载。首次成功保存后，存储中的配置会被规范化为当前配置项。
 
@@ -41,6 +41,7 @@
 | 配置项 | 默认值 | 说明 |
 | --- | --- | --- |
 | `allowed_agent_names` | `[butler]` | 可调度的 SubAgent 白名单，不能为空。 |
+| `default_agent_name` | `butler` | 名称不匹配时回退的默认 Agent，须在白名单内。 |
 | `hide_native_tools` | `true` | 开启时主模型只暴露五个 maid 工具。 |
 | `hide_transfer_tools` | `true` | native 工具可见时隐藏 `transfer_to_*`。 |
 | `dispatch_session_mode` | `background` | 聊天派发使用真实 event 或隔离 sandbox。 |

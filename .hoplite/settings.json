@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "ports": {"preview": 3000, "additional": {}},
+  "scripts": {
+    "setup": {"enabled": true, "command": "command -v git-lfs >/dev/null || (apt-get update -qq && apt-get install -y git-lfs); cd webui && npm ci --no-audit --no-fund"},
+    "run": {"enabled": true, "command": "cd webui && npm run dev -- --host 0.0.0.0 --port 3000"},
+    "archive": {"enabled": true, "command": null},
+    "check": {"enabled": true, "command": null}
+  },
+  "mcpServers": []
+}

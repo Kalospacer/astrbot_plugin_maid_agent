@@ -12,6 +12,7 @@ import {
   IconPanelLeftOutline16,
   IconSearchOutline16,
   IconSettingsOutline16,
+  IconTrashOutline16,
   IconUserOutline16,
   Input,
   Menu,
@@ -527,6 +528,7 @@ function SessionRow(props: { item: SessionSummary; currentId: SessionId | undefi
   const { item, now } = props;
   const [menuOpen, setMenuOpen] = useState(false);
   const [renameOpen, setRenameOpen] = useState(false);
+  const [deleteOpen, setDeleteOpen] = useState(false);
   const selected = item.sessionId === props.currentId;
   const title = summaryTitle(item);
   const status = item.running ? "ongoing" : "done";
@@ -551,14 +553,22 @@ function SessionRow(props: { item: SessionSummary; currentId: SessionId | undefi
             items={[
               { id: "rename", label: "重命名", icon: <IconEditOutline16 /> },
               { id: "fork", label: "Fork", icon: <IconBranchOutline16 /> },
+              { type: "separator" as const, id: "delete-separator" },
+              {
+                id: "delete",
+                label: item.running ? "运行中无法删除" : "删除会话",
+                icon: <IconTrashOutline16 />,
+                danger: true,
+                disabled: item.running,
+              },
             ]}
             onSelect={(id) => {
               setMenuOpen(false);
               if (id === "rename") setRenameOpen(true);
               if (id === "fork") void app.forkSession(item.sessionId).catch(() => undefined);
+              if (id === "delete") setDeleteOpen(true);
             }}
             portal
-            closeOnPointerLeave
             anchor={
               <button
                 type="button"
@@ -566,7 +576,7 @@ function SessionRow(props: { item: SessionSummary; currentId: SessionId | undefi
                 aria-label={`会话操作：${title}`}
                 onClick={(e) => {
                   e.stopPropagation();
-                  setMenuOpen((v) => !v);
+                  setMenuOpen(true);
                 }}
               >
                 <IconEllipsisOutline16 />
@@ -603,7 +613,56 @@ function SessionRow(props: { item: SessionSummary; currentId: SessionId | undefi
         currentTitle={title}
         onClose={() => setRenameOpen(false)}
       />
+      <DeleteDialog
+        open={deleteOpen}
+        sessionId={item.sessionId}
+        title={title}
+        onClose={() => setDeleteOpen(false)}
+      />
     </>
+  );
+}
+
+function DeleteDialog(props: { open: boolean; sessionId: SessionId; title: string; onClose: () => void }) {
+  const [deleting, setDeleting] = useState(false);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    if (!props.open) return;
+    setDeleting(false);
+    setError("");
+  }, [props.open]);
+
+  const confirm = () => {
+    if (deleting) return;
+    setDeleting(true);
+    setError("");
+    app.deleteSession(props.sessionId).then(props.onClose).catch((reason: unknown) => {
+      setDeleting(false);
+      setError(reason instanceof Error ? reason.message : String(reason));
+    });
+  };
+
+  return (
+    <Modal
+      open={props.open}
+      onClose={() => { if (!deleting) props.onClose(); }}
+      closeLabel="关闭"
+      title="删除会话"
+      footer={
+        <>
+          <Button variant="outline" disabled={deleting} onClick={props.onClose}>取消</Button>
+          <Button variant="primary" disabled={deleting} onClick={confirm}>
+            {deleting ? "删除中…" : "删除"}
+          </Button>
+        </>
+      }
+    >
+      <p style={{ margin: 0, lineHeight: 1.6 }}>
+        要删除“{props.title}”吗？该会话及其附件将无法恢复。
+      </p>
+      {error !== "" && <div role="alert" style={{ color: "var(--maid-alias-state-danger-label, #c00)", fontSize: 12.5, marginTop: 8 }}>{error}</div>}
+    </Modal>
   );
 }
 

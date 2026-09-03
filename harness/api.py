@@ -57,6 +57,7 @@ class ApiProxy:
             "session.selectModel": self.session_select_model,
             "session.rename": self.session_rename,
             "session.fork": self.session_fork,
+            "session.delete": self.session_delete,
             "session.prompt": self.session_prompt,
             "session.attachment": self.session_attachment,
             "session.updateQueue": self.session_update_queue,
@@ -249,6 +250,21 @@ class ApiProxy:
             driver.append_title(title, "user")
         log.update_meta(pinnedTitle=title)
         return {"title": title, "seq": self.store.log(session_id).last_seq}
+
+    async def session_delete(self, payload: dict) -> dict:
+        session_id = str(payload.get("sessionId") or "")
+        self._require_session(session_id)
+        driver = self.registry.drivers.get(session_id)
+        if driver is not None and driver.running:
+            raise RpcError(
+                "session-running",
+                "运行中的会话不能删除，请先停止任务。",
+                {"sessionId": session_id},
+            )
+        self.store.delete_session(session_id)
+        self.registry.drivers.pop(session_id, None)
+        self.registry.publish_host_frame(c.frame_host_session_removed(session_id))
+        return {"deleted": True}
 
     async def session_fork(self, payload: dict) -> dict:
         session_id = str(payload.get("sessionId") or "")

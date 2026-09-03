@@ -24,6 +24,18 @@
   line-height: 18px;
 }
 
+.error {
+  width: 100%;
+  max-width: var(--maid-composer-card-max-width);
+  margin-bottom: 6px;
+  padding: 4px 8px;
+  border-radius: 8px;
+  background: var(--maid-alias-interactive-bg-hover-danger);
+  color: var(--maid-alias-state-danger-label, #c00);
+  font-size: 12px;
+  line-height: 18px;
+}
+
 .card {
   box-sizing: border-box;
   position: relative;

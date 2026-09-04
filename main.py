@@ -55,7 +55,7 @@ from .katex_fonts import materialize_katex_fonts
 from .maid_dispatcher import ensure_default_subagent
 from .toolset_adapter import apply_main_tool_policy
 
-__version__ = "2.0.62"
+__version__ = "2.0.63"
 
 _SETTINGS_SCHEMA_CACHE: dict | None = None
 
@@ -598,12 +598,16 @@ class MaidAgent(Star):
         task_id = uuid.uuid4().hex
         async with driver.log.lock:
             driver.log.append("maid/task", {"taskId": task_id, "dispatchId": item["dispatch_id"]})
+        # 续派（resume_agent_id）会复用上一轮跑完的会话，投递相关的三个字段
+        # 必须一起归零：只清 notified 的话，claim_delivery 还会看到上一轮留下的
+        # deliveryClaimed=True，本轮的终态通知就被当成重复转述直接跳过了。
         driver.log.update_meta(
             activeTaskId=task_id,
             activeDispatchId=item["dispatch_id"],
             identity=identity,
             notify=True,
             notified=False,
+            deliveryClaimed=False,
             deliveryStatus="pending",
         )
         driver.enqueue(c.user_message(content), run_context={"task_id": task_id})

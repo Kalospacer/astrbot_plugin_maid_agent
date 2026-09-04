@@ -1,5 +1,11 @@
 # Changelog
 
+## 2.0.63 - 2026-09-04
+
+### 修复
+
+- **续派同一个管家时，第二轮的汇报没人转达**。`resume_agent_id` 复用上一轮跑完的会话，派发处的 `update_meta` 清了 `notified` 和 `deliveryStatus`，却漏了 `deliveryClaimed`。于是第二轮跑完，`_on_turn_terminal` 过得了 `notified` 那道门，却在 `claim_delivery()` 上被上一轮留下的 `deliveryClaimed=True` 判成重复转述，通知被静静跳过——任务其实早就完成了，大小姐要等用户主动问才去读。现在三个投递字段一起归零。
+
 ## 2.0.62 - 2026-09-04
 
 破坏性改动：删掉前台/后台执行模式，派发一律非阻塞，管家干活时会自己在聊天里说话。

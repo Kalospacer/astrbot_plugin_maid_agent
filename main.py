@@ -615,6 +615,7 @@ class MaidAgent(Star):
             await driver.emit_delivery("main-summary", "sent" if delivered else "skipped")
         except Exception as exc:  # noqa: BLE001
             driver.log.update_meta(notified=False)
+            await driver.release_delivery_claim()
             await driver.emit_delivery("main-summary", "failed", str(exc))
             logger.error("[maid] notification 唤醒主 agent 失败: session=%s err=%s", driver.session_id[:8], exc, exc_info=True)
 
@@ -661,7 +662,7 @@ class MaidAgent(Star):
             message_type=session.message_type,
         )
         async with session_lock_manager.acquire_lock(umo):
-            if driver.log.load_meta().get("deliveryStatus") == "skipped":
+            if not await driver.claim_delivery():
                 # 等锁期间大小姐用 maid_task_output 自己读到了终态，别再转述一遍。
                 return False
             conversation_id = await ctx.conversation_manager.get_curr_conversation_id(umo)
@@ -807,9 +808,10 @@ class MaidAgent(Star):
                 {"agent_id": agent_id, "task_id": task_id, "status": "running", **self._agent_progress(driver)}
             )
         meta = driver.log.load_meta()
-        if meta.get("deliveryStatus") not in ("sent", "failed"):
+        if await driver.claim_delivery():
             # 模型已亲自读到终态，认领这次投递，避免完成通知再转述一遍。
-            driver.log.update_meta(notified=True, deliveryStatus="skipped")
+            driver.log.update_meta(notified=True)
+            await driver.emit_delivery("main-summary", "skipped")
         return self._json_outcome({
             "agent_id": agent_id,
             "task_id": task_id,

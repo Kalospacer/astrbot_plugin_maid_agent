@@ -24,7 +24,7 @@
 - **管家 `send_message_to_user` 的输出进黑洞**：合成事件的 `send` 只往一个没人读的 list 里 append，管家主动发的每条消息都被静默丢弃。现在真实投递。
 - **`fg_timeout` 读错配置键**：`_main_tool_call_timeout` 读的是 `provider_settings.tool_call_timeout`，而 Core 读的是 `agent_runner.config.misc.tool_call_timeout`，前者不存在，于是永远取写死的 120。随前台等待一并删除。
 - **被 Core 掐断时结果静默丢失**：前台等待只接 `asyncio.TimeoutError`，Core 超时取消抛的是 `CancelledError`，接不住就跳过了补 `notify=True` 的那段，会话保持 `notify=False` / `deliveryStatus=skipped`，管家跑完 `_on_turn_terminal` 直接 return，结果烂在日志里。随前台等待一并删除。
-- **通知回灌不排队**：`_notify_main_agent` 绕开 pipeline 自起主 agent，既不拿 session lock 也不注册 runner。改成非阻塞后每个任务都以它收尾，会插进用户正在进行的一轮，两个 runner 抢写同一份 conversation history。现在包在 `session_lock_manager.acquire_lock(umo)` 里。
+- **通知回灌不排队**：`_notify_main_agent` 绕开 pipeline 自起主 agent，既不拿 session lock 也不注册 runner。改成非阻塞后每个任务都以它收尾，会插进用户正在进行的一轮，两个 runner 抢写同一份 conversation history。现在包在 `session_lock_manager.acquire_lock(umo)` 里；同时「这份汇报归谁转达」改成 `deliveryClaimed` 原子认领（在 `log.lock` 里读改写），因为通知回灌和 `maid_task_output` 各自持有的外层锁不是同一把。
 - **retention 清理每小时报错**：`running` 是 set，却按 dict 调 `running.pop(sid, None)`，`TypeError` 被外层 `except` 吞成一条"清理失败"。该变量本就没用，删掉。
 
 ### 不变

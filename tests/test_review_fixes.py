@@ -135,3 +135,31 @@ def test_turn_terminal_callback_failure_rolls_back_notified(registry, store):
     meta = driver.log.load_meta()
     assert meta["notify"] is True
     assert meta.get("notified") is False
+
+
+def test_delivery_claim_is_exclusive(registry, store):
+    """汇报投递只能被认领一次：通知回灌和 maid_task_output 抢同一份，谁先谁负责。"""
+    log = store.create_session(agent_preset="butler", meta={"umo": "umo1", "agentName": "butler"})
+
+    async def scenario():
+        driver = registry.attach(log.session_id)
+        # 两边各自持有的外层锁不是同一把，所以并发发起认领。
+        return await asyncio.gather(*(driver.claim_delivery() for _ in range(4)))
+
+    claims = asyncio.run(scenario())
+    assert claims.count(True) == 1
+    assert store.log(log.session_id).load_meta()["deliveryClaimed"] is True
+
+
+def test_failed_delivery_returns_the_claim(registry, store):
+    """投递失败要归还认领，否则这份汇报再也没人转达。"""
+    log = store.create_session(agent_preset="butler", meta={"umo": "umo1", "agentName": "butler"})
+
+    async def scenario():
+        driver = registry.attach(log.session_id)
+        assert await driver.claim_delivery() is True
+        assert await driver.claim_delivery() is False
+        await driver.release_delivery_claim()
+        return await driver.claim_delivery()
+
+    assert asyncio.run(scenario()) is True

@@ -252,7 +252,6 @@ class SessionDriver:
         self.turn_started_at: float | None = None
         self.last_turn: dict = {}
         self._voice_sink = None
-        self._pending_voice: str | None = None
 
 
     @property
@@ -529,7 +528,6 @@ class SessionDriver:
         )
         # 只有聊天来源的女仆往聊天里说话；控制台会话说给控制台听就够了。
         self._voice_sink = child_event if meta.get("sourceKind") == "chat" else None
-        self._pending_voice = None
 
         provider_id = (
             self.provider_id
@@ -696,9 +694,7 @@ class SessionDriver:
             self._stop_fn = None
             await hooks.close_unfinished()
             child_event.cleanup_temporary_local_files()
-            # 押后的最后一段正文不发：那是给大小姐转述的汇报。
             self._voice_sink = None
-            self._pending_voice = None
 
         async with self.log.lock:
             await self._emit("turn/end", {"turn": turn, "reason": reason})
@@ -802,7 +798,11 @@ class SessionDriver:
                         },
                         source_event_seqs=[],
                     )
-                await self._queue_voice(text)
+                # 带工具调用的这一步是干活途中的播报，立刻发；不带工具调用的
+                # 是终答，留给大小姐转述。用「有没有 tool_calls」判别而不是
+                # 「后面还有没有下一段」，后者会把投递时机绑到未来事件上。
+                if tool_call_entries:
+                    await self._speak(text or think)
         return len(messages), prev_usage
 
     async def emit_tool_call(self, call_id: str, name: str, arguments: str, step: int) -> None:
@@ -871,20 +871,11 @@ class SessionDriver:
         async with self.log.lock:
             self.log.update_meta(deliveryClaimed=False)
 
-    async def _queue_voice(self, text: str) -> None:
-        """把女仆的一段正文排进聊天投递队列，永远押后一段。
-
-        押后是为了让最后一段留给大小姐：那段是任务汇报，会经 turn 终态回灌
-        给主 agent 再转述一次，女仆自己先说了用户就要看两遍。
-        """
+    async def _speak(self, text: str) -> None:
+        """把女仆的一段正文即时投递到聊天。"""
         text = (text or "").strip()
         if not text:
             return
-        pending, self._pending_voice = self._pending_voice, text
-        if pending:
-            await self._speak(pending)
-
-    async def _speak(self, text: str) -> None:
         sink = self._voice_sink
         if sink is None:
             return

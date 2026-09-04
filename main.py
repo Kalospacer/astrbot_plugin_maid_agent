@@ -690,9 +690,10 @@ class MaidAgent(Star):
             req.prompt = summary
             req.system_prompt = (
                 "A maid subagent finished. The maid already narrated its intermediate steps "
-                "to the user; only its final report is delivered here. Relay that report to "
+                "to the user; only its final report reaches you here. Relay that report to "
                 "the user in your own voice, concisely, without repeating what was narrated. "
-                "Use send_message_to_user to deliver the useful result directly."
+                "Just write the reply as your normal answer — it is delivered for you. "
+                "Call send_message_to_user only when you need to attach media."
             )
             req.func_tool = ToolSet()
             send_tool = ctx.get_llm_tool_manager().get_builtin_tool(SendMessageToUserTool)
@@ -713,9 +714,15 @@ class MaidAgent(Star):
             async for _ in runner.step_until_done(30):
                 pass
             llm_resp = runner.get_final_llm_resp()
-            history_summary = summary
-            if llm_resp is not None and getattr(llm_resp, "completion_text", ""):
-                history_summary = f"{summary}\n\n主 Agent 处理结果：{llm_resp.completion_text}"
+            relay = (getattr(llm_resp, "completion_text", "") or "").strip() if llm_resp else ""
+            history_summary = f"{summary}\n\n主 Agent 处理结果：{relay}" if relay else summary
+            if relay and not getattr(cron_event, "_has_send_oper", False):
+                # 大小姐经常把转述直接写成正文而不是调 send_message_to_user。
+                # 这条路径自起 agent、不接 pipeline 的 RespondStage，不自己投递
+                # 这段话就石沉大海——任务跑完聊天里什么都不会出现。
+                from astrbot.api.event import MessageChain
+
+                await ctx.send_message(umo, MessageChain().message(relay))
             await persist_agent_history(
                 ctx.conversation_manager,
                 event=cron_event,

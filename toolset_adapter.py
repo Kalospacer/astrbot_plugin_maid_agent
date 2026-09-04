@@ -17,18 +17,13 @@ from __future__ import annotations
 
 import hashlib
 import re
-from collections.abc import Sequence, Set
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from astrbot.api import logger
 from astrbot.api.star import StarTools
 from astrbot.core.agent.tool import FunctionTool, ToolSet
-from astrbot.core.message.components import Image
 from astrbot.core.tools import computer_tools as ct
-from astrbot.core.utils.astrbot_path import get_astrbot_temp_path
-from astrbot.core.utils.image_ref_utils import is_supported_image_ref
-from astrbot.core.utils.string_utils import normalize_and_dedupe_strings
 
 if TYPE_CHECKING:
     from astrbot.api.star import Context
@@ -219,41 +214,6 @@ def build_child_toolset(
         sanitized = _augment_with_file_tools(sanitized, context)
 
     return sanitized
-
-
-async def collect_child_image_urls(event, image_urls_raw: Any) -> list[str]:
-    """Plugin-owned equivalent of Core's private handoff image collector."""
-    candidates: list[str] = []
-    if isinstance(image_urls_raw, str):
-        candidates.append(image_urls_raw)
-    elif isinstance(image_urls_raw, (Sequence, Set)) and not isinstance(
-        image_urls_raw, (str, bytes, bytearray)
-    ):
-        candidates.extend(item for item in image_urls_raw if isinstance(item, str))
-    for index, component in enumerate(getattr(getattr(event, "message_obj", None), "message", []) or []):
-        if not isinstance(component, Image):
-            continue
-        try:
-            path = await component.convert_to_file_path()
-        except Exception as exc:  # noqa: BLE001
-            logger.warning(
-                "[大小姐模式] 转换 child 图片失败: index=%s err=%s",
-                index,
-                exc,
-            )
-            continue
-        if path:
-            candidates.append(path)
-    normalized = normalize_and_dedupe_strings(candidates)
-    return [
-        item
-        for item in normalized
-        if is_supported_image_ref(
-            item,
-            allow_extensionless_existing_local_file=True,
-            extensionless_local_roots=(get_astrbot_temp_path(),),
-        )
-    ]
 
 
 def _augment_with_file_tools(

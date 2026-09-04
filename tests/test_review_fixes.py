@@ -1,8 +1,10 @@
-"""审查修复回归：前台等待超时降级、空队列 stop 终态补写、通知失败回滚。"""
+"""审查修复回归：女仆正文押后投递、空队列 stop 终态补写、通知失败回滚。"""
 
 from __future__ import annotations
 
 import asyncio
+import json
+import time
 from pathlib import Path
 
 import pytest
@@ -10,6 +12,7 @@ import pytest
 from astrbot_plugin_maid_agent.harness import contracts as c
 from astrbot_plugin_maid_agent.harness.drivers import DriverRegistry
 from astrbot_plugin_maid_agent.harness.store import SessionStore
+from astrbot_plugin_maid_agent.main import MaidAgent
 
 
 class _Hub:
@@ -35,50 +38,59 @@ def registry(store: SessionStore) -> DriverRegistry:
     return DriverRegistry(context=None, store=store, mux_hub=_Hub(), host_hub=_Hub(), config=_Config())
 
 
-def test_foreground_wait_timeout_returns_running_handle(registry, store):
-    """前台等待超过预算时降级返回句柄并补 notify，任务继续跑。"""
+def test_maid_voice_holds_back_the_final_paragraph(registry, store):
+    """女仆正文逐段投递到聊天，但最后一段留给大小姐转述，不重复。"""
     log = store.create_session(
         agent_preset="butler",
-        meta={"umo": "umo1", "agentName": "butler", "notify": False, "executionMode": "foreground"},
+        meta={"umo": "umo1", "agentName": "butler", "sourceKind": "chat"},
     )
+    spoken: list[str] = []
+
+    class _Sink:
+        async def send(self, chain):
+            spoken.append(chain.get_plain_text())
 
     async def scenario():
         driver = registry.attach(log.session_id)
-        driver.umo, driver.agent_name, driver.sender_id = "umo1", "butler", "chat"
-
-        task_id = "t-foreground-timeout"
-        driver.log.update_meta(activeTaskId=task_id, notified=False)
-        # 只测等待原语与降级路径：pump 未启动（不 enqueue），等待侧必然超时。
-        try:
-            await asyncio.wait_for(driver.wait_next_turn_result(timeout=0.05), 1.0)
-        except asyncio.TimeoutError:
-            # 模拟 _dispatch_chat_task 的前台超时降级路径
-            driver.log.update_meta(notify=True, deliveryStatus="pending")
-        else:
-            raise AssertionError("不应在超时前拿到结果")
+        driver.umo, driver.agent_name = "umo1", "butler"
+        driver._voice_sink = _Sink()
+        await driver._queue_voice("先看一下服务状态")
+        await driver._queue_voice("")  # 纯工具调用的空步不占位
+        await driver._queue_voice("端口是通的")
+        await driver._queue_voice("汇报：服务正常")
 
     asyncio.run(scenario())
 
-    meta = store.log(log.session_id).load_meta()
-    assert meta["notify"] is True
-    assert meta["deliveryStatus"] == "pending"
+    assert spoken == ["butler: 先看一下服务状态", "butler: 端口是通的"]
+
+
+def test_maid_voice_is_silent_for_console_sessions(registry, store):
+    """控制台来源的会话没有聊天可说，投递端为空时不炸。"""
+    log = store.create_session(agent_preset="butler", meta={"agentName": "butler", "sourceKind": "dashboard"})
+
+    async def scenario():
+        driver = registry.attach(log.session_id)
+        driver.agent_name = "butler"
+        await driver._queue_voice("第一段")
+        await driver._queue_voice("第二段")
+
+    asyncio.run(scenario())
 
 
 def test_request_stop_on_idle_queue_writes_terminal_task_event(registry, store):
     """空队列 stop：被取消的任务在事件流留下 stopped-before-run 终态。"""
     log = store.create_session(
         agent_preset="butler",
-        meta={"umo": "umo1", "agentName": "butler", "notify": True, "executionMode": "foreground"},
+        meta={"umo": "umo1", "agentName": "butler", "notify": True},
     )
 
     async def scenario():
         driver = registry.attach(log.session_id)
         driver.umo, driver.agent_name = "umo1", "butler"
-        assert registry.acquire_foreground_lease("umo1", "d1")
 
         driver.enqueue(
             c.user_message([c.text_block("排队的任务")]),
-            run_context={"execution_mode": "foreground", "dispatch_id": "d1", "task_id": "t-queued"},
+            run_context={"task_id": "t-queued"},
         )
         assert not driver.running
         assert len(driver.inbox) == 1
@@ -86,11 +98,8 @@ def test_request_stop_on_idle_queue_writes_terminal_task_event(registry, store):
         driver.request_stop()
 
         assert driver.inbox == []
-        # 前台租约随队列任务一并释放
-        assert registry.acquire_foreground_lease("umo1", "d2") is True
-        return driver
 
-    driver = asyncio.run(scenario())
+    asyncio.run(scenario())
 
     meta = store.log(log.session_id).load_meta()
     assert meta["activeTaskId"] == ""
@@ -129,3 +138,107 @@ def test_turn_terminal_callback_failure_rolls_back_notified(registry, store):
     meta = driver.log.load_meta()
     assert meta["notify"] is True
     assert meta.get("notified") is False
+
+
+def test_delivery_claim_is_exclusive(registry, store):
+    """汇报投递只能被认领一次：通知回灌和 maid_task_output 抢同一份，谁先谁负责。"""
+    log = store.create_session(agent_preset="butler", meta={"umo": "umo1", "agentName": "butler"})
+
+    async def scenario():
+        driver = registry.attach(log.session_id)
+        # 两边各自持有的外层锁不是同一把，所以并发发起认领。
+        return await asyncio.gather(*(driver.claim_delivery() for _ in range(4)))
+
+    claims = asyncio.run(scenario())
+    assert claims.count(True) == 1
+    assert store.log(log.session_id).load_meta()["deliveryClaimed"] is True
+
+
+def test_failed_delivery_returns_the_claim(registry, store):
+    """投递失败要归还认领，否则这份汇报再也没人转达。"""
+    log = store.create_session(agent_preset="butler", meta={"umo": "umo1", "agentName": "butler"})
+
+    async def scenario():
+        driver = registry.attach(log.session_id)
+        assert await driver.claim_delivery() is True
+        assert await driver.claim_delivery() is False
+        await driver.release_delivery_claim()
+        return await driver.claim_delivery()
+
+    assert asyncio.run(scenario()) is True
+
+
+def test_progress_reads_tool_io_when_the_maid_has_not_spoken(registry, store):
+    """女仆只发工具调用、没输出正文时，进度必须给出入参、输出和推理，而不是一句「在跑」。"""
+    log = store.create_session(agent_preset="muiceagent", meta={"umo": "umo1", "agentName": "muiceagent"})
+    code = 'import requests\nr = requests.get("https://mirasim.ai/announcement")\nprint(r.status_code)'
+    log.append("turn/start", {"turn": 1})
+    log.append("user/message", c.user_message([c.text_block("去看看公告")]), source_event_seqs=[])
+    log.append("step/start", {"turn": 1, "step": 2})
+    log.append(
+        "assistant/message",
+        {"turn": 1, "step": 2, "message": c.assistant_message(
+            # 这一步只有推理和工具调用，没有 text 块。
+            [c.reasoning_block("先用 python 抓一下页面"),
+             c.tool_call_block("call-1", "astrbot_execute_python", json.dumps({"code": code}))],
+            "openai", "gemini-3.8-flash")},
+        source_event_seqs=[],
+    )
+    log.append("tool/call", {
+        "turn": 1, "step": 2, "callId": "call-1", "name": "astrbot_execute_python",
+        # 裸换行的非法 JSON：模型经常这么发，不能让它把入参整块退化成噪音。
+        "arguments": '{"code": "%s"}' % code.replace('"', '\\"'),
+    })
+    log.append(
+        "tool/result",
+        {"turn": 1, "step": 2, "message": c.tool_result_message("call-1", [c.text_block("200")], False)},
+        source_event_seqs=[],
+    )
+
+    driver = registry.attach(log.session_id)
+    driver.turn_started_at = time.monotonic() - 97
+    progress = MaidAgent._agent_progress(driver)
+
+    assert progress["step"] == 2
+    assert progress["elapsed_seconds"] == 97
+    assert progress["tool"] == "astrbot_execute_python"
+    assert progress["tool_done"] is True
+    assert "requests.get" in progress["tool_input"]
+    assert not progress["tool_input"].startswith("{")
+    assert progress["tool_output"] == "200"
+    assert progress["text"] == "先用 python 抓一下页面"
+
+
+def test_synthetic_event_delivers_only_through_context_send_message():
+    """合成事件的投递必须只走 Context.send_message；控制台来源是静默 no-op。"""
+    from astrbot.api.event import MessageChain
+
+    from astrbot_plugin_maid_agent.constants import DASHBOARD_UMO
+    from astrbot_plugin_maid_agent.harness.events_shim import MaidAgentEvent
+
+    sent: list[tuple[str, str]] = []
+
+    class _Ctx:
+        async def send_message(self, umo, chain):
+            sent.append((umo, chain.get_plain_text()))
+
+    async def scenario():
+        chat = MaidAgentEvent(
+            context=_Ctx(),
+            unified_msg_origin="aiocqhttp:GroupMessage:777",
+            identity={"senderId": "1", "groupId": "777", "platformName": "aiocqhttp"},
+        )
+        assert chat.deliverable is True
+        await chat.send(MessageChain().message("butler: 端口是通的"))
+
+        console = MaidAgentEvent(context=_Ctx(), unified_msg_origin=DASHBOARD_UMO)
+        assert console.deliverable is False
+        await console.send(MessageChain().message("不该发出去"))
+
+        # context 缺失时也不能炸：女仆正文投递失败只该记一条 warning。
+        detached = MaidAgentEvent(context=None, unified_msg_origin="aiocqhttp:FriendMessage:1")
+        await detached.send(MessageChain().message("没有 context"))
+
+    asyncio.run(scenario())
+
+    assert sent == [("aiocqhttp:GroupMessage:777", "butler: 端口是通的")]

@@ -33,12 +33,9 @@ interface MockSession {
   steps: number;
   usage: { inputTokens: number; outputTokens: number };
   umo: string;
-  executionMode: "foreground" | "background";
   sourceKind: "chat" | "dashboard";
-  backgroundReason?: string;
   agentId: string;
   taskId: string;
-  foregroundLease?: string;
   deliveryStatus: "pending" | "sending" | "sent" | "failed";
 }
 
@@ -47,7 +44,6 @@ const sessions = new Map<string, MockSession>();
 function newSession(agentPreset: string, umo = "dashboard:FriendMessage:dashboard"): MockSession {
   const sessionId = Array.from({ length: 32 }, () => Math.floor(Math.random() * 16).toString(16)).join("");
   const sourceKind = "dashboard";
-  const executionMode = "background";
   const session: MockSession = {
     sessionId,
     updatedAt: Date.now(),
@@ -60,9 +56,7 @@ function newSession(agentPreset: string, umo = "dashboard:FriendMessage:dashboar
     steps: 0,
     usage: { inputTokens: 0, outputTokens: 0 },
     umo,
-    executionMode,
     sourceKind,
-    backgroundReason: "dashboard-isolated-sandbox",
     agentId: `agent_${sessionId.slice(0, 8)}`,
     taskId: `task_${sessionId.slice(0, 8)}`,
     deliveryStatus: "pending",
@@ -97,9 +91,7 @@ function summary(session: MockSession) {
     blank: session.blank,
     agentPreset: session.agentPreset,
     umo: session.umo,
-    executionMode: session.executionMode,
     sourceKind: session.sourceKind,
-    backgroundReason: session.backgroundReason,
     agentId: session.agentId,
     taskId: session.taskId,
     deliveryStatus: session.deliveryStatus,
@@ -118,7 +110,7 @@ async function respond(method: string, payload: any): Promise<any> {
       const session = newSession(payload.agentPreset);
       broadcast("host", {
         type: "host/session-added", sessionId: session.sessionId, blank: true, agentPreset: session.agentPreset,
-        executionMode: session.executionMode, sourceKind: session.sourceKind, agentId: session.agentId,
+        sourceKind: session.sourceKind, agentId: session.agentId,
         taskId: session.taskId, deliveryStatus: session.deliveryStatus,
       });
       return { sessionId: session.sessionId, agentPreset: session.agentPreset };
@@ -271,8 +263,8 @@ async function runMockTurn(session: MockSession, content: any[]) {
   session.updatedAt = Date.now();
   broadcast("host", {
     type: "host/session-status", sessionId: session.sessionId, running: true,
-    executionMode: session.executionMode, sourceKind: session.sourceKind, agentId: session.agentId,
-    taskId: session.taskId, foregroundLease: session.foregroundLease, deliveryStatus: "sending",
+    sourceKind: session.sourceKind, agentId: session.agentId,
+    taskId: session.taskId, deliveryStatus: "sending",
   });
   const turn = ++session.turns;
   append(session, "turn/start", { turn });
@@ -340,8 +332,8 @@ async function runMockTurn(session: MockSession, content: any[]) {
   session.updatedAt = Date.now();
   broadcast("host", {
     type: "host/session-status", sessionId: session.sessionId, running: false,
-    executionMode: session.executionMode, sourceKind: session.sourceKind, agentId: session.agentId,
-    taskId: session.taskId, foregroundLease: session.foregroundLease, deliveryStatus: session.deliveryStatus,
+    sourceKind: session.sourceKind, agentId: session.agentId,
+    taskId: session.taskId, deliveryStatus: session.deliveryStatus,
   });
 }
 

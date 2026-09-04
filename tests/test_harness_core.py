@@ -150,3 +150,48 @@ class TestRewind:
         assert surface_after == surface[:2]
         _emit_turn(log, 3)
         assert len(derive_surface(log.read_events())) == 4
+
+
+class TestAttachmentSnapshot:
+    """派发时把图片复制进会话附件区：原始临时文件随后被 AstrBot 清掉也不影响。"""
+
+    def test_snapshot_survives_source_deletion(self, tmp_path: Path):
+        from astrbot_plugin_maid_agent.harness.store import SessionStore
+
+        store = SessionStore(tmp_path / "data")
+        session = store.create_session(agent_preset="butler")
+        source = tmp_path / "shot.png"
+        source.write_bytes(b"\x89PNG\r\n\x1a\n" + b"payload")
+
+        ref = store.save_attachment_from_path(session.session_id, source)
+        assert ref is not None
+        assert ref["mediaType"] == "image/png"
+
+        source.unlink()
+        paths = store.attachment_paths_for_prompt(session.session_id, [ref])
+        assert len(paths) == 1
+        assert Path(paths[0]).read_bytes().endswith(b"payload")
+
+    def test_media_type_comes_from_magic_not_extension(self, tmp_path: Path):
+        from astrbot_plugin_maid_agent.harness.store import SessionStore
+
+        store = SessionStore(tmp_path / "data")
+        session = store.create_session(agent_preset="butler")
+        # AstrBot 的临时图片常常没有扩展名或者扩展名不对。
+        source = tmp_path / "no-extension"
+        source.write_bytes(b"\xff\xd8\xff" + b"jpegbody")
+
+        ref = store.save_attachment_from_path(session.session_id, source)
+        assert ref is not None
+        assert ref["mediaType"] == "image/jpeg"
+
+    def test_unrecognisable_payload_is_rejected(self, tmp_path: Path):
+        from astrbot_plugin_maid_agent.harness.store import SessionStore
+
+        store = SessionStore(tmp_path / "data")
+        session = store.create_session(agent_preset="butler")
+        source = tmp_path / "notes.txt"
+        source.write_bytes(b"not an image")
+
+        assert store.save_attachment_from_path(session.session_id, source) is None
+        assert store.save_attachment_from_path(session.session_id, tmp_path / "missing.png") is None

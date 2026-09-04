@@ -48,51 +48,6 @@ body {
   gap: 16px;
 }
 
-.session-runtime-notice {
-  display: flex;
-  align-items: center;
-  align-self: flex-start;
-  flex-wrap: wrap;
-  gap: 4px;
-  color: var(--maid-alias-label-secondary);
-  font-size: 12px;
-  line-height: 18px;
-}
-
-.session-runtime-badge {
-  padding: 1px 6px;
-  border-radius: 9px;
-  background: var(--maid-alias-bg-layer-2);
-  color: var(--maid-alias-label-primary);
-  font-size: 11px;
-  line-height: 16px;
-}
-
-.delivery-trace {
-  display: flex;
-  align-items: center;
-  align-self: flex-start;
-  flex-wrap: wrap;
-  gap: 6px;
-  padding-left: 22px;
-  color: var(--maid-alias-label-tertiary);
-  font-size: 12px;
-  line-height: 20px;
-}
-
-.delivery-trace[hidden] {
-  display: none;
-}
-
-.delivery-trace code {
-  max-width: 180px;
-  overflow: hidden;
-  color: inherit;
-  font: inherit;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
 /* ===== 用户气泡（DSH MessageItem.module.css .userRow/.bubble）=====
    右对齐列（气泡 + actions），列宽钳制 702/748 ≈ 82%；
    圆角 22px、padding 10px 16px、14/22。 */

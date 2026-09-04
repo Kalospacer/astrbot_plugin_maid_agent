@@ -564,20 +564,6 @@
   line-height: 20px;
 }
 
-.runtimeBadge {
-  flex: none;
-  max-width: 58px;
-  overflow: hidden;
-  padding: 1px 5px;
-  border-radius: 8px;
-  color: var(--maid-alias-label-secondary);
-  background: var(--maid-alias-bg-layer-2);
-  font-size: 11px;
-  line-height: 16px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
 .time {
   flex: none;
   font-size: 12px;
@@ -599,11 +585,6 @@
 
 .sessionRow:hover .time,
 .sessionRow.menuOpen .time {
-  display: none;
-}
-
-.sessionRow:hover .runtimeBadge,
-.sessionRow.menuOpen .runtimeBadge {
   display: none;
 }
 

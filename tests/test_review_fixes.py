@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import time
 from pathlib import Path
 
 import pytest
@@ -10,6 +12,7 @@ import pytest
 from astrbot_plugin_maid_agent.harness import contracts as c
 from astrbot_plugin_maid_agent.harness.drivers import DriverRegistry
 from astrbot_plugin_maid_agent.harness.store import SessionStore
+from astrbot_plugin_maid_agent.main import MaidAgent
 
 
 class _Hub:
@@ -163,3 +166,44 @@ def test_failed_delivery_returns_the_claim(registry, store):
         return await driver.claim_delivery()
 
     assert asyncio.run(scenario()) is True
+
+
+def test_progress_reads_tool_io_when_the_maid_has_not_spoken(registry, store):
+    """女仆只发工具调用、没输出正文时，进度必须给出入参、输出和推理，而不是一句「在跑」。"""
+    log = store.create_session(agent_preset="muiceagent", meta={"umo": "umo1", "agentName": "muiceagent"})
+    code = 'import requests\nr = requests.get("https://mirasim.ai/announcement")\nprint(r.status_code)'
+    log.append("turn/start", {"turn": 1})
+    log.append("user/message", c.user_message([c.text_block("去看看公告")]), source_event_seqs=[])
+    log.append("step/start", {"turn": 1, "step": 2})
+    log.append(
+        "assistant/message",
+        {"turn": 1, "step": 2, "message": c.assistant_message(
+            # 这一步只有推理和工具调用，没有 text 块。
+            [c.reasoning_block("先用 python 抓一下页面"),
+             c.tool_call_block("call-1", "astrbot_execute_python", json.dumps({"code": code}))],
+            "openai", "gemini-3.8-flash")},
+        source_event_seqs=[],
+    )
+    log.append("tool/call", {
+        "turn": 1, "step": 2, "callId": "call-1", "name": "astrbot_execute_python",
+        # 裸换行的非法 JSON：模型经常这么发，不能让它把入参整块退化成噪音。
+        "arguments": '{"code": "%s"}' % code.replace('"', '\\"'),
+    })
+    log.append(
+        "tool/result",
+        {"turn": 1, "step": 2, "message": c.tool_result_message("call-1", [c.text_block("200")], False)},
+        source_event_seqs=[],
+    )
+
+    driver = registry.attach(log.session_id)
+    driver.turn_started_at = time.monotonic() - 97
+    progress = MaidAgent._agent_progress(driver)
+
+    assert progress["step"] == 2
+    assert progress["elapsed_seconds"] == 97
+    assert progress["tool"] == "astrbot_execute_python"
+    assert progress["tool_done"] is True
+    assert "requests.get" in progress["tool_input"]
+    assert not progress["tool_input"].startswith("{")
+    assert progress["tool_output"] == "200"
+    assert progress["text"] == "先用 python 抓一下页面"

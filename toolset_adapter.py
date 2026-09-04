@@ -4,7 +4,7 @@
 职责：
 - 在插件内复现 AstrBot ``FunctionToolExecutor._build_handoff_toolset`` 的工具选择
   规则，避免继续依赖 Core 私有方法。
-- 从 child 工具集中移除 ``call_maid``、``maid_task`` 和所有 ``transfer_to_*``
+- 从 child 工具集中移除全部 ``maid_*`` 控制面工具和所有 ``transfer_to_*``
   handoff 工具，禁止递归调度。
 - 对 ``memory_agent_names`` 命中的 agent 自动补齐 AstrBot 原生 Read/Write/Edit
   文件工具（仍走原始权限检查）。
@@ -34,14 +34,14 @@ if TYPE_CHECKING:
     from astrbot.api.star import Context
     from astrbot.core.agent.handoff import HandoffTool
 
-from .constants import CALL_MAID_TOOL_NAME, MAID_TASK_TOOL_NAME, PLUGIN_DATA_DIR_NAME
+from .constants import MAID_AGENT_TOOL_NAME, MAID_TOOL_NAMES, PLUGIN_DATA_DIR_NAME
 
 MEMORY_SUBDIR = "memory"
 MEMORY_INDEX_FILENAME = "MEMORY.md"
 MEMORY_MAX_LINES = 200
 MEMORY_MAX_BYTES = 25_000
 
-_RECURSION_TOOL_NAMES = frozenset({"call_maid", "maid_task"})
+_RECURSION_TOOL_NAMES = MAID_TOOL_NAMES
 _HANDOFF_TOOL_PREFIX = "transfer_to_"
 
 _FILE_TOOL_CLASS_NAMES = ("FileReadTool", "FileWriteTool", "FileEditTool")
@@ -104,13 +104,13 @@ def apply_main_tool_policy(
 ) -> ToolSet | None:
     """Filter the main (mistress) model's toolset by maid-mode visibility policy.
 
-    - ``hide_native_tools=True``: keep only ``call_maid`` / ``maid_task`` so the
+    - ``hide_native_tools=True``: keep only the five ``maid_*`` tools so the
       main model delegates to the maid instead of calling AstrBot native tools.
     - Otherwise, when ``hide_transfer_tools=True``: drop all ``transfer_to_*``
-      handoff tools while keeping ``call_maid`` and the rest of the native tools.
+      handoff tools while keeping the maid tools and the rest of the native tools.
     - Both flags off: return the toolset untouched.
 
-    Guard: only applies when ``call_maid`` is present in the toolset, so
+    Guard: only applies when ``maid_agent`` is present in the toolset, so
     third-party agent runners that assemble their own tool lists are never
     stripped. Mutates ``toolset`` in place and returns it for convenience.
     """
@@ -118,10 +118,10 @@ def apply_main_tool_policy(
         return None
     if not hide_native_tools and not hide_transfer_tools:
         return toolset
-    if toolset.get_tool(CALL_MAID_TOOL_NAME) is None:
+    if toolset.get_tool(MAID_AGENT_TOOL_NAME) is None:
         return toolset
     if hide_native_tools:
-        keep = {CALL_MAID_TOOL_NAME, MAID_TASK_TOOL_NAME}
+        keep = MAID_TOOL_NAMES
         for tool in list(toolset.tools):
             if tool.name not in keep:
                 toolset.remove_tool(tool.name)

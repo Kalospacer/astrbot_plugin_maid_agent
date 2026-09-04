@@ -313,6 +313,9 @@ const ChatNodeView = memo(function ChatNodeView(props: {
   if (node.kind === "usage") {
     return <UsageLine usage={node.usage} />;
   }
+  if (node.kind === "delivery") {
+    return null;
+  }
   // 折叠条节点：位置在轮首（用户消息下方、过程行之前，DSH TurnProcess 几何）。
   // 有过程行时渲染折叠按钮；有终态（失败/中断/截断）时在其下渲染终态行。
   const reasonKind = node.reason?.kind ?? "completed";

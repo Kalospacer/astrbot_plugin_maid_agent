@@ -1,7 +1,7 @@
 [project]
 name = "astrbot-plugin-maid-agent"
-version = "2.0.4"
-description = "大小姐+管家模式 Claude Code 风格 subagent runtime：foreground-first 调度"
+version = "2.0.5"
+description = "大小姐+管家模式 Claude 风格 subagent runtime：显式 foreground/background 调度"
 readme = "README.md"
 requires-python = ">=3.10"
 

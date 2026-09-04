@@ -1,25 +1,25 @@
 {
-  "default_agent_name": {
-    "description": "默认管家 Agent 名称",
-    "hint": "当 call_maid 未显式指定 agent，或指定的 agent 不在白名单中时，回退到这个子 agent。",
-    "type": "string",
-    "default": "butler"
-  },
   "allowed_agent_names": {
     "description": "允许调度的 Agent 白名单",
-    "hint": "仅允许 call_maid 调度这些 subagent 名称。为空时仍会自动包含默认 agent。",
+    "hint": "maid_agent 和控制台创建任务只能使用这些 subagent 名称。每次任务必须显式选择一个名称；不能为空。",
     "type": "list",
     "default": ["butler"]
   },
+  "default_agent_name": {
+    "description": "默认回退 Agent",
+    "hint": "maid_agent 指定的名称不在 allowed_agent_names 内时，任务回退到该 subagent。必须属于白名单。",
+    "type": "string",
+    "default": "butler"
+  },
   "hide_native_tools": {
     "description": "隐藏主模型原生工具",
-    "hint": "开启后，主模型只保留 call_maid / maid_task 工具。关闭后，主模型仍可见 AstrBot 原生工具。",
+    "hint": "开启后，主模型只保留 maid_agent、maid_send_message、maid_list_agents、maid_task_output、maid_task_stop。关闭后维持 AstrBot 原有工具暴露策略。",
     "type": "bool",
     "default": true
   },
   "hide_transfer_tools": {
     "description": "隐藏 transfer_to_* 工具",
-    "hint": "仅在 hide_native_tools 关闭时生效。开启后，AstrBot 原生 transfer_to_* 工具会被隐藏，但 call_maid 仍然可用。",
+    "hint": "仅在 hide_native_tools 关闭时生效。开启后，AstrBot 原生 transfer_to_* 工具会被隐藏；五个 maid 工具仍按原有策略暴露。",
     "type": "bool",
     "default": true
   },
@@ -37,15 +37,16 @@
   },
   "dispatch_prompt_template": {
     "description": "管家调度提示模板",
-    "hint": "发送给管家 subagent 的完整 prompt 模板。可用占位符：{user_input_block}、{maid_request_block}。1.3.0 起为 foreground-first，不再使用 {maid_full_reply_block}。",
+    "hint": "发送给管家 subagent 的完整 prompt 模板。只允许 {user_input_block}、{maid_request_block}；无效模板会拒绝保存。",
     "type": "string",
-    "default": "{user_input_block}{maid_request_block}你是MuiceMaid，一个全能的管家AIagent助手，擅长从大小姐的话语中理解大小姐的意图，并提取出大小姐的需求主动完成大小姐的愿望。你需要综合考虑大小姐和对方的对话，提取他们是否需要执行某些实际操作，并综合以上信息完成任务，请判断对方的需求，和大小姐的意图，如果大小姐误解了对方的需求，你以对方的需求为准完成任务，如果大小姐拒绝了对方的请求，你应当停止工作并汇报结束，如果大小姐和对方的需求一致，结合两者的需求准确完成任务。你的汇报对象是大小姐，不是对方。"
+    "default": "{user_input_block}{maid_request_block}你是MuiceMaid，大小姐的管家。你的任务是完成大小姐交给你的请求，并使用你拥有的工具达成目的；遇到不确定信息时直接说明，不编造结果。完成后用中文向大小姐汇报。"
   },
-  "foreground_timeout_seconds": {
-    "description": "前台执行超时阈值（秒）",
-    "hint": "call_maid 默认在前台同步等待管家执行，超过该时间仍在运行的任务会原地转为后台继续执行（不新建 task、不重启 runner）。必须小于 AstrBot 本地工具默认 60 秒超时，建议 50。",
-    "type": "int",
-    "default": 50
+  "dispatch_session_mode": {
+    "description": "聊天任务执行环境",
+    "hint": "仅影响聊天中 maid_agent 新派发的任务。foreground 使用真实聊天 event/session；background 使用隔离 harness sandbox。运行开始后不会切换模式。控制台任务始终是隔离 sandbox。",
+    "type": "string",
+    "options": ["foreground", "background"],
+    "default": "background"
   },
   "memory_agent_names": {
     "description": "启用记忆的 Agent 名称",
@@ -67,7 +68,7 @@
   },
   "retention_days": {
     "description": "runtime 轨迹保留天数",
-    "hint": "超过该天数无活动的 agent（含 transcript/runs/outputs）会被清理。memory 目录与旧 sessions 不受影响。",
+    "hint": "超过该天数无活动的 agent（含 transcript/runs/outputs）会被清理。memory 目录不受影响。",
     "type": "int",
     "default": 30
   },

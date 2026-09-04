@@ -143,6 +143,15 @@
   background: var(--maid-alias-button-floating-hover);
 }
 
+.startError {
+  margin: -4px 0 8px;
+  padding: 0 10px;
+  color: var(--maid-alias-state-danger-label, var(--maid-alias-label-secondary));
+  font-size: 12px;
+  line-height: 18px;
+  overflow-wrap: anywhere;
+}
+
 .collapsed .newSession {
   align-self: flex-start;
   width: 36px;
@@ -682,6 +691,13 @@
   gap: 6px;
   font-size: 12px;
   color: var(--maid-alias-label-secondary);
+}
+
+.hoverDetail {
+  color: var(--maid-alias-label-tertiary);
+  font-size: 12px;
+  line-height: 18px;
+  overflow-wrap: anywhere;
 }
 
 @media (prefers-reduced-motion: reduce) {

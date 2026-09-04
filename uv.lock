@@ -4,5 +4,5 @@ requires-python = ">=3.10"
 
 [[package]]
 name = "astrbot-plugin-maid-agent"
-version = "2.0.61"
+version = "2.0.62"
 source = { virtual = "." }

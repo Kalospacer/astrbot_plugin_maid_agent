@@ -1,5 +1,5 @@
 name: astrbot_plugin_maid_agent
-version: "2.0.61"
+version: "2.0.62"
 description: "大小姐+管家双代理角色扮演：大小姐只负责聊天，工具调用全部交给管家 subagent 执行，主模型上下文保持纯净不被工具提示词污染。"
 author: "Kalo"
 repo: "https://github.com/Kalospacer/astrbot_plugin_maid_agent"
@@ -31,5 +31,6 @@ astrbot_version: ">=4.20.0"
 # 1. 主模型（大小姐）只看到自然语言对话历史，不直接持有工具
 # 2. 主模型通过原生 `maid_agent` Function Call 表达调度意图
 # 3. 派发立即返回句柄，不阻塞主模型，用户可以在女仆干活时继续聊天
-# 4. 女仆干活过程中的正文以 `agent名: ...` 直接发到聊天，最终汇报由大小姐转述
+# 4. 最终汇报由大小姐转述；打开 show_maid_speech / show_maid_tool_status 后，
+#    女仆干活途中的正文与函数调用状态也会以 `agent名: ...` 即时发到聊天（默认关）
 # 5. 可用 `maid_send_message`、`maid_task_output`、`maid_task_stop` 查询或控制任务

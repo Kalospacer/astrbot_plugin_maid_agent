@@ -22,6 +22,8 @@ from astrbot.core.utils.history_saver import persist_agent_history
 
 from .config import _safe_int, load_maid_mode_config, render_dispatch_prompt
 from .constants import (
+    DISPATCHED_NEXT_STEP,
+    RUNNING_NEXT_STEP,
     MAID_AGENT_TOOL_NAME,
     MAID_LIST_AGENTS_TOOL_NAME,
     MAID_SEND_MESSAGE_TOOL_NAME,
@@ -463,7 +465,17 @@ class MaidAgent(Star):
         resume_agent_id: str = "",
         tasks: list | None = None,
     ) -> str:
-        """Create one or more isolated maid agents from explicit task requests."""
+        """Dispatch background maid agents. Returns a handle immediately, never waits.
+
+        This call only queues the work; it comes back in milliseconds. The maid
+        then runs on its own, narrates its progress directly to the user, and its
+        final report is delivered back to you automatically as a new turn.
+
+        After this returns you must stop calling tools and reply to the user in
+        this same turn. Do not call maid_task_output to wait for the result: your
+        turn stays open while you do, and everything the user says meanwhile gets
+        swallowed instead of answered.
+        """
         umo = event.unified_msg_origin
         true_user_input = str(event.get_extra(TRUE_USER_INPUT_EXTRA_KEY) or "")
         batch: list[dict] = []
@@ -524,9 +536,10 @@ class MaidAgent(Star):
                 results.append({"status": "error", "error": str(result) or "派发任务失败。"})
             else:
                 results.append(result)
-        if len(results) == 1:
-            return self._json_outcome(results[0])
-        return self._json_outcome({"status": "batch", "results": results})
+        payload = results[0] if len(results) == 1 else {"status": "batch", "results": results}
+        if any(item.get("status") == "running" for item in results):
+            payload["next"] = DISPATCHED_NEXT_STEP
+        return self._json_outcome(payload)
 
     async def _dispatch_chat_task(
         self,
@@ -796,7 +809,14 @@ class MaidAgent(Star):
 
     @filter.llm_tool(name=MAID_TASK_OUTPUT_TOOL_NAME)
     async def maid_task_output(self, event, task_id: str) -> str:
-        """Read a task's current progress or final result without blocking."""
+        """Take a one-shot progress snapshot of a maid task. Never blocks.
+
+        Use this only to answer a user who explicitly asked how a task is going.
+        It is not a wait primitive: calling it repeatedly does not make the maid
+        finish sooner, it only keeps your turn open, and anything the user says
+        meanwhile gets swallowed instead of answered. The final report always
+        arrives on its own — you never need to fetch it.
+        """
         if not isinstance(task_id, str) or not task_id.strip():
             return self._json_outcome({"status": "error", "error": "task_id 必须是非空字符串。"})
         agent_id = self._find_agent_for_task(task_id)
@@ -804,9 +824,13 @@ class MaidAgent(Star):
             return self._json_outcome({"status": "error", "error": f"task_id 不存在: {task_id}"})
         driver = self.registry.attach(agent_id)
         if driver.running:
-            return self._json_outcome(
-                {"agent_id": agent_id, "task_id": task_id, "status": "running", **self._agent_progress(driver)}
-            )
+            return self._json_outcome({
+                "agent_id": agent_id,
+                "task_id": task_id,
+                "status": "running",
+                **self._agent_progress(driver),
+                "next": RUNNING_NEXT_STEP,
+            })
         meta = driver.log.load_meta()
         if await driver.claim_delivery():
             # 模型已亲自读到终态，认领这次投递，避免完成通知再转述一遍。

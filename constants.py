@@ -28,3 +28,16 @@ MAID_NOTIFICATION_IDS_META_KEY = "_maid_notification_ids"
 
 DASHBOARD_UMO = "dashboard:FriendMessage:dashboard"
 
+# 派发后必须让主模型收尾：主 agent 的 run 要等它不再调工具、吐出最终文本才结束，
+# run 活着期间 AstrBot 会把用户的新消息捕获成 follow-up 吞进 tool result。
+DISPATCHED_NEXT_STEP = (
+    "Dispatched. Stop calling tools now and reply to the user in this same turn. "
+    "The maid narrates its own progress to the user and its final report is "
+    "delivered back to you automatically as a new turn — you never fetch it."
+)
+RUNNING_NEXT_STEP = (
+    "Still running. Report this progress to the user and end your turn. Calling "
+    "this again does not make the maid finish sooner; it only keeps your turn "
+    "open, and anything the user says meanwhile gets swallowed instead of answered."
+)
+

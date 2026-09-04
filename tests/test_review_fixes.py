@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pytest
 
+from astrbot_plugin_maid_agent.config import DEFAULT_DISPATCH_PROMPT_TEMPLATE
 from astrbot_plugin_maid_agent.harness import contracts as c
 from astrbot_plugin_maid_agent.harness.drivers import DriverRegistry
 from astrbot_plugin_maid_agent.harness.store import SessionStore
@@ -28,6 +29,10 @@ class _Config:
     memory_agent_names = ()
     retention_days = 30
     max_turn_seconds = 1800
+    allowed_agent_names = ("butler",)
+    default_agent_name = "butler"
+    dispatch_prompt_template = DEFAULT_DISPATCH_PROMPT_TEMPLATE
+    include_raw_user_input = False
 
 
 @pytest.fixture()
@@ -269,3 +274,39 @@ def test_tool_status_switch_controls_chat_delivery(registry, store):
     asyncio.run(scenario())
 
     assert spoken == ["butler: 🔨 调用工具: shell_exec"]
+
+
+def test_resume_dispatch_clears_the_previous_delivery_claim(registry, store):
+    """续派同一个女仆时必须清掉上一轮的认领，否则第二轮的汇报没人转达。"""
+    agent = object.__new__(MaidAgent)
+    agent.context = None
+    agent.store = store
+    agent.registry = registry
+    agent.maid_mode_config = registry.config
+    identity = {"senderId": "1", "groupId": "777", "platformName": "aiocqhttp"}
+    session_id = agent._create_chat_agent(
+        "umo1", "butler", dispatch_id="d-1", identity=identity
+    )
+
+    async def scenario():
+        driver = registry.attach(session_id)
+        # 第一轮：终态通知已经认领并转述过。
+        assert await driver.claim_delivery() is True
+        driver.log.update_meta(notified=True)
+
+        driver._kick = lambda: None  # 别真起 turn 循环，这里只看派发写下的 meta
+        await agent._dispatch_chat_task(
+            "umo1",
+            "",
+            identity,
+            [],
+            {"prompt": "再查一遍", "subagent_type": "butler", "resume_agent_id": session_id, "dispatch_id": "d-2"},
+        )
+        # 第二轮的终态通知得能重新认领，_on_turn_terminal 才不会把它当重复转述跳过。
+        return driver.log.load_meta(), await driver.claim_delivery()
+
+    meta, reclaimed = asyncio.run(scenario())
+
+    assert meta["notified"] is False
+    assert meta["deliveryStatus"] == "pending"
+    assert reclaimed is True

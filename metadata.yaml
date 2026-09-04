@@ -1,6 +1,6 @@
 name: astrbot_plugin_maid_agent
-version: "2.0.4"
-description: "大小姐+管家模式子代理系统：主模型仅保留自然语言对话上下文，所有工具调用通过管家subagent执行，减少结构化数据提示词污染角色扮演。"
+version: "2.0.5"
+description: "大小姐+管家双代理角色扮演：大小姐只负责聊天，工具调用全部交给管家 subagent 执行，主模型上下文保持纯净不被工具提示词污染。"
 author: "Kalo"
 repo: "https://github.com/Kalospacer/astrbot_plugin_maid_agent"
 display_name: "代理女仆"
@@ -10,9 +10,11 @@ astrbot_version: ">=4.20.0"
 # ============================================================
 # 本插件需要配合 AstrBot 的 subagent 功能使用：
 #
-# 1. 必须在 AstrBot 配置中启用至少一个可用的 subagent
-# 2. 插件实际调度目标由插件配置中的 `default_agent_name` /
-#    `allowed_agent_names` 以及主模型对 `call_maid` 的调用参数一起决定
+# 1. 无需手动配置 subagent：一个都没有时，插件会自动创建一个默认管家
+#    subagent（名称取插件配置的 `default_agent_name`，默认 `butler`，
+#    不限制工具、跟随当前聊天 provider）
+# 2. 插件实际调度目标由插件配置中的 `allowed_agent_names` 以及主模型对
+#    `maid_agent` 的调用参数一起决定；每次任务必须显式指定 agent
 # 3. subagent 配置示例：
 #    subagent_orchestrator:
 #      agents:
@@ -27,7 +29,7 @@ astrbot_version: ">=4.20.0"
 
 # 插件启用后的行为说明：
 # 1. 主模型（大小姐）只看到自然语言对话历史，不直接持有工具
-# 2. 主模型通过原生 `call_maid` Function Call 表达调度意图
-# 3. `call_maid` 默认前台同步等待执行结果，超时后原地转后台继续执行
+# 2. 主模型通过原生 `maid_agent` Function Call 表达调度意图
+# 3. 聊天任务由 `dispatch_session_mode` 固定为 foreground 或 background，运行中不会切换
 # 4. 插件在后台调度 subagent，并将执行结果回灌给大小姐
-# 5. 可用 `maid_task(status/result/stop/steer)` 查询或控制后台任务
+# 5. 可用 `maid_send_message`、`maid_task_output`、`maid_task_stop` 查询或控制任务

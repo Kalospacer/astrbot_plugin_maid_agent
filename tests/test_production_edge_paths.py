@@ -21,7 +21,6 @@ class _Hub:
 
 
 class _Config:
-    default_agent_name = "butler"
     max_active_per_umo = 5
     max_active_global = 20
 
@@ -35,9 +34,6 @@ class _ConfigHolder:
 
     def save_config(self, _patch):
         return {}
-
-    def default_agent_name(self):
-        return "butler"
 
     def version(self):
         return "test"

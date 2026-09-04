@@ -38,8 +38,8 @@ def registry(store: SessionStore) -> DriverRegistry:
     return DriverRegistry(context=None, store=store, mux_hub=_Hub(), host_hub=_Hub(), config=_Config())
 
 
-def test_maid_voice_holds_back_the_final_paragraph(registry, store):
-    """女仆正文逐段投递到聊天，但最后一段留给大小姐转述，不重复。"""
+def test_maid_voice_is_delivered_immediately(registry, store):
+    """女仆正文即时投递，不押后：押后会把第一句话拖到下一段出现时才发。"""
     log = store.create_session(
         agent_preset="butler",
         meta={"umo": "umo1", "agentName": "butler", "sourceKind": "chat"},
@@ -54,10 +54,11 @@ def test_maid_voice_holds_back_the_final_paragraph(registry, store):
         driver = registry.attach(log.session_id)
         driver.umo, driver.agent_name = "umo1", "butler"
         driver._voice_sink = _Sink()
-        await driver._queue_voice("先看一下服务状态")
-        await driver._queue_voice("")  # 纯工具调用的空步不占位
-        await driver._queue_voice("端口是通的")
-        await driver._queue_voice("汇报：服务正常")
+        await driver._speak("先看一下服务状态")
+        assert spoken == ["butler: 先看一下服务状态"]
+        await driver._speak("")          # 空正文不占位
+        await driver._speak("   ")       # 纯空白同理
+        await driver._speak("端口是通的")
 
     asyncio.run(scenario())
 
@@ -71,8 +72,8 @@ def test_maid_voice_is_silent_for_console_sessions(registry, store):
     async def scenario():
         driver = registry.attach(log.session_id)
         driver.agent_name = "butler"
-        await driver._queue_voice("第一段")
-        await driver._queue_voice("第二段")
+        await driver._speak("第一段")
+        await driver._speak("第二段")
 
     asyncio.run(scenario())
 

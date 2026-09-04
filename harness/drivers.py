@@ -251,8 +251,8 @@ class SessionDriver:
         self._interrupted = False
         self.turn_started_at: float | None = None
         self.last_turn: dict = {}
-        self._pending_run_context: dict | None = None
-        self._current_run_context: dict = {}
+        self._voice_sink = None
+        self._pending_voice: str | None = None
 
 
     @property
@@ -312,8 +312,7 @@ class SessionDriver:
             if item["id"] != item_id:
                 continue
             if kind == "remove":
-                removed = self.inbox.pop(index)
-                self._release_foreground_lease(removed.get("run_context") or {})
+                self.inbox.pop(index)
             elif kind == "edit":
                 item["message"]["content"] = action.get("content") or item["message"]["content"]
             elif kind == "steer":
@@ -354,8 +353,6 @@ class SessionDriver:
                 str((item.get("run_context") or {}).get("task_id") or "")
                 for item in self.inbox
             ]
-            for item in self.inbox:
-                self._release_foreground_lease(item.get("run_context") or {})
             self.inbox.clear()
             self._settle_turn({"status": "stopped", "result": "", "error": "task stopped before execution"})
             # 队列任务被取消也要在事件流留痕：前端与 maid_task_output 靠它感知终态。
@@ -434,7 +431,6 @@ class SessionDriver:
             self.inbox.remove(item)
             self._publish_queue()
             try:
-                self._pending_run_context = item.get("run_context") or {}
                 await self.run_turn(item["message"])
             except asyncio.CancelledError:
                 if self._interrupted:
@@ -453,8 +449,6 @@ class SessionDriver:
                     await self._emit("turn/end", {"turn": self._count_turns(), "reason": c.reason_error(str(exc))})
                 self._settle_turn({"status": "failed", "error": str(exc), "result": ""})
                 self.registry.notify_turn_terminal(self, self.last_turn)
-            finally:
-                self._pending_run_context = None
             for waiter in list(self._turn_result_waiters):
                 if not waiter.done():
                     waiter.set_result(dict(self.last_turn))
@@ -486,7 +480,6 @@ class SessionDriver:
 
     async def run_turn(self, user_message: dict) -> dict:
         """执行一个 turn。返回 {status, result, error}。"""
-        self._current_run_context = self._pending_run_context or {}
         turn = self._count_turns() + 1
         self.state = "running"
         self.turn_started_at = time.monotonic()
@@ -509,8 +502,6 @@ class SessionDriver:
             self.registry.notify_turn_terminal(self, result)
             return result
         finally:
-            self._release_foreground_lease(self._current_run_context)
-            self._current_run_context = {}
             self.turn_started_at = None
             self.state = "idle"
             self.registry.publish_host_frame(
@@ -530,13 +521,15 @@ class SessionDriver:
         umo = self.umo
 
         handoff, resolved_name = self.registry.resolve_handoff(agent_name)
-        execution_mode = str(self._current_run_context.get("execution_mode") or "background")
+        meta = self.log.load_meta()
         child_event = self.registry.build_child_event(
             umo,
             self.sender_id,
-            execution_mode=execution_mode,
-            source_event=self._current_run_context.get("source_event"),
+            identity=meta.get("identity"),
         )
+        # 只有聊天来源的女仆往聊天里说话；控制台会话说给控制台听就够了。
+        self._voice_sink = child_event if meta.get("sourceKind") == "chat" else None
+        self._pending_voice = None
 
         provider_id = (
             self.provider_id
@@ -567,10 +560,6 @@ class SessionDriver:
 
         prompt_text = self._prompt_text_of_last_user_message()
         image_paths = self.registry.image_paths_for_message(self.session_id, self.log.read_events())
-        if execution_mode == "foreground":
-            from ..toolset_adapter import collect_child_image_urls
-
-            image_paths = await collect_child_image_urls(child_event, image_paths)
 
         provider_settings = self.registry.load_provider_settings(umo)
         step_holder = {"step": 0}
@@ -706,8 +695,10 @@ class SessionDriver:
             self._steer_fn = None
             self._stop_fn = None
             await hooks.close_unfinished()
-            if execution_mode == "background":
-                child_event.cleanup_temporary_local_files()
+            child_event.cleanup_temporary_local_files()
+            # 押后的最后一段正文不发：那是给大小姐转述的汇报。
+            self._voice_sink = None
+            self._pending_voice = None
 
         async with self.log.lock:
             await self._emit("turn/end", {"turn": turn, "reason": reason})
@@ -811,6 +802,7 @@ class SessionDriver:
                         },
                         source_event_seqs=[],
                     )
+                await self._queue_voice(text)
         return len(messages), prev_usage
 
     async def emit_tool_call(self, call_id: str, name: str, arguments: str, step: int) -> None:
@@ -861,12 +853,50 @@ class SessionDriver:
             )
         self._meta_update(deliveryStatus=status)
 
-    def _release_foreground_lease(self, run_context: dict) -> None:
-        dispatch_id = str(run_context.get("dispatch_id") or "")
-        if run_context.get("execution_mode") != "foreground" or not dispatch_id:
+    async def claim_delivery(self) -> bool:
+        """原子认领「这份汇报由我转达」。已被认领过则返回 False。
+
+        两个抢的人：turn 终态的通知回灌，和大小姐主动调 maid_task_output 读
+        终态。谁先拿到谁负责，另一个闭嘴，否则同一份结论会转述两遍。读改写
+        必须在 log.lock 里做——两边各自持有的外层锁不是同一把。
+        """
+        async with self.log.lock:
+            if self.log.load_meta().get("deliveryClaimed"):
+                return False
+            self.log.update_meta(deliveryClaimed=True)
+            return True
+
+    async def release_delivery_claim(self) -> None:
+        """投递失败时归还认领，留出重试机会。"""
+        async with self.log.lock:
+            self.log.update_meta(deliveryClaimed=False)
+
+    async def _queue_voice(self, text: str) -> None:
+        """把女仆的一段正文排进聊天投递队列，永远押后一段。
+
+        押后是为了让最后一段留给大小姐：那段是任务汇报，会经 turn 终态回灌
+        给主 agent 再转述一次，女仆自己先说了用户就要看两遍。
+        """
+        text = (text or "").strip()
+        if not text:
             return
-        self.registry.release_foreground_lease(self.umo, dispatch_id)
-        self._meta_update(foregroundLease=None)
+        pending, self._pending_voice = self._pending_voice, text
+        if pending:
+            await self._speak(pending)
+
+    async def _speak(self, text: str) -> None:
+        sink = self._voice_sink
+        if sink is None:
+            return
+        from astrbot.api.event import MessageChain
+
+        speaker = self.agent_name or "maid"
+        try:
+            await sink.send(MessageChain().message(f"{speaker}: {text}"))
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "[maid] 女仆正文投递失败: session=%s err=%s", self.session_id[:8], exc
+            )
 
     def _clear_steering_items(self) -> None:
         if any(item["placement"] == "steering" for item in self.inbox):
@@ -980,7 +1010,6 @@ class DriverRegistry:
         self.host_hub = host_hub
         self.config = config
         self.drivers: dict[str, SessionDriver] = {}
-        self._foreground_leases: dict[str, str] = {}
         self._background_tasks: set[asyncio.Task] = set()
         self.on_turn_terminal = None
 
@@ -1012,16 +1041,6 @@ class DriverRegistry:
         per_umo = int(getattr(self.config, "max_active_per_umo", 5) or 5)
         global_cap = int(getattr(self.config, "max_active_global", 20) or 20)
         return self.running_count_for_umo(umo) < per_umo and self.running_count() < global_cap
-
-    def acquire_foreground_lease(self, umo: str, dispatch_id: str) -> bool:
-        if not umo or not dispatch_id or umo in self._foreground_leases:
-            return False
-        self._foreground_leases[umo] = dispatch_id
-        return True
-
-    def release_foreground_lease(self, umo: str, dispatch_id: str) -> None:
-        if self._foreground_leases.get(umo) == dispatch_id:
-            self._foreground_leases.pop(umo, None)
 
     def notify_turn_terminal(self, driver: SessionDriver, result: dict) -> None:
         callback = self.on_turn_terminal
@@ -1084,14 +1103,17 @@ class DriverRegistry:
                 raise ValueError(f"{exc}（可用 agents: {', '.join(allowed)}）") from exc
             raise
 
-    def build_child_event(self, umo: str, sender_id: str, *, execution_mode: str, source_event=None):
-        if execution_mode == "foreground":
-            if source_event is None:
-                raise ValueError("foreground 任务缺少真实聊天 event。")
-            return source_event
-        from .events_shim import DashboardMaidEvent
+    def build_child_event(self, umo: str, sender_id: str, *, identity: dict | None = None):
+        from .events_shim import MaidAgentEvent
 
-        return DashboardMaidEvent(unified_msg_origin=umo or DASHBOARD_UMO, sender_id=sender_id or "dashboard", message_text="")
+        snapshot = dict(identity or {})
+        snapshot.setdefault("senderId", sender_id or "dashboard")
+        return MaidAgentEvent(
+            context=self.context,
+            unified_msg_origin=umo or DASHBOARD_UMO,
+            identity=snapshot,
+            message_text="",
+        )
 
     def build_toolset(self, *, handoff, umo: str, agent_name: str):
         from ..toolset_adapter import build_child_toolset

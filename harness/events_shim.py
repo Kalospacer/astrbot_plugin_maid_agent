@@ -128,9 +128,14 @@ class MaidAgentEvent(CoreAstrMessageEvent):
         return self._maid_context is not None and self._maid_umo != DASHBOARD_UMO
 
     async def send(self, message: MessageChain) -> None:
-        # 控制台会话没有可投递的平台，直接丢弃——也别让基类记一笔从没发生过的
-        # 平台发送指标。
+        """按 UMO 直接投递，不经过基类。
+
+        基类的 send 是给平台绑定的真实事件用的，我们只满足它一半的契约。它
+        眼下只上报一条 metric（v4.27.4 与 4.28.0-beta.1 逐字节相同，都不碰
+        adapter），但拿这一条指标去换「哪天基类改实现就整条静默丢失」的风险
+        不划算——``SessionDriver._speak`` 会把异常吞成一条 warning。
+        """
         if not self.deliverable:
             return
-        await super().send(message)
+        self._has_send_oper = True
         await self._maid_context.send_message(self._maid_umo, message)

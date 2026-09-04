@@ -207,3 +207,38 @@ def test_progress_reads_tool_io_when_the_maid_has_not_spoken(registry, store):
     assert not progress["tool_input"].startswith("{")
     assert progress["tool_output"] == "200"
     assert progress["text"] == "先用 python 抓一下页面"
+
+
+def test_synthetic_event_delivers_only_through_context_send_message():
+    """合成事件的投递必须只走 Context.send_message；控制台来源是静默 no-op。"""
+    from astrbot.api.event import MessageChain
+
+    from astrbot_plugin_maid_agent.constants import DASHBOARD_UMO
+    from astrbot_plugin_maid_agent.harness.events_shim import MaidAgentEvent
+
+    sent: list[tuple[str, str]] = []
+
+    class _Ctx:
+        async def send_message(self, umo, chain):
+            sent.append((umo, chain.get_plain_text()))
+
+    async def scenario():
+        chat = MaidAgentEvent(
+            context=_Ctx(),
+            unified_msg_origin="aiocqhttp:GroupMessage:777",
+            identity={"senderId": "1", "groupId": "777", "platformName": "aiocqhttp"},
+        )
+        assert chat.deliverable is True
+        await chat.send(MessageChain().message("butler: 端口是通的"))
+
+        console = MaidAgentEvent(context=_Ctx(), unified_msg_origin=DASHBOARD_UMO)
+        assert console.deliverable is False
+        await console.send(MessageChain().message("不该发出去"))
+
+        # context 缺失时也不能炸：女仆正文投递失败只该记一条 warning。
+        detached = MaidAgentEvent(context=None, unified_msg_origin="aiocqhttp:FriendMessage:1")
+        await detached.send(MessageChain().message("没有 context"))
+
+    asyncio.run(scenario())
+
+    assert sent == [("aiocqhttp:GroupMessage:777", "butler: 端口是通的")]

@@ -3,7 +3,9 @@
     "description": "允许调度的 Agent 白名单",
     "hint": "maid_agent 和控制台创建任务只能使用这些 subagent 名称。每次任务必须显式选择一个名称；不能为空。",
     "type": "list",
-    "default": ["butler"]
+    "default": [
+      "butler"
+    ]
   },
   "default_agent_name": {
     "description": "默认回退 Agent",
@@ -28,6 +30,18 @@
     "hint": "开启后，转交给管家 subagent 时会同时附带用户原话与大小姐的自然语言要求。",
     "type": "bool",
     "default": true
+  },
+  "show_maid_speech": {
+    "description": "投递管家正文到聊天",
+    "hint": "默认关闭。开启后管家干活途中的每一段正文（没有正文时用推理）以「管家名: ...」即时发到聊天。不带工具调用的那一步是终答，始终留给大小姐转述，不会重复。关闭时聊天里只有大小姐的最终转述。",
+    "type": "bool",
+    "default": false
+  },
+  "show_maid_tool_status": {
+    "description": "投递管家函数调用状态到聊天",
+    "hint": "默认关闭。对齐 AstrBot 的「输出函数调用状态」：管家每次开始调用工具时发一条「管家名: 🔨 调用工具: xxx」。模型不输出正文时这是唯一的实时进度信号。注意长任务会一步一条，几十步就是几十条消息。",
+    "type": "bool",
+    "default": false
   },
   "log_raw_llm_io": {
     "description": "记录完整 LLM 原始请求/响应",

@@ -801,7 +801,7 @@ class SessionDriver:
                 # 带工具调用的这一步是干活途中的播报，立刻发；不带工具调用的
                 # 是终答，留给大小姐转述。用「有没有 tool_calls」判别而不是
                 # 「后面还有没有下一段」，后者会把投递时机绑到未来事件上。
-                if tool_call_entries:
+                if tool_call_entries and getattr(self.registry.config, "show_maid_speech", False):
                     await self._speak(text or think)
         return len(messages), prev_usage
 
@@ -814,6 +814,9 @@ class SessionDriver:
                 {"turn": turn, "step": max(step, 1), "callId": call_id, "name": name, "arguments": arguments},
                 view=c.tool_event_view_call(view) if view else None,
             )
+        # 工具刚开始执行就报出去，这是模型不输出正文时唯一的实时进度信号。
+        if getattr(self.registry.config, "show_maid_tool_status", False):
+            await self._speak(f"🔨 调用工具: {name}")
 
     async def emit_tool_result(
         self, call_id: str, name: str, text: str, is_error: bool, step: int, tool_args: Any = None

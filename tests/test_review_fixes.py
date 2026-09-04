@@ -21,6 +21,8 @@ class _Hub:
 
 
 class _Config:
+    show_maid_speech = True
+    show_maid_tool_status = True
     max_active_per_umo = 5
     max_active_global = 20
     memory_agent_names = ()
@@ -243,3 +245,27 @@ def test_synthetic_event_delivers_only_through_context_send_message():
     asyncio.run(scenario())
 
     assert sent == [("aiocqhttp:GroupMessage:777", "butler: 端口是通的")]
+def test_tool_status_switch_controls_chat_delivery(registry, store):
+    """函数调用状态投递受开关控制；开着时每次工具开始就报一条。"""
+    log = store.create_session(
+        agent_preset="butler",
+        meta={"umo": "umo1", "agentName": "butler", "sourceKind": "chat"},
+    )
+    spoken: list[str] = []
+
+    class _Sink:
+        async def send(self, chain):
+            spoken.append(chain.get_plain_text())
+
+    async def scenario():
+        driver = registry.attach(log.session_id)
+        driver.umo, driver.agent_name = "umo1", "butler"
+        driver._voice_sink = _Sink()
+        await driver.emit_tool_call("call-1", "shell_exec", "{}", 1)
+        assert spoken == ["butler: 🔨 调用工具: shell_exec"]
+        registry.config.show_maid_tool_status = False
+        await driver.emit_tool_call("call-2", "http_get", "{}", 2)
+
+    asyncio.run(scenario())
+
+    assert spoken == ["butler: 🔨 调用工具: shell_exec"]

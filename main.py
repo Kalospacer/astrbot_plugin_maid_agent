@@ -771,40 +771,48 @@ class MaidAgent(Star):
 
     @staticmethod
     def _agent_progress(driver) -> dict:
-        """本回合的进度快照：最后一次工具调用 + 最后一段正文 + 已跑秒数。
+        """本回合的进度快照，全部从事件日志尾部现读，不额外记账。
 
-        全部从事件日志尾部现读，不额外记账。
+        工具名单独看没有信息量——女仆大量时间待在「只发工具调用、不说话」的
+        步里，正文是空的。所以入参、输出和推理正文必须一起给出，否则拿到的
+        只是「它在跑」这件早就知道的事。
         """
         tool_name = ""
         tool_done = False
-        settled_calls: set[str] = set()
+        tool_input = ""
+        tool_output = ""
+        settled: dict[str, str] = {}
         text = ""
+        step = 0
         for event in reversed(driver.log.read_events()):
             etype = event.get("type")
             data = event.get("data", {})
             if etype == "turn/start":
                 break
-            if etype == "tool/result" and not tool_name:
-                blocks = (data.get("message") or {}).get("content") or []
-                first = blocks[0] if blocks and isinstance(blocks[0], dict) else {}
-                settled_calls.add(str(first.get("toolCallId") or ""))
+            if not step:
+                step = _safe_int(data.get("step"), 0)
+            if etype == "tool/result":
+                if not tool_name:
+                    settled[_tool_result_call_id(data)] = _tool_result_text(data)
             elif etype == "tool/call" and not tool_name:
                 tool_name = str(data.get("name") or "")
-                tool_done = str(data.get("callId") or "") in settled_calls
+                call_id = str(data.get("callId") or "")
+                tool_done = call_id in settled
+                tool_output = settled.get(call_id, "")
+                tool_input = _flatten_tool_args(data.get("arguments"))
             elif etype == "assistant/message" and not text:
-                text = "".join(
-                    block.get("text", "")
-                    for block in (data.get("message") or {}).get("content", [])
-                    if block.get("type") == "text"
-                ).strip()
+                text = _assistant_say(data)
             if tool_name and text:
                 break
         started = driver.turn_started_at
         return {
+            "step": step,
+            "elapsed_seconds": int(time.monotonic() - started) if started is not None else 0,
             "tool": tool_name,
             "tool_done": tool_done,
-            "text": text,
-            "elapsed_seconds": int(time.monotonic() - started) if started is not None else 0,
+            "tool_input": _ellipsis(tool_input, 400),
+            "tool_output": _ellipsis(tool_output, 400),
+            "text": _ellipsis(text, 400),
         }
 
     @filter.llm_tool(name=MAID_TASK_OUTPUT_TOOL_NAME)
@@ -877,12 +885,20 @@ class MaidAgent(Star):
         for driver in active:
             progress = self._agent_progress(driver)
             name = driver.agent_name or "maid"
-            lines.append(f"- {name} [{driver.session_id[:8]}] 已跑 {progress['elapsed_seconds']}s")
+            head = f"- {name} [{driver.session_id[:8]}] 已跑 {progress['elapsed_seconds']}s"
+            if progress["step"]:
+                head = f"{head} · 第 {progress['step']} 步"
+            lines.append(head)
+            if progress["text"]:
+                lines.append(f"  「{_ellipsis(progress['text'], 160)}」")
             if progress["tool"]:
                 verb = "刚用完" if progress["tool_done"] else "正在用"
-                lines.append(f"  {verb} {progress['tool']}")
-            if progress["text"]:
-                lines.append(f"  「{_ellipsis(progress['text'], 120)}」")
+                tool_line = f"  {verb} {progress['tool']}"
+                if progress["tool_input"]:
+                    tool_line = f"{tool_line}: {_ellipsis(progress['tool_input'], 160)}"
+                lines.append(tool_line)
+            if progress["tool_output"]:
+                lines.append(f"  → {_ellipsis(progress['tool_output'], 160)}")
         yield event.plain_result("\n".join(lines))
 
     @maid.command("stop")
@@ -907,6 +923,52 @@ class MaidAgent(Star):
 def _ellipsis(text: str, limit: int) -> str:
     flat = " ".join(text.split())
     return flat if len(flat) <= limit else f"{flat[: limit - 1]}…"
+
+
+def _tool_result_call_id(data: dict) -> str:
+    blocks = (data.get("message") or {}).get("content") or []
+    first = blocks[0] if blocks and isinstance(blocks[0], dict) else {}
+    return str(first.get("toolCallId") or "")
+
+
+def _tool_result_text(data: dict) -> str:
+    blocks = (data.get("message") or {}).get("content") or []
+    first = blocks[0] if blocks and isinstance(blocks[0], dict) else {}
+    return "".join(
+        part.get("text", "")
+        for part in (first.get("content") or [])
+        if isinstance(part, dict) and part.get("type") == "text"
+    ).strip()
+
+
+def _assistant_say(data: dict) -> str:
+    """助手这一步说了什么：正文优先，没有正文就退回推理。"""
+    blocks = (data.get("message") or {}).get("content") or []
+    for wanted in ("text", "reasoning"):
+        said = "".join(
+            block.get("text", "")
+            for block in blocks
+            if isinstance(block, dict) and block.get("type") == wanted
+        ).strip()
+        if said:
+            return said
+    return ""
+
+
+def _flatten_tool_args(arguments) -> str:
+    """把工具入参压成一行给人看：单参数直接给值，多参数给 k=v。"""
+    raw = arguments if isinstance(arguments, str) else json.dumps(arguments or {}, ensure_ascii=False)
+    try:
+        # strict=False：模型常把裸换行写进字符串里，严格模式会让整块参数退化成
+        # 一坨 JSON 噪音，而那一坨正是用户想看的代码本身。
+        parsed = json.loads(raw, strict=False)
+    except (TypeError, ValueError):
+        return raw
+    if not isinstance(parsed, dict) or not parsed:
+        return raw
+    if len(parsed) == 1:
+        return str(next(iter(parsed.values())))
+    return " ".join(f"{key}={value}" for key, value in parsed.items())
 
 
 def meta_task_id(driver) -> str:

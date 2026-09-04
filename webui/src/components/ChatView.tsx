@@ -396,9 +396,15 @@ function SessionRuntimeNotice(props: { summary: import("@/types").SessionSummary
 
 function DeliveryTrace(props: { node: Extract<ChatNode, { kind: "delivery" }>; hidden: boolean }) {
   const label = deliveryStatusLabel(props.node.status) ?? "投递状态已更新";
+  const state =
+    props.node.status === "failed"
+      ? "error"
+      : props.node.status === "sent" || props.node.status === "skipped"
+        ? "done"
+        : "ongoing";
   return (
     <div className="delivery-trace" hidden={props.hidden} role="status">
-      <StateDot state={props.node.status === "failed" ? "error" : props.node.status === "sent" ? "done" : "ongoing"} />
+      <StateDot state={state} />
       <span>结果投递：{label}</span>
       {props.node.agentId ? <code>Agent {props.node.agentId}</code> : null}
       {props.node.taskId ? <code>任务 {props.node.taskId}</code> : null}

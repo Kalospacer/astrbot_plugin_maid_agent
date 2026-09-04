@@ -41,13 +41,6 @@
     "type": "string",
     "default": "{user_input_block}{maid_request_block}你是MuiceMaid，大小姐的管家。你的任务是完成大小姐交给你的请求，并使用你拥有的工具达成目的；遇到不确定信息时直接说明，不编造结果。完成后用中文向大小姐汇报。"
   },
-  "dispatch_session_mode": {
-    "description": "聊天任务执行环境",
-    "hint": "仅影响聊天中 maid_agent 新派发的任务。foreground 使用真实聊天 event/session；background 使用隔离 harness sandbox。运行开始后不会切换模式。控制台任务始终是隔离 sandbox。",
-    "type": "string",
-    "options": ["foreground", "background"],
-    "default": "background"
-  },
   "memory_agent_names": {
     "description": "启用记忆的 Agent 名称",
     "hint": "命中的管家 agent 会自动获得 AstrBot 原生 Read/Write/Edit 文件工具，并在 UMO+agent_name 隔离的 memory 目录下读写 MEMORY.md。为空时所有 agent 都不启用记忆。",

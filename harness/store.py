@@ -30,6 +30,31 @@ IMAGE_MEDIA_EXT = {
     "image/gif": ".gif",
 }
 
+_EXT_MEDIA_TYPE = {
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".webp": "image/webp",
+    ".gif": "image/gif",
+}
+
+_IMAGE_MAGIC = (
+    (b"\x89PNG\r\n\x1a\n", "image/png"),
+    (b"\xff\xd8\xff", "image/jpeg"),
+    (b"GIF87a", "image/gif"),
+    (b"GIF89a", "image/gif"),
+)
+
+
+def sniff_image_media_type(raw: bytes, suffix: str = "") -> str | None:
+    """按魔数识别图片类型，识别不出时退回扩展名。"""
+    for magic, media_type in _IMAGE_MAGIC:
+        if raw.startswith(magic):
+            return media_type
+    if raw[:4] == b"RIFF" and raw[8:12] == b"WEBP":
+        return "image/webp"
+    return _EXT_MEDIA_TYPE.get(suffix.lower())
+
 
 def new_session_id() -> str:
     return uuid.uuid4().hex
@@ -152,13 +177,10 @@ class SessionStore:
         if header.get("agentPreset"):
             item["agentPreset"] = header["agentPreset"]
         for meta_key, summary_key in (
-            ("executionMode", "executionMode"),
             ("sourceKind", "sourceKind"),
-            ("backgroundReason", "backgroundReason"),
             ("dispatchId", "dispatchId"),
             ("agentId", "agentId"),
             ("activeTaskId", "taskId"),
-            ("foregroundLease", "foregroundLease"),
             ("deliveryStatus", "deliveryStatus"),
         ):
             if meta.get(meta_key) not in (None, ""):
@@ -201,6 +223,29 @@ class SessionStore:
         if name:
             ref["name"] = name
         return ref
+
+    def save_attachment_from_path(self, session_id: str, path: str | Path) -> dict | None:
+        """把本地图片复制进会话附件区，返回 ImageAttachmentRef；无法识别时返回 None。
+
+        派发时用它给女仆留一份副本：主 pipeline 结束后 AstrBot 会清理事件的临时
+        文件，女仆此时往往还在跑，直接引用原路径会读到已删除的文件。
+        """
+        source = Path(path)
+        try:
+            raw = source.read_bytes()
+        except OSError:
+            return None
+        if not raw:
+            return None
+        media_type = sniff_image_media_type(raw, source.suffix)
+        if media_type is None:
+            return None
+        return self.save_attachment(
+            session_id,
+            media_type,
+            base64.b64encode(raw).decode("ascii"),
+            name=source.name,
+        )
 
     def load_attachment(self, session_id: str, attachment_id: str) -> tuple[dict, bytes]:
         if not ATTACHMENT_ID_RE.match(attachment_id or ""):

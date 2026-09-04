@@ -1,4 +1,4 @@
-"""审查修复回归：前台等待超时降级、空队列 stop 终态补写、通知失败回滚。"""
+"""审查修复回归：女仆正文押后投递、空队列 stop 终态补写、通知失败回滚。"""
 
 from __future__ import annotations
 
@@ -35,50 +35,59 @@ def registry(store: SessionStore) -> DriverRegistry:
     return DriverRegistry(context=None, store=store, mux_hub=_Hub(), host_hub=_Hub(), config=_Config())
 
 
-def test_foreground_wait_timeout_returns_running_handle(registry, store):
-    """前台等待超过预算时降级返回句柄并补 notify，任务继续跑。"""
+def test_maid_voice_holds_back_the_final_paragraph(registry, store):
+    """女仆正文逐段投递到聊天，但最后一段留给大小姐转述，不重复。"""
     log = store.create_session(
         agent_preset="butler",
-        meta={"umo": "umo1", "agentName": "butler", "notify": False, "executionMode": "foreground"},
+        meta={"umo": "umo1", "agentName": "butler", "sourceKind": "chat"},
     )
+    spoken: list[str] = []
+
+    class _Sink:
+        async def send(self, chain):
+            spoken.append(chain.get_plain_text())
 
     async def scenario():
         driver = registry.attach(log.session_id)
-        driver.umo, driver.agent_name, driver.sender_id = "umo1", "butler", "chat"
-
-        task_id = "t-foreground-timeout"
-        driver.log.update_meta(activeTaskId=task_id, notified=False)
-        # 只测等待原语与降级路径：pump 未启动（不 enqueue），等待侧必然超时。
-        try:
-            await asyncio.wait_for(driver.wait_next_turn_result(timeout=0.05), 1.0)
-        except asyncio.TimeoutError:
-            # 模拟 _dispatch_chat_task 的前台超时降级路径
-            driver.log.update_meta(notify=True, deliveryStatus="pending")
-        else:
-            raise AssertionError("不应在超时前拿到结果")
+        driver.umo, driver.agent_name = "umo1", "butler"
+        driver._voice_sink = _Sink()
+        await driver._queue_voice("先看一下服务状态")
+        await driver._queue_voice("")  # 纯工具调用的空步不占位
+        await driver._queue_voice("端口是通的")
+        await driver._queue_voice("汇报：服务正常")
 
     asyncio.run(scenario())
 
-    meta = store.log(log.session_id).load_meta()
-    assert meta["notify"] is True
-    assert meta["deliveryStatus"] == "pending"
+    assert spoken == ["butler: 先看一下服务状态", "butler: 端口是通的"]
+
+
+def test_maid_voice_is_silent_for_console_sessions(registry, store):
+    """控制台来源的会话没有聊天可说，投递端为空时不炸。"""
+    log = store.create_session(agent_preset="butler", meta={"agentName": "butler", "sourceKind": "dashboard"})
+
+    async def scenario():
+        driver = registry.attach(log.session_id)
+        driver.agent_name = "butler"
+        await driver._queue_voice("第一段")
+        await driver._queue_voice("第二段")
+
+    asyncio.run(scenario())
 
 
 def test_request_stop_on_idle_queue_writes_terminal_task_event(registry, store):
     """空队列 stop：被取消的任务在事件流留下 stopped-before-run 终态。"""
     log = store.create_session(
         agent_preset="butler",
-        meta={"umo": "umo1", "agentName": "butler", "notify": True, "executionMode": "foreground"},
+        meta={"umo": "umo1", "agentName": "butler", "notify": True},
     )
 
     async def scenario():
         driver = registry.attach(log.session_id)
         driver.umo, driver.agent_name = "umo1", "butler"
-        assert registry.acquire_foreground_lease("umo1", "d1")
 
         driver.enqueue(
             c.user_message([c.text_block("排队的任务")]),
-            run_context={"execution_mode": "foreground", "dispatch_id": "d1", "task_id": "t-queued"},
+            run_context={"task_id": "t-queued"},
         )
         assert not driver.running
         assert len(driver.inbox) == 1
@@ -86,11 +95,8 @@ def test_request_stop_on_idle_queue_writes_terminal_task_event(registry, store):
         driver.request_stop()
 
         assert driver.inbox == []
-        # 前台租约随队列任务一并释放
-        assert registry.acquire_foreground_lease("umo1", "d2") is True
-        return driver
 
-    driver = asyncio.run(scenario())
+    asyncio.run(scenario())
 
     meta = store.log(log.session_id).load_meta()
     assert meta["activeTaskId"] == ""

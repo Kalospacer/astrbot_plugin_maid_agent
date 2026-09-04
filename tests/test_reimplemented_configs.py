@@ -57,7 +57,6 @@ def test_legacy_keys_and_invalid_stored_values_load_with_defaults():
             "hide_native_tools": "true",
             "max_active_per_umo": 0,
             "memory_agent_names": "butler",
-            "dispatch_session_mode": "eventual",
             "dispatch_prompt_template": "{broken}",
         },
         strict=False,
@@ -66,15 +65,14 @@ def test_legacy_keys_and_invalid_stored_values_load_with_defaults():
     assert cfg.hide_native_tools is True
     assert cfg.max_active_per_umo == 5
     assert cfg.memory_agent_names == ()
-    assert cfg.dispatch_session_mode == "background"
     assert cfg.dispatch_prompt_template
 
 
-def test_strict_mode_rejects_unknown_enum_but_tolerant_mode_defaults_it():
+def test_strict_mode_rejects_invalid_values_but_tolerant_mode_defaults_them():
     with pytest.raises(ConfigValidationError):
-        load_maid_mode_config({"dispatch_session_mode": "eventual"})
-    cfg = load_maid_mode_config({"dispatch_session_mode": "eventual"}, strict=False)
-    assert cfg.dispatch_session_mode == "background"
+        load_maid_mode_config({"max_active_per_umo": 0})
+    cfg = load_maid_mode_config({"max_active_per_umo": 0}, strict=False)
+    assert cfg.max_active_per_umo == 5
 
 
 @pytest.mark.parametrize(
@@ -82,7 +80,6 @@ def test_strict_mode_rejects_unknown_enum_but_tolerant_mode_defaults_it():
     [
         ({"allowed_agent_names": []}, "allowed_agent_names"),
         ({"hide_native_tools": "true"}, "hide_native_tools"),
-        ({"dispatch_session_mode": "eventual"}, "dispatch_session_mode"),
         ({"max_active_per_umo": 0}, "max_active_per_umo"),
         ({"dispatch_prompt_template": "{unknown}"}, "dispatch_prompt_template"),
         ({"memory_agent_names": ["other"]}, "memory_agent_names"),
@@ -96,11 +93,11 @@ def test_invalid_configuration_is_rejected_without_repair(patch, field):
 
 def test_valid_configuration_is_not_coerced():
     cfg = load_maid_mode_config(
-        {"allowed_agent_names": ["worker"], "default_agent_name": "worker", "dispatch_session_mode": "foreground"}
+        {"allowed_agent_names": ["worker"], "default_agent_name": "worker", "max_active_per_umo": 3}
     )
     assert cfg.allowed_agent_names == ("worker",)
     assert cfg.default_agent_name == "worker"
-    assert cfg.dispatch_session_mode == "foreground"
+    assert cfg.max_active_per_umo == 3
 
 
 def test_prompt_template_errors_at_render_time_instead_of_falling_back():

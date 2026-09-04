@@ -128,7 +128,9 @@ class MaidAgentEvent(CoreAstrMessageEvent):
         return self._maid_context is not None and self._maid_umo != DASHBOARD_UMO
 
     async def send(self, message: MessageChain) -> None:
-        await super().send(message)
+        # 控制台会话没有可投递的平台，直接丢弃——也别让基类记一笔从没发生过的
+        # 平台发送指标。
         if not self.deliverable:
             return
+        await super().send(message)
         await self._maid_context.send_message(self._maid_umo, message)

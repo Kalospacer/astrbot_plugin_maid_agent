@@ -853,6 +853,24 @@ class SessionDriver:
             )
         self._meta_update(deliveryStatus=status)
 
+    async def claim_delivery(self) -> bool:
+        """原子认领「这份汇报由我转达」。已被认领过则返回 False。
+
+        两个抢的人：turn 终态的通知回灌，和大小姐主动调 maid_task_output 读
+        终态。谁先拿到谁负责，另一个闭嘴，否则同一份结论会转述两遍。读改写
+        必须在 log.lock 里做——两边各自持有的外层锁不是同一把。
+        """
+        async with self.log.lock:
+            if self.log.load_meta().get("deliveryClaimed"):
+                return False
+            self.log.update_meta(deliveryClaimed=True)
+            return True
+
+    async def release_delivery_claim(self) -> None:
+        """投递失败时归还认领，留出重试机会。"""
+        async with self.log.lock:
+            self.log.update_meta(deliveryClaimed=False)
+
     async def _queue_voice(self, text: str) -> None:
         """把女仆的一段正文排进聊天投递队列，永远押后一段。
 

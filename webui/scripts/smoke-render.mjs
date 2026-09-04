@@ -83,10 +83,9 @@ function newSession(agentPreset) {
   const sessionId = Array.from({ length: 32 }, () => Math.floor(Math.random() * 16).toString(16)).join("");
   const umo = "dashboard:FriendMessage:dashboard";
   const sourceKind = "dashboard";
-  const executionMode = "background";
   const s = {
     sessionId, updatedAt: Date.now(), running: false, blank: true, events: [], umo, title: null,
-    sourceKind, executionMode, backgroundReason: "dashboard-isolated-sandbox",
+    sourceKind,
     agentId: `agent_${sessionId.slice(0, 8)}`,
     taskId: `task_${sessionId.slice(0, 8)}`,
     deliveryStatus: "pending",
@@ -117,8 +116,7 @@ function summary(s) {
   return {
     sessionId: s.sessionId, updatedAt: s.updatedAt, running: s.running, blank: s.blank,
     agentPreset: "butler", umo: s.umo, projections: projections(s),
-    sourceKind: s.sourceKind, executionMode: s.executionMode, agentId: s.agentId,
-    taskId: s.taskId, foregroundLease: s.foregroundLease, backgroundReason: s.backgroundReason,
+    sourceKind: s.sourceKind, agentId: s.agentId, taskId: s.taskId,
     deliveryStatus: s.deliveryStatus,
   };
 }
@@ -130,7 +128,7 @@ async function respond(method, payload) {
     case "session.create": {
       if (typeof payload.agentPreset !== "string" || !payload.agentPreset.trim()) throw new Error("控制台任务必须显式选择 Agent。");
       const s = newSession(payload.agentPreset);
-      broadcast("host", { type: "host/session-added", sessionId: s.sessionId, blank: true, agentPreset: payload.agentPreset, executionMode: s.executionMode, sourceKind: s.sourceKind, backgroundReason: s.backgroundReason });
+      broadcast("host", { type: "host/session-added", sessionId: s.sessionId, blank: true, agentPreset: payload.agentPreset, sourceKind: s.sourceKind });
       return { sessionId: s.sessionId, agentPreset: payload.agentPreset };
     }
     case "session.history": {

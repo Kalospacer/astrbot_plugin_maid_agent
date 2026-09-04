@@ -107,19 +107,15 @@ export interface QueuedInboxItem {
   message: Message;
 }
 
-export type ExecutionMode = "foreground" | "background";
 export type SessionSourceKind = "chat" | "dashboard";
 export type DeliveryStatus = "pending" | "sending" | "sent" | "failed" | "skipped" | (string & {});
 
 /** Runtime metadata shared by session snapshots and host lifecycle frames. */
 export interface SessionRuntimeMetadata {
-  executionMode?: ExecutionMode;
   sourceKind?: SessionSourceKind;
-  backgroundReason?: string;
   dispatchId?: string;
   agentId?: string;
   taskId?: string;
-  foregroundLease?: string | null;
   deliveryStatus?: DeliveryStatus;
 }
 

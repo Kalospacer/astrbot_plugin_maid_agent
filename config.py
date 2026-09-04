@@ -16,7 +16,6 @@ DEFAULT_MAX_ACTIVE_PER_UMO = 5
 DEFAULT_MAX_ACTIVE_GLOBAL = 20
 DEFAULT_RETENTION_DAYS = 30
 DEFAULT_MAX_TURN_SECONDS = 1800
-DEFAULT_DISPATCH_SESSION_MODE = "background"
 MAID_AGENT_PERSONA = (
     "你是MuiceMaid，大小姐的管家。你的任务是完成大小姐交给你的请求，"
     "并使用你拥有的工具达成目的；遇到不确定信息时直接说明，不编造结果。"
@@ -43,7 +42,6 @@ class MaidModeConfig:
     include_raw_user_input: bool = True
     log_raw_llm_io: bool = False
     dispatch_prompt_template: str = DEFAULT_DISPATCH_PROMPT_TEMPLATE
-    dispatch_session_mode: str = DEFAULT_DISPATCH_SESSION_MODE
     memory_agent_names: tuple[str, ...] = ()
     max_active_per_umo: int = DEFAULT_MAX_ACTIVE_PER_UMO
     max_active_global: int = DEFAULT_MAX_ACTIVE_GLOBAL
@@ -132,14 +130,6 @@ def _tolerant_names(cfg: Mapping[str, Any], key: str, default: tuple[str, ...], 
     return default
 
 
-def _tolerant_mode(cfg: Mapping[str, Any]) -> str:
-    value = cfg.get("dispatch_session_mode", DEFAULT_DISPATCH_SESSION_MODE)
-    if value in {"foreground", "background"}:
-        return value
-    logger.warning("[maid] 配置项 dispatch_session_mode 无效，已改用默认值: %r", value)
-    return DEFAULT_DISPATCH_SESSION_MODE
-
-
 def _tolerant_template(cfg: Mapping[str, Any]) -> str:
     value = cfg.get("dispatch_prompt_template", DEFAULT_DISPATCH_PROMPT_TEMPLATE)
     try:
@@ -184,7 +174,6 @@ def load_maid_mode_config(config: Mapping[str, Any] | None = None, *, strict: bo
             include_raw_user_input=_tolerant_bool(cfg, "include_raw_user_input", True),
             log_raw_llm_io=_tolerant_bool(cfg, "log_raw_llm_io", False),
             dispatch_prompt_template=_tolerant_template(cfg),
-            dispatch_session_mode=_tolerant_mode(cfg),
             memory_agent_names=memory,
             max_active_per_umo=_tolerant_int(cfg, "max_active_per_umo", DEFAULT_MAX_ACTIVE_PER_UMO, minimum=1),
             max_active_global=_tolerant_int(cfg, "max_active_global", DEFAULT_MAX_ACTIVE_GLOBAL, minimum=1),
@@ -205,9 +194,6 @@ def load_maid_mode_config(config: Mapping[str, Any] | None = None, *, strict: bo
         raise ConfigValidationError(
             {"memory_agent_names": f"必须属于 allowed_agent_names: {', '.join(unknown_memory_agents)}"}
         )
-    mode = cfg.get("dispatch_session_mode", DEFAULT_DISPATCH_SESSION_MODE)
-    if mode not in {"foreground", "background"}:
-        raise ConfigValidationError({"dispatch_session_mode": "必须是 foreground 或 background。"})
     return MaidModeConfig(
         allowed_agent_names=allowed,
         default_agent_name=default_name,
@@ -216,7 +202,6 @@ def load_maid_mode_config(config: Mapping[str, Any] | None = None, *, strict: bo
         include_raw_user_input=_strict_bool(cfg, "include_raw_user_input", True),
         log_raw_llm_io=_strict_bool(cfg, "log_raw_llm_io", False),
         dispatch_prompt_template=_validate_template(cfg.get("dispatch_prompt_template", DEFAULT_DISPATCH_PROMPT_TEMPLATE)),
-        dispatch_session_mode=mode,
         memory_agent_names=memory,
         max_active_per_umo=_strict_int(cfg, "max_active_per_umo", DEFAULT_MAX_ACTIVE_PER_UMO, minimum=1),
         max_active_global=_strict_int(cfg, "max_active_global", DEFAULT_MAX_ACTIVE_GLOBAL, minimum=1),

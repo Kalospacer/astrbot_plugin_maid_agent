@@ -1,4 +1,7 @@
-"""Foreground lease and capacity tests for the isolated driver registry."""
+"""Concurrency tests for the isolated driver registry.
+
+前台租约已随执行模式一起删除，同一 UMO 的并发现在只由容量上限约束。
+"""
 
 from __future__ import annotations
 
@@ -16,41 +19,49 @@ class _Hub:
 
 
 class _Config:
-    max_active_per_umo = 5
-    max_active_global = 20
+    max_active_per_umo = 2
+    max_active_global = 3
     memory_agent_names = ()
     retention_days = 30
     max_turn_seconds = 1800
 
 
 @pytest.fixture()
-def registry(tmp_path: Path) -> DriverRegistry:
-    return DriverRegistry(None, SessionStore(tmp_path / "data"), _Hub(), _Hub(), _Config())
+def store(tmp_path: Path) -> SessionStore:
+    return SessionStore(tmp_path / "data")
 
 
-def test_one_foreground_lease_per_umo(registry):
-    assert registry.acquire_foreground_lease("qq:GroupMessage:1", "dispatch-a") is True
-    assert registry.acquire_foreground_lease("qq:GroupMessage:1", "dispatch-b") is False
-    assert registry.acquire_foreground_lease("qq:GroupMessage:2", "dispatch-c") is True
+@pytest.fixture()
+def registry(store: SessionStore) -> DriverRegistry:
+    return DriverRegistry(None, store, _Hub(), _Hub(), _Config())
 
 
-def test_release_requires_the_current_dispatch_identity(registry):
-    registry.acquire_foreground_lease("umo", "dispatch-a")
-    registry.release_foreground_lease("umo", "wrong")
-    assert registry.acquire_foreground_lease("umo", "dispatch-b") is False
-    registry.release_foreground_lease("umo", "dispatch-a")
-    assert registry.acquire_foreground_lease("umo", "dispatch-b") is True
+def _running_driver(registry: DriverRegistry, store: SessionStore, umo: str):
+    log = store.create_session(agent_preset="butler", meta={"umo": umo, "agentName": "butler"})
+    driver = registry.attach(log.session_id)
+    driver.umo = umo
+    driver.state = "running"
+    return driver
 
 
-def test_batch_allocation_is_deterministic_by_input_order(registry):
-    modes = []
-    for dispatch_id in ("first", "second", "third"):
-        foreground = registry.acquire_foreground_lease("umo", dispatch_id)
-        modes.append("foreground" if foreground else "background")
-    assert modes == ["foreground", "background", "background"]
+def test_capacity_is_bounded_per_umo(registry, store):
+    for _ in range(_Config.max_active_per_umo):
+        _running_driver(registry, store, "qq:GroupMessage:1")
+    assert registry.capacity_available("qq:GroupMessage:1") is False
+    assert registry.capacity_available("qq:GroupMessage:2") is True
 
 
-def test_running_capacity_remains_independent_of_foreground_lease(registry):
-    assert registry.capacity_available("umo") is True
-    registry.acquire_foreground_lease("umo", "dispatch-a")
+def test_capacity_is_bounded_globally(registry, store):
+    _running_driver(registry, store, "umo-a")
+    _running_driver(registry, store, "umo-b")
+    _running_driver(registry, store, "umo-c")
+    assert registry.running_count() == _Config.max_active_global
+    assert registry.capacity_available("umo-d") is False
+
+
+def test_idle_drivers_do_not_consume_capacity(registry, store):
+    driver = _running_driver(registry, store, "umo")
+    assert registry.running_count_for_umo("umo") == 1
+    driver.state = "idle"
+    assert registry.running_count_for_umo("umo") == 0
     assert registry.capacity_available("umo") is True

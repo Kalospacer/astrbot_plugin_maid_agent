@@ -147,9 +147,7 @@ class ApiProxy:
                 "senderId": sender_id,
                 "agentName": preset,
                 "agentId": session_id,
-                "executionMode": "background",
                 "sourceKind": "dashboard",
-                "backgroundReason": "dashboard-isolated-sandbox",
                 "notify": False,
             },
         )
@@ -160,9 +158,7 @@ class ApiProxy:
                 log.session_id,
                 True,
                 agentPreset=preset,
-                executionMode="background",
                 sourceKind="dashboard",
-                backgroundReason="dashboard-isolated-sandbox",
             )
         )
         return {"sessionId": log.session_id, "agentPreset": preset}

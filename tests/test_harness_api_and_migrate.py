@@ -103,23 +103,22 @@ def api(tmp_path: Path):
 
 class TestConsoleSessions:
     @sync
-    async def test_console_requires_explicit_allowed_agent_and_marks_isolated_sandbox(self, api):
+    async def test_console_requires_an_explicit_allowed_agent(self, api):
         proxy, store = api
         with pytest.raises(rpc.RpcError, match="显式选择"):
             await proxy.dispatch("session.create", {})
         created = await proxy.dispatch("session.create", {"agentPreset": "butler"})
         meta = store.log(created["sessionId"]).load_meta()
-        assert meta["executionMode"] == "background"
         assert meta["sourceKind"] == "dashboard"
-        assert meta["backgroundReason"] == "dashboard-isolated-sandbox"
+        assert meta["notify"] is False
 
     @sync
-    async def test_console_prompt_never_accepts_a_foreground_mode(self, api):
+    async def test_console_prompt_stays_a_dashboard_session(self, api):
         proxy, store = api
         session_id = (await proxy.dispatch("session.create", {"agentPreset": "butler"}))["sessionId"]
         result = await proxy.dispatch("session.prompt", {"sessionId": session_id, "content": [{"type": "text", "text": "hello"}]})
         assert result["accepted"] is True
-        assert store.log(session_id).load_meta()["executionMode"] == "background"
+        assert store.log(session_id).load_meta()["sourceKind"] == "dashboard"
 
 
 class TestSettings:

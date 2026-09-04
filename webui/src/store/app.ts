@@ -111,13 +111,10 @@ function touchSessions(): void {
 
 function applyRuntimeMetadata(summary: SessionSummary, metadata: SessionRuntimeMetadata): void {
   const keys: (keyof SessionRuntimeMetadata)[] = [
-    "executionMode",
     "sourceKind",
-    "backgroundReason",
     "dispatchId",
     "agentId",
     "taskId",
-    "foregroundLease",
     "deliveryStatus",
   ];
   for (const key of keys) {

@@ -1,6 +1,6 @@
 import { createContext, memo, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
-import { DiffBlock, DisclosureRow, StateDot, TerminalBlock, Tooltip, diffTotals } from "@/ui/primitives";
+import { DiffBlock, DisclosureRow, StateDot, TerminalBlock, Tooltip, diffTotals, writeClipboard } from "@/ui/primitives";
 import {
   IconCheckOutline16,
   IconChevronDownOutline14,
@@ -51,19 +51,15 @@ function CopyAction(props: { text: string }) {
   const onCopy = useCallback(() => {
     if (copied || pendingRef.current) return;
     pendingRef.current = true;
-    void navigator.clipboard.writeText(props.text).then(
-      () => {
-        pendingRef.current = false;
-        setCopied(true);
-        timerRef.current = window.setTimeout(() => {
-          timerRef.current = null;
-          setCopied(false);
-        }, COPY_RESET_MS);
-      },
-      () => {
-        pendingRef.current = false;
-      },
-    );
+    void writeClipboard(props.text).then((ok) => {
+      pendingRef.current = false;
+      if (!ok) return;
+      setCopied(true);
+      timerRef.current = window.setTimeout(() => {
+        timerRef.current = null;
+        setCopied(false);
+      }, COPY_RESET_MS);
+    });
   }, [copied, props.text]);
   return (
     <Tooltip label={copied ? "已复制" : "复制"} side="bottom">

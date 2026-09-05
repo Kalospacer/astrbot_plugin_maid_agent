@@ -5,7 +5,7 @@ export async function writeClipboard(text: string): Promise<boolean> {
       await navigator.clipboard.writeText(text)
       return true
     } catch {
-      return false
+      // Permission failures can still use the legacy copy path.
     }
   }
   const exec = typeof document.execCommand === 'function'

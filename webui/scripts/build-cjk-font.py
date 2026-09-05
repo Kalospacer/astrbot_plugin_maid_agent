@@ -13,7 +13,8 @@ agent 页面，输出文本任意，覆盖不全会在句子中间掉回系统�
     python scripts/build-cjk-font.py <MiSans 解压根目录>
 
 依赖 fonttools + brotli（`pip install fonttools brotli`），不作为项目依赖声明。
-产物与生成的 CSS 都提交进仓库，正常开发不需要重跑本脚本。
+产物（pages/console/assets/fonts/MiSans-*.woff2）与生成的 CSS 都提交进仓库，
+正常开发不需要重跑本脚本。
 """
 
 import re
@@ -23,7 +24,12 @@ import urllib.request
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-OUT_DIR = ROOT / "src" / "ui" / "theme" / "fonts" / "misans"
+# 产物直接落到插件页的发布目录，不经 Vite。字体只在仓库里存这一份：
+# 早先 src/ 与 pages/ 各一份字节相同的副本，让安装 zip 白白多出 12 MB
+# （AstrBot 装插件走 GitHub 分支 zip，仓库里每个字节都进安装包）。
+# 对应的 @font-face 由 vite.config.ts 的 appendCjkFontFace 在构建时追加进
+# console.css，url 相对 assets/console.css 写成 ./fonts/…，宿主按此改写。
+OUT_DIR = ROOT.parent / "pages" / "console" / "assets" / "fonts"
 CSS_OUT = ROOT / "src" / "ui" / "theme" / "fonts-cjk.css"
 
 # 用静态字重，不用 MiSansVF——这一点实测过，结论与直觉相反。
@@ -152,7 +158,8 @@ def main() -> None:
     ranges = fetch_ranges()
 
     OUT_DIR.mkdir(parents=True, exist_ok=True)
-    for stale in OUT_DIR.glob("*.woff2"):
+    # 只清 MiSans：同目录还有 Vite 产出的 Anthropic Sans / Outfit 和运行时物化的 KaTeX
+    for stale in OUT_DIR.glob("MiSans-*.woff2"):
         stale.unlink()
 
     covered: set[int] = set()
@@ -205,7 +212,7 @@ def main() -> None:
             blocks.append(
                 "@font-face {\n"
                 '  font-family: "MiSans";\n'
-                f'  src: url("./fonts/misans/{dst.name}") format("woff2");\n'
+                f'  src: url("./fonts/{dst.name}") format("woff2");\n'
                 f"  font-weight: {weight};\n"
                 "  font-style: normal;\n"
                 "  font-display: swap;\n"

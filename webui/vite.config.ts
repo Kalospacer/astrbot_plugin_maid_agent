@@ -1,7 +1,10 @@
+import { readFileSync } from "node:fs";
 import { fileURLToPath, URL } from "node:url";
 
 import react from "@vitejs/plugin-react";
-import { defineConfig } from "vite";
+import { defineConfig, transformWithEsbuild } from "vite";
+
+const CJK_FONT_FACE_CSS = fileURLToPath(new URL("./src/ui/theme/fonts-cjk.css", import.meta.url));
 
 const BRIDGE_SDK_SRC = "/api/plugin/page/bridge-sdk.js";
 
@@ -54,10 +57,35 @@ function katexFontsExternal() {
   };
 }
 
+/**
+ * MiSans 的 @font-face 在构建末尾追加进 console.css，而不是走 @import。
+ *
+ * 278 个 woff2 分块只在 pages/console/assets/fonts 存一份（12 MB）。若让 Vite
+ * 当资产处理，src/ 下就得再放一份源文件，安装 zip 会翻倍——AstrBot 装插件
+ * 下载的是 GitHub 分支 zip，仓库里每个字节都算。所以这批字体绕开资产管线，
+ * CSS 里的 url 直接按 ./fonts/… 相对 console.css 写死，交给宿主改写。
+ */
+function appendCjkFontFace() {
+  return {
+    name: "maid-console-append-cjk-font-face",
+    enforce: "post" as const,
+    async generateBundle(_options: unknown, bundle: Record<string, { type: string; source?: unknown }>) {
+      const css = bundle["assets/console.css"];
+      if (!css || css.type !== "asset") {
+        throw new Error(`appendCjkFontFace: 未找到 assets/console.css，bundle 键: ${Object.keys(bundle).join(", ")}`);
+      }
+      const raw = readFileSync(CJK_FONT_FACE_CSS, "utf8");
+      const { code } = await transformWithEsbuild(raw, CJK_FONT_FACE_CSS, { loader: "css", minify: true });
+      css.source = `${String(css.source)}
+${code}`;
+    },
+  };
+}
+
 export default defineConfig({
   root: fileURLToPath(new URL(".", import.meta.url)),
   base: "./",
-  plugins: [react(), injectBridgeSdk(), stripCrossorigin(), katexFontsExternal()],
+  plugins: [react(), injectBridgeSdk(), stripCrossorigin(), katexFontsExternal(), appendCjkFontFace()],
   resolve: {
     alias: {
       "@": fileURLToPath(new URL("./src", import.meta.url)),
@@ -65,7 +93,9 @@ export default defineConfig({
   },
   build: {
     outDir: "../pages/console",
-    emptyOutDir: true,
+    // 不清空：assets/fonts/MiSans-*.woff2 由 scripts/build-cjk-font.py 直接写在
+    // 这里、随仓库提交，不是本次构建的产物。其余产物文件名固定，会被覆盖。
+    emptyOutDir: false,
     target: "es2022",
     // 宿主约束（AstrBot plugin_page_service）：所有资产经 /api/plugin/page/content/
     // 以 60s JWT asset_token 签名下发，URL 改写基于正则——minify 后的静态

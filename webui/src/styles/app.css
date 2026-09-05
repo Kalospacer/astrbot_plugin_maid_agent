@@ -1,6 +1,8 @@
 
 @import "../ui/theme/fonts.css";
-@import "../ui/theme/fonts-cjk.css";
+/* MiSans 的 @font-face（ui/theme/fonts-cjk.css）不在这里 @import：它引用的
+   woff2 只存在于 pages/console/assets/fonts，不经 Vite 资产管线，由
+   vite.config.ts 的 appendCjkFontFace 在构建时追加到 console.css 末尾。 */
 @import "../ui/theme/base.css";
 @import "../ui/theme/design-platform.css";
 @import "../ui/theme/gradient-shadow-text.css";

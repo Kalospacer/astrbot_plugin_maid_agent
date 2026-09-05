@@ -111,6 +111,32 @@ try:
         page.on("console", lambda m: print("[console]", m.type, m.text[:300]))
         page.on("response", lambda r: print("[HTTP %d]" % r.status, r.url[-70:])
                 if r.status >= 400 else None)
+
+        # 统计首屏实际拉取的资源：CJK 分块字体的真实成本只能测，不能估——
+        # 汉字会散布在多个字频段，命中的块数远不是「常用字都在头几块」那么简单。
+        transfer: dict[str, int] = {}
+
+        def track(resp) -> None:
+            url = resp.url
+            if resp.status >= 400:
+                return
+            try:
+                size = len(resp.body())
+            except Exception:
+                return
+            if ".woff2" in url:
+                key = "font:misans" if "MiSans" in url else "font:latin"
+            elif url.endswith(".js"):
+                key = "js"
+            elif url.endswith(".css"):
+                key = "css"
+            else:
+                return
+            transfer[key] = transfer.get(key, 0) + size
+            if "MiSans" in url:
+                transfer["_misans_chunks"] = transfer.get("_misans_chunks", 0) + 1
+
+        page.on("response", track)
         page.add_init_script(MOCK)
         page.goto("http://127.0.0.1:%d/" % PORT, wait_until="networkidle")
         rendered = True
@@ -134,8 +160,15 @@ try:
         print("italic 按需加载:", json.dumps(italic, ensure_ascii=False))
         brand = page.evaluate(BRAND_PROBE)
         print(json.dumps(brand, ensure_ascii=False, indent=2))
+
+        chunks = transfer.pop("_misans_chunks", 0)
+        total = sum(transfer.values())
+        print("--- 首屏实际传输（宿主 no-store，每次打开都是这个量）---")
+        for key in sorted(transfer):
+            print("  %-14s %8.1f KB" % (key, transfer[key] / 1024))
+        print("  %-14s %8.1f KB  (MiSans 命中 %d 块)" % ("合计", total / 1024, chunks))
         # 生产构建里 CSS Modules 类名被压成纯哈希，按类名选不到；侧栏恒定贴左。
-        page.screenshot(path=str(OUT), clip={"x": 0, "y": 0, "width": 320, "height": 210})
+        page.screenshot(path=str(OUT), clip={"x": 0, "y": 0, "width": 760, "height": 420})
         print("screenshot ->", OUT)
         browser.close()
 

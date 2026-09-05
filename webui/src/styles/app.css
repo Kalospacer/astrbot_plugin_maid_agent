@@ -1,5 +1,6 @@
 
 @import "../ui/theme/fonts.css";
+@import "../ui/theme/fonts-cjk.css";
 @import "../ui/theme/base.css";
 @import "../ui/theme/design-platform.css";
 @import "../ui/theme/gradient-shadow-text.css";

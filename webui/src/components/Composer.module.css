@@ -137,7 +137,6 @@
   line-height: inherit;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
-  overflow-wrap: anywhere;
 }
 
 .input::placeholder {

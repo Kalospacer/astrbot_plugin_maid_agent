@@ -106,7 +106,7 @@ def font_codepoints(src: Path) -> set[int]:
 
 
 def coarse_gap_ranges(
-    src: Path, covered: set[int], per_chunk: int = 900, max_gap: int = 0x400
+    have: set[int], covered: set[int], per_chunk: int = 900, max_gap: int = 0x400
 ) -> list[str]:
     """补缺块：用连续码位区间声明，而不是把差集的离散码位一个个列出来。
 
@@ -122,7 +122,7 @@ def coarse_gap_ranges(
     143396 个码位），等于把整个补充平面连 emoji 一起圈进来——那一段 MiSans
     一个字形都没有，但只要聊天里出现 emoji 就会白下载这一块。遇到大空洞断开。
     """
-    missing = sorted(font_codepoints(src) - covered)
+    missing = sorted(have - covered)
     if not missing:
         return []
 
@@ -160,10 +160,17 @@ def main() -> None:
         covered |= parse_codepoints(unicode_range)
     # 粗段在前、字频段在后：同一码位两者都匹配时，后声明的字频段胜出，
     # 常用字仍走小块；只匹配到粗段的罕用字才拉粗块。
-    first = src_dir / "ttf" / f"MiSans-{WEIGHTS[0][0]}.ttf"
-    if not first.exists():
-        raise SystemExit(f"找不到字重文件: {first}")
-    extra = coarse_gap_ranges(first, covered)
+    #
+    # 差集按全部字重 cmap 的并集算：只看 Regular 的话，若某字重多出几个码位，
+    # 它们不会进任何 range，下面按字重跳过无交集段时就静默漏掉了。
+    # （当前两个字重的 cmap 完全相同，这里是防御。）
+    cmaps: dict[str, set[int]] = {}
+    for name, _ in WEIGHTS:
+        src = src_dir / "ttf" / f"MiSans-{name}.ttf"
+        if not src.exists():
+            raise SystemExit(f"找不到字重文件: {src}")
+        cmaps[name] = font_codepoints(src)
+    extra = coarse_gap_ranges(set().union(*cmaps.values()), covered)
     ranges = extra + ranges
     print(f"分块数: {len(ranges)}（补缺粗段 {len(extra)} + 字频划分 {len(ranges) - len(extra)}）")
 
@@ -171,9 +178,7 @@ def main() -> None:
     total = 0
     for name, weight in WEIGHTS:
         src = src_dir / "ttf" / f"MiSans-{name}.ttf"
-        if not src.exists():
-            raise SystemExit(f"找不到字重文件: {src}")
-        have = font_codepoints(src)
+        have = cmaps[name]
         made = 0
         for index, unicode_range in enumerate(ranges):
             # 该段与字体 cmap 无交集才跳过。早先按产物字节数（<=1KB）判空壳，

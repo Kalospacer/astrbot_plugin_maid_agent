@@ -80,9 +80,11 @@
   --maid-static-red-600: rgb(236, 19, 19);
   --maid-static-red-900: rgb(87, 12, 12);
 
-  /* 纸色阶（浅色主题的大面积表面）。基准 paper-100 = #eceae7，取自
-     hyperos.mi.com 的 body 背景；其余档位按同色相加深，供悬停/选中/气泡使用。
-     只有这一套是暖调的——卡片、菜单、弹窗仍是纯白，浮在纸面上。 */
+  /* 纸色阶（浅色主题的全部表面）。基准 paper-100 = #eceae7，取自
+     hyperos.mi.com 的 body 背景；其余档位按同色相变化。
+     规则：底面 100；抬起的表面（弹窗、输入框、工具块、菜单）50；
+     悬停/选中/次级填充 150、200；强调 300。浅色下不再出现 neutral-bluish
+     的冷调白灰——那套只留给深色主题，混着用会让弹窗和输入框像贴上去的。 */
   --maid-static-paper-50: rgb(245, 243, 240);
   --maid-static-paper-100: rgb(236, 234, 231);
   --maid-static-paper-150: rgb(229, 226, 222);
@@ -97,16 +99,16 @@
 
 body {
   --maid-alias-bg-base: var(--maid-static-paper-100);
-  --maid-alias-bg-layer-1: var(--maid-static-neutral-bluish-00);
-  --maid-alias-bg-layer-2: var(--maid-static-neutral-bluish-00);
-  --maid-alias-bg-layer-3: var(--maid-static-neutral-bluish-00);
+  --maid-alias-bg-layer-1: var(--maid-static-paper-50);
+  --maid-alias-bg-layer-2: var(--maid-static-paper-50);
+  --maid-alias-bg-layer-3: var(--maid-static-paper-50);
   --maid-alias-bg-mask-1: rgba(0, 0, 0, 0.24);
   --maid-alias-bg-mask-2: rgba(0, 0, 0, 0.12);
   --maid-alias-bg-mask-3: rgba(0, 0, 0, 0.48);
   --maid-alias-bg-mask-photo: rgba(0, 0, 0, 0.88);
-  --maid-alias-bg-mask-drop: rgba(255, 255, 255, 0.7);
+  --maid-alias-bg-mask-drop: rgba(245, 243, 240, 0.7);
   --maid-alias-bg-module-platform: var(--maid-static-paper-150);
-  --maid-alias-bg-multi-select: var(--maid-static-neutral-bluish-60);
+  --maid-alias-bg-multi-select: var(--maid-static-paper-150);
   --maid-alias-bg-overlay: var(--maid-static-paper-200);
   --maid-alias-bg-skeleton: rgba(0, 0, 0, 0.04);
   --maid-alias-border-inverted2: rgba(0, 0, 0, 0);
@@ -121,15 +123,15 @@ body {
   --maid-alias-brand-primary: var(--maid-static-neutral-bluish-1000);
   --maid-alias-brand-text: var(--maid-static-neutral-bluish-1000);
   --maid-alias-button-contrast-fill: var(--maid-static-neutral-bluish-700);
-  --maid-alias-button-elevated-fill: var(--maid-static-neutral-bluish-00);
-  --maid-alias-button-floating-fill: var(--maid-static-neutral-bluish-00);
-  --maid-alias-button-floating-hover: var(--maid-static-neutral-bluish-75);
+  --maid-alias-button-elevated-fill: var(--maid-static-paper-50);
+  --maid-alias-button-floating-fill: var(--maid-static-paper-50);
+  --maid-alias-button-floating-hover: var(--maid-static-paper-150);
   --maid-alias-button-ghost-active-border: var(--maid-static-neutral-bluish-500);
-  --maid-alias-button-ghost-active-fill: var(--maid-static-neutral-bluish-100);
-  --maid-alias-button-ghost-active-hover: var(--maid-static-neutral-bluish-150);
+  --maid-alias-button-ghost-active-fill: var(--maid-static-paper-150);
+  --maid-alias-button-ghost-active-hover: var(--maid-static-paper-200);
   --maid-alias-button-info-fill: var(--maid-static-brand-500);
   --maid-alias-button-info-hover: var(--maid-static-brand-400);
-  --maid-alias-button-primary-dimmed: var(--maid-static-neutral-bluish-100);
+  --maid-alias-button-primary-dimmed: var(--maid-static-paper-200);
   --maid-alias-button-primary-fill: var(--maid-alias-brand-primary);
   --maid-alias-button-primary-hover: var(--maid-static-neutral-bluish-750);
   --maid-alias-button-tool-bar-fill-invisible: rgba(31, 31, 31, 0.36);
@@ -149,18 +151,18 @@ body {
   --maid-alias-label-primary: var(--maid-static-neutral-bluish-1000);
   --maid-alias-label-secondary: var(--maid-static-neutral-bluish-700);
   --maid-alias-label-tertiary: var(--maid-static-neutral-bluish-600);
-  --maid-alias-markdown-citation: var(--maid-static-neutral-bluish-100);
-  --maid-alias-markdown-code-block-banner: var(--maid-static-neutral-bluish-50);
-  --maid-alias-markdown-code-block: var(--maid-static-neutral-bluish-50);
-  --maid-alias-markdown-code-segment-selected: var(--maid-static-neutral-bluish-00);
-  --maid-alias-markdown-code-segment-unselected: var(--maid-static-neutral-bluish-75);
-  --maid-alias-markdown-inline-code: var(--maid-static-neutral-bluish-100);
-  --maid-alias-markdown-placeholder: var(--maid-static-neutral-bluish-60);
-  --maid-alias-markdown-tag: var(--maid-static-neutral-bluish-75);
-  --maid-alias-scrollbar-bg-l1: var(--maid-static-neutral-200);
-  --maid-alias-scrollbar-bg-l2: var(--maid-static-neutral-200);
-  --maid-alias-scrollbar-hover-l1: var(--maid-static-neutral-300);
-  --maid-alias-scrollbar-hover-l2: var(--maid-static-neutral-300);
+  --maid-alias-markdown-citation: var(--maid-static-paper-200);
+  --maid-alias-markdown-code-block-banner: var(--maid-static-paper-150);
+  --maid-alias-markdown-code-block: var(--maid-static-paper-50);
+  --maid-alias-markdown-code-segment-selected: var(--maid-static-paper-50);
+  --maid-alias-markdown-code-segment-unselected: var(--maid-static-paper-150);
+  --maid-alias-markdown-inline-code: var(--maid-static-paper-200);
+  --maid-alias-markdown-placeholder: var(--maid-static-paper-150);
+  --maid-alias-markdown-tag: var(--maid-static-paper-150);
+  --maid-alias-scrollbar-bg-l1: var(--maid-static-paper-200);
+  --maid-alias-scrollbar-bg-l2: var(--maid-static-paper-200);
+  --maid-alias-scrollbar-hover-l1: var(--maid-static-paper-300);
+  --maid-alias-scrollbar-hover-l2: var(--maid-static-paper-300);
   --maid-alias-state-business-primary: var(--maid-static-brand-500);
   --maid-alias-state-business-tertiary: var(--maid-static-brand-100);
   --maid-alias-state-error-primary: var(--maid-static-red-600);
@@ -177,8 +179,8 @@ body {
   /* 用户气泡：中性灰，不用品牌蓝染色 */
   --maid-specific-bubble-highlight: var(--maid-static-paper-300);
   --maid-specific-bubble: var(--maid-static-paper-200);
-  --maid-specific-input-major: var(--maid-static-neutral-bluish-00);
-  --maid-specific-login-input: var(--maid-static-neutral-bluish-50);
+  --maid-specific-input-major: var(--maid-static-paper-50);
+  --maid-specific-login-input: var(--maid-static-paper-50);
   --maid-specific-menu: var(--maid-alias-bg-layer-3);
   --maid-specific-selector: var(--maid-static-paper-150);
   --maid-specific-sidebar-fill: var(--maid-static-paper-100);

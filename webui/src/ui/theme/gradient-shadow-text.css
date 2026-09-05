@@ -1,6 +1,7 @@
 body {
-  --maid-linear-gradient-think: linear-gradient(180deg, #fff 20.19%, rgba(255, 255, 255, 0) 100%);
-  --maid-linear-think-select: linear-gradient(180deg, #f5f6f7 20.19%, rgba(245, 246, 247, 0) 100%);
+  /* 与 design-platform.css 的 paper-100 / paper-150 同色，渐变要淡进纸面而不是淡进白 */
+  --maid-linear-gradient-think: linear-gradient(180deg, rgb(236, 234, 231) 20.19%, rgba(236, 234, 231, 0) 100%);
+  --maid-linear-think-select: linear-gradient(180deg, rgb(229, 226, 222) 20.19%, rgba(229, 226, 222, 0) 100%);
   
   --maid-shadow-lv1: 0 2px 4px 0 rgba(0, 0, 0, 0.05);
   --maid-shadow-lv1-blur: 0 4px 12px 0 rgba(0, 0, 0, 0.02);

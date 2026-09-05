@@ -79,6 +79,15 @@
   --maid-static-red-50: rgb(254, 242, 242);
   --maid-static-red-600: rgb(236, 19, 19);
   --maid-static-red-900: rgb(87, 12, 12);
+
+  /* 纸色阶（浅色主题的大面积表面）。基准 paper-100 = #eceae7，取自
+     hyperos.mi.com 的 body 背景；其余档位按同色相加深，供悬停/选中/气泡使用。
+     只有这一套是暖调的——卡片、菜单、弹窗仍是纯白，浮在纸面上。 */
+  --maid-static-paper-50: rgb(245, 243, 240);
+  --maid-static-paper-100: rgb(236, 234, 231);
+  --maid-static-paper-150: rgb(229, 226, 222);
+  --maid-static-paper-200: rgb(222, 218, 213);
+  --maid-static-paper-300: rgb(212, 207, 201);
 }
 
 /* ==========================================================================
@@ -87,7 +96,7 @@
    ========================================================================== */
 
 body {
-  --maid-alias-bg-base: var(--maid-static-neutral-bluish-00);
+  --maid-alias-bg-base: var(--maid-static-paper-100);
   --maid-alias-bg-layer-1: var(--maid-static-neutral-bluish-00);
   --maid-alias-bg-layer-2: var(--maid-static-neutral-bluish-00);
   --maid-alias-bg-layer-3: var(--maid-static-neutral-bluish-00);
@@ -96,9 +105,9 @@ body {
   --maid-alias-bg-mask-3: rgba(0, 0, 0, 0.48);
   --maid-alias-bg-mask-photo: rgba(0, 0, 0, 0.88);
   --maid-alias-bg-mask-drop: rgba(255, 255, 255, 0.7);
-  --maid-alias-bg-module-platform: var(--maid-static-neutral-bluish-60);
+  --maid-alias-bg-module-platform: var(--maid-static-paper-150);
   --maid-alias-bg-multi-select: var(--maid-static-neutral-bluish-60);
-  --maid-alias-bg-overlay: var(--maid-static-neutral-bluish-150);
+  --maid-alias-bg-overlay: var(--maid-static-paper-200);
   --maid-alias-bg-skeleton: rgba(0, 0, 0, 0.04);
   --maid-alias-border-inverted2: rgba(0, 0, 0, 0);
   --maid-alias-border-inverted: rgba(0, 0, 0, 0);
@@ -129,7 +138,7 @@ body {
   --maid-alias-interactive-bg-active: rgba(38, 49, 72, 0.1);
   --maid-alias-interactive-bg-hover-accent: rgba(38, 49, 72, 0.14);
   --maid-alias-interactive-bg-hover-danger: rgba(236, 19, 19, 0.05);
-  --maid-alias-interactive-bg-hover-solid: var(--maid-static-neutral-bluish-75);
+  --maid-alias-interactive-bg-hover-solid: var(--maid-static-paper-150);
   --maid-alias-interactive-bg-hover: rgba(38, 49, 72, 0.06);
   --maid-alias-label-caption: var(--maid-static-neutral-bluish-400);
   --maid-alias-label-dimmed: var(--maid-static-neutral-bluish-200);
@@ -166,17 +175,17 @@ body {
   --maid-alias-toast-bg: var(--maid-static-neutral-bluish-800);
   --maid-alias-tooltip-bg: var(--maid-static-neutral-bluish-850);
   /* 用户气泡：中性灰，不用品牌蓝染色 */
-  --maid-specific-bubble-highlight: var(--maid-static-neutral-bluish-150);
-  --maid-specific-bubble: var(--maid-static-neutral-bluish-100);
+  --maid-specific-bubble-highlight: var(--maid-static-paper-300);
+  --maid-specific-bubble: var(--maid-static-paper-200);
   --maid-specific-input-major: var(--maid-static-neutral-bluish-00);
   --maid-specific-login-input: var(--maid-static-neutral-bluish-50);
   --maid-specific-menu: var(--maid-alias-bg-layer-3);
-  --maid-specific-selector: var(--maid-static-neutral-bluish-60);
-  --maid-specific-sidebar-fill: var(--maid-static-neutral-bluish-50);
-  --maid-specific-sidebar-nav-item-active-accent: var(--maid-static-neutral-bluish-150);
-  --maid-specific-sidebar-nav-item-active: var(--maid-static-neutral-bluish-100);
-  --maid-specific-sidebar-nav-item-hover: var(--maid-static-neutral-bluish-75);
-  --maid-specific-tip: var(--maid-static-neutral-bluish-60);
+  --maid-specific-selector: var(--maid-static-paper-150);
+  --maid-specific-sidebar-fill: var(--maid-static-paper-100);
+  --maid-specific-sidebar-nav-item-active-accent: var(--maid-static-paper-300);
+  --maid-specific-sidebar-nav-item-active: var(--maid-static-paper-200);
+  --maid-specific-sidebar-nav-item-hover: var(--maid-static-paper-150);
+  --maid-specific-tip: var(--maid-static-paper-150);
 }
 
 /* ==========================================================================

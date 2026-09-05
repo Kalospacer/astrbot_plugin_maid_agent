@@ -97,12 +97,6 @@ const regexEngine = createJavaScriptRegexEngine({
 
 let singleton: HighlighterCore | undefined
 
-const BOOT_GRAMMAR_WARMUPS = [
-  { lang: 'typescript', code: 'const answer: number = 42' },
-  { lang: 'shellscript', code: 'printf \'%s\\n\' "$HOME"' },
-  { lang: 'json', code: '{"ready":true}' },
-] as const
-
 function highlighter(): HighlighterCore {
   singleton ??= createHighlighterCoreSync({
     themes: [cssVariablesTheme],
@@ -111,24 +105,6 @@ function highlighter(): HighlighterCore {
   })
   return singleton
 }
-
-// 预热放到空闲期：正则编译是 lazyCompileLength: Infinity 强制惰性的，首个代码块
-// 出现时才付钱，但那一下会卡在渲染里。空闲时先跑一遍把它挪出首屏关键路径。
-const scheduleWarmup: (run: () => void) => void =
-  typeof requestIdleCallback === 'function'
-    ? run => { requestIdleCallback(run, { timeout: 2000 }) }
-    : run => { setTimeout(run, 0) }
-
-scheduleWarmup(() => {
-  const instance = highlighter()
-  for (const sample of BOOT_GRAMMAR_WARMUPS) {
-    instance.codeToTokens(sample.code, {
-      lang: sample.lang,
-      theme: 'css-variables',
-      tokenizeTimeLimit: 0,
-    })
-  }
-})
 
 export function highlightToHtml(code: string, lang: string | undefined): string | undefined {
   const resolved = lang === undefined ? undefined : LANG_ALIASES.get(lang.toLowerCase())

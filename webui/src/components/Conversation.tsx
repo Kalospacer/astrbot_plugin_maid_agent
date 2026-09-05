@@ -53,9 +53,7 @@ export function ConversationRoot(props: {
         ) : null}
         <div className={css.composerSeat} data-composer-seat="" ref={seatResizeRef}>
           <div className={clsx(css.composerStack, phase === "hero" && css.composerHero)}>
-            {phase === "hero" ? (
-              <HeroHeadline text={props.booting ? "正在连接 AstrBot…" : "派一个新任务"} />
-            ) : null}
+            {phase === "hero" && !props.booting ? <HeroHeadline text="派一个新任务" /> : null}
             {phase === "hero" && !props.booting ? <PresetChipRow /> : null}
             <Composer
               variant={phase === "hero" ? "hero" : "composer"}

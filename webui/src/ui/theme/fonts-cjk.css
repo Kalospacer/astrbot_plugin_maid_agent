@@ -10,7 +10,7 @@
 
 @font-face {
   font-family: "MiSans";
-  src: url("./fonts/MiSans-Regular.0.woff2") format("woff2");
+  src: url("./fonts/MiSans-Regular.small.woff2") format("woff2");
   font-weight: 400;
   font-style: normal;
   font-display: swap;
@@ -18,7 +18,7 @@
 }
 @font-face {
   font-family: "MiSans";
-  src: url("./fonts/MiSans-Regular.1.woff2") format("woff2");
+  src: url("./fonts/MiSans-Regular.small.woff2") format("woff2");
   font-weight: 400;
   font-style: normal;
   font-display: swap;
@@ -26,7 +26,7 @@
 }
 @font-face {
   font-family: "MiSans";
-  src: url("./fonts/MiSans-Regular.2.woff2") format("woff2");
+  src: url("./fonts/MiSans-Regular.small.woff2") format("woff2");
   font-weight: 400;
   font-style: normal;
   font-display: swap;
@@ -170,7 +170,7 @@
 }
 @font-face {
   font-family: "MiSans";
-  src: url("./fonts/MiSans-Regular.20.woff2") format("woff2");
+  src: url("./fonts/MiSans-Regular.small.woff2") format("woff2");
   font-weight: 400;
   font-style: normal;
   font-display: swap;
@@ -178,7 +178,7 @@
 }
 @font-face {
   font-family: "MiSans";
-  src: url("./fonts/MiSans-Regular.21.woff2") format("woff2");
+  src: url("./fonts/MiSans-Regular.small.woff2") format("woff2");
   font-weight: 400;
   font-style: normal;
   font-display: swap;
@@ -186,7 +186,7 @@
 }
 @font-face {
   font-family: "MiSans";
-  src: url("./fonts/MiSans-Regular.22.woff2") format("woff2");
+  src: url("./fonts/MiSans-Regular.small.woff2") format("woff2");
   font-weight: 400;
   font-style: normal;
   font-display: swap;
@@ -194,7 +194,7 @@
 }
 @font-face {
   font-family: "MiSans";
-  src: url("./fonts/MiSans-Regular.23.woff2") format("woff2");
+  src: url("./fonts/MiSans-Regular.small.woff2") format("woff2");
   font-weight: 400;
   font-style: normal;
   font-display: swap;
@@ -202,7 +202,7 @@
 }
 @font-face {
   font-family: "MiSans";
-  src: url("./fonts/MiSans-Regular.24.woff2") format("woff2");
+  src: url("./fonts/MiSans-Regular.small.woff2") format("woff2");
   font-weight: 400;
   font-style: normal;
   font-display: swap;
@@ -210,7 +210,7 @@
 }
 @font-face {
   font-family: "MiSans";
-  src: url("./fonts/MiSans-Regular.25.woff2") format("woff2");
+  src: url("./fonts/MiSans-Regular.small.woff2") format("woff2");
   font-weight: 400;
   font-style: normal;
   font-display: swap;
@@ -218,7 +218,7 @@
 }
 @font-face {
   font-family: "MiSans";
-  src: url("./fonts/MiSans-Regular.26.woff2") format("woff2");
+  src: url("./fonts/MiSans-Regular.small.woff2") format("woff2");
   font-weight: 400;
   font-style: normal;
   font-display: swap;
@@ -226,7 +226,7 @@
 }
 @font-face {
   font-family: "MiSans";
-  src: url("./fonts/MiSans-Regular.27.woff2") format("woff2");
+  src: url("./fonts/MiSans-Regular.small.woff2") format("woff2");
   font-weight: 400;
   font-style: normal;
   font-display: swap;
@@ -234,7 +234,7 @@
 }
 @font-face {
   font-family: "MiSans";
-  src: url("./fonts/MiSans-Regular.28.woff2") format("woff2");
+  src: url("./fonts/MiSans-Regular.small.woff2") format("woff2");
   font-weight: 400;
   font-style: normal;
   font-display: swap;
@@ -242,7 +242,7 @@
 }
 @font-face {
   font-family: "MiSans";
-  src: url("./fonts/MiSans-Regular.29.woff2") format("woff2");
+  src: url("./fonts/MiSans-Regular.small.woff2") format("woff2");
   font-weight: 400;
   font-style: normal;
   font-display: swap;
@@ -250,7 +250,7 @@
 }
 @font-face {
   font-family: "MiSans";
-  src: url("./fonts/MiSans-Regular.30.woff2") format("woff2");
+  src: url("./fonts/MiSans-Regular.small.woff2") format("woff2");
   font-weight: 400;
   font-style: normal;
   font-display: swap;
@@ -258,7 +258,7 @@
 }
 @font-face {
   font-family: "MiSans";
-  src: url("./fonts/MiSans-Regular.31.woff2") format("woff2");
+  src: url("./fonts/MiSans-Regular.small.woff2") format("woff2");
   font-weight: 400;
   font-style: normal;
   font-display: swap;
@@ -266,7 +266,7 @@
 }
 @font-face {
   font-family: "MiSans";
-  src: url("./fonts/MiSans-Regular.32.woff2") format("woff2");
+  src: url("./fonts/MiSans-Regular.small.woff2") format("woff2");
   font-weight: 400;
   font-style: normal;
   font-display: swap;
@@ -274,7 +274,7 @@
 }
 @font-face {
   font-family: "MiSans";
-  src: url("./fonts/MiSans-Regular.33.woff2") format("woff2");
+  src: url("./fonts/MiSans-Regular.small.woff2") format("woff2");
   font-weight: 400;
   font-style: normal;
   font-display: swap;
@@ -282,7 +282,7 @@
 }
 @font-face {
   font-family: "MiSans";
-  src: url("./fonts/MiSans-Regular.34.woff2") format("woff2");
+  src: url("./fonts/MiSans-Regular.small.woff2") format("woff2");
   font-weight: 400;
   font-style: normal;
   font-display: swap;
@@ -290,7 +290,7 @@
 }
 @font-face {
   font-family: "MiSans";
-  src: url("./fonts/MiSans-Regular.35.woff2") format("woff2");
+  src: url("./fonts/MiSans-Regular.small.woff2") format("woff2");
   font-weight: 400;
   font-style: normal;
   font-display: swap;
@@ -298,7 +298,7 @@
 }
 @font-face {
   font-family: "MiSans";
-  src: url("./fonts/MiSans-Regular.36.woff2") format("woff2");
+  src: url("./fonts/MiSans-Regular.small.woff2") format("woff2");
   font-weight: 400;
   font-style: normal;
   font-display: swap;
@@ -306,7 +306,7 @@
 }
 @font-face {
   font-family: "MiSans";
-  src: url("./fonts/MiSans-Regular.37.woff2") format("woff2");
+  src: url("./fonts/MiSans-Regular.small.woff2") format("woff2");
   font-weight: 400;
   font-style: normal;
   font-display: swap;
@@ -322,7 +322,7 @@
 }
 @font-face {
   font-family: "MiSans";
-  src: url("./fonts/MiSans-Regular.40.woff2") format("woff2");
+  src: url("./fonts/MiSans-Regular.small.woff2") format("woff2");
   font-weight: 400;
   font-style: normal;
   font-display: swap;
@@ -330,7 +330,7 @@
 }
 @font-face {
   font-family: "MiSans";
-  src: url("./fonts/MiSans-Regular.41.woff2") format("woff2");
+  src: url("./fonts/MiSans-Regular.small.woff2") format("woff2");
   font-weight: 400;
   font-style: normal;
   font-display: swap;
@@ -338,7 +338,7 @@
 }
 @font-face {
   font-family: "MiSans";
-  src: url("./fonts/MiSans-Regular.42.woff2") format("woff2");
+  src: url("./fonts/MiSans-Regular.small.woff2") format("woff2");
   font-weight: 400;
   font-style: normal;
   font-display: swap;
@@ -858,7 +858,7 @@
 }
 @font-face {
   font-family: "MiSans";
-  src: url("./fonts/MiSans-Regular.107.woff2") format("woff2");
+  src: url("./fonts/MiSans-Regular.small.woff2") format("woff2");
   font-weight: 400;
   font-style: normal;
   font-display: swap;
@@ -866,7 +866,7 @@
 }
 @font-face {
   font-family: "MiSans";
-  src: url("./fonts/MiSans-Regular.108.woff2") format("woff2");
+  src: url("./fonts/MiSans-Regular.small.woff2") format("woff2");
   font-weight: 400;
   font-style: normal;
   font-display: swap;
@@ -874,7 +874,7 @@
 }
 @font-face {
   font-family: "MiSans";
-  src: url("./fonts/MiSans-Regular.109.woff2") format("woff2");
+  src: url("./fonts/MiSans-Regular.small.woff2") format("woff2");
   font-weight: 400;
   font-style: normal;
   font-display: swap;
@@ -882,7 +882,7 @@
 }
 @font-face {
   font-family: "MiSans";
-  src: url("./fonts/MiSans-Regular.110.woff2") format("woff2");
+  src: url("./fonts/MiSans-Regular.small.woff2") format("woff2");
   font-weight: 400;
   font-style: normal;
   font-display: swap;
@@ -890,7 +890,7 @@
 }
 @font-face {
   font-family: "MiSans";
-  src: url("./fonts/MiSans-Regular.111.woff2") format("woff2");
+  src: url("./fonts/MiSans-Regular.small.woff2") format("woff2");
   font-weight: 400;
   font-style: normal;
   font-display: swap;
@@ -898,7 +898,7 @@
 }
 @font-face {
   font-family: "MiSans";
-  src: url("./fonts/MiSans-Regular.112.woff2") format("woff2");
+  src: url("./fonts/MiSans-Regular.small.woff2") format("woff2");
   font-weight: 400;
   font-style: normal;
   font-display: swap;
@@ -906,7 +906,7 @@
 }
 @font-face {
   font-family: "MiSans";
-  src: url("./fonts/MiSans-Regular.113.woff2") format("woff2");
+  src: url("./fonts/MiSans-Regular.small.woff2") format("woff2");
   font-weight: 400;
   font-style: normal;
   font-display: swap;
@@ -914,7 +914,7 @@
 }
 @font-face {
   font-family: "MiSans";
-  src: url("./fonts/MiSans-Regular.114.woff2") format("woff2");
+  src: url("./fonts/MiSans-Regular.small.woff2") format("woff2");
   font-weight: 400;
   font-style: normal;
   font-display: swap;
@@ -922,7 +922,7 @@
 }
 @font-face {
   font-family: "MiSans";
-  src: url("./fonts/MiSans-Regular.115.woff2") format("woff2");
+  src: url("./fonts/MiSans-Regular.small.woff2") format("woff2");
   font-weight: 400;
   font-style: normal;
   font-display: swap;
@@ -1090,7 +1090,7 @@
 }
 @font-face {
   font-family: "MiSans";
-  src: url("./fonts/MiSans-Regular.136.woff2") format("woff2");
+  src: url("./fonts/MiSans-Regular.small.woff2") format("woff2");
   font-weight: 400;
   font-style: normal;
   font-display: swap;
@@ -1098,7 +1098,7 @@
 }
 @font-face {
   font-family: "MiSans";
-  src: url("./fonts/MiSans-Regular.137.woff2") format("woff2");
+  src: url("./fonts/MiSans-Regular.small.woff2") format("woff2");
   font-weight: 400;
   font-style: normal;
   font-display: swap;
@@ -1122,7 +1122,7 @@
 }
 @font-face {
   font-family: "MiSans";
-  src: url("./fonts/MiSans-Medium.0.woff2") format("woff2");
+  src: url("./fonts/MiSans-Medium.small.woff2") format("woff2");
   font-weight: 500;
   font-style: normal;
   font-display: swap;
@@ -1130,7 +1130,7 @@
 }
 @font-face {
   font-family: "MiSans";
-  src: url("./fonts/MiSans-Medium.1.woff2") format("woff2");
+  src: url("./fonts/MiSans-Medium.small.woff2") format("woff2");
   font-weight: 500;
   font-style: normal;
   font-display: swap;
@@ -1138,7 +1138,7 @@
 }
 @font-face {
   font-family: "MiSans";
-  src: url("./fonts/MiSans-Medium.2.woff2") format("woff2");
+  src: url("./fonts/MiSans-Medium.small.woff2") format("woff2");
   font-weight: 500;
   font-style: normal;
   font-display: swap;
@@ -1282,7 +1282,7 @@
 }
 @font-face {
   font-family: "MiSans";
-  src: url("./fonts/MiSans-Medium.20.woff2") format("woff2");
+  src: url("./fonts/MiSans-Medium.small.woff2") format("woff2");
   font-weight: 500;
   font-style: normal;
   font-display: swap;
@@ -1290,7 +1290,7 @@
 }
 @font-face {
   font-family: "MiSans";
-  src: url("./fonts/MiSans-Medium.21.woff2") format("woff2");
+  src: url("./fonts/MiSans-Medium.small.woff2") format("woff2");
   font-weight: 500;
   font-style: normal;
   font-display: swap;
@@ -1298,7 +1298,7 @@
 }
 @font-face {
   font-family: "MiSans";
-  src: url("./fonts/MiSans-Medium.22.woff2") format("woff2");
+  src: url("./fonts/MiSans-Medium.small.woff2") format("woff2");
   font-weight: 500;
   font-style: normal;
   font-display: swap;
@@ -1306,7 +1306,7 @@
 }
 @font-face {
   font-family: "MiSans";
-  src: url("./fonts/MiSans-Medium.23.woff2") format("woff2");
+  src: url("./fonts/MiSans-Medium.small.woff2") format("woff2");
   font-weight: 500;
   font-style: normal;
   font-display: swap;
@@ -1314,7 +1314,7 @@
 }
 @font-face {
   font-family: "MiSans";
-  src: url("./fonts/MiSans-Medium.24.woff2") format("woff2");
+  src: url("./fonts/MiSans-Medium.small.woff2") format("woff2");
   font-weight: 500;
   font-style: normal;
   font-display: swap;
@@ -1322,7 +1322,7 @@
 }
 @font-face {
   font-family: "MiSans";
-  src: url("./fonts/MiSans-Medium.25.woff2") format("woff2");
+  src: url("./fonts/MiSans-Medium.small.woff2") format("woff2");
   font-weight: 500;
   font-style: normal;
   font-display: swap;
@@ -1330,7 +1330,7 @@
 }
 @font-face {
   font-family: "MiSans";
-  src: url("./fonts/MiSans-Medium.26.woff2") format("woff2");
+  src: url("./fonts/MiSans-Medium.small.woff2") format("woff2");
   font-weight: 500;
   font-style: normal;
   font-display: swap;
@@ -1338,7 +1338,7 @@
 }
 @font-face {
   font-family: "MiSans";
-  src: url("./fonts/MiSans-Medium.27.woff2") format("woff2");
+  src: url("./fonts/MiSans-Medium.small.woff2") format("woff2");
   font-weight: 500;
   font-style: normal;
   font-display: swap;
@@ -1346,7 +1346,7 @@
 }
 @font-face {
   font-family: "MiSans";
-  src: url("./fonts/MiSans-Medium.28.woff2") format("woff2");
+  src: url("./fonts/MiSans-Medium.small.woff2") format("woff2");
   font-weight: 500;
   font-style: normal;
   font-display: swap;
@@ -1354,7 +1354,7 @@
 }
 @font-face {
   font-family: "MiSans";
-  src: url("./fonts/MiSans-Medium.29.woff2") format("woff2");
+  src: url("./fonts/MiSans-Medium.small.woff2") format("woff2");
   font-weight: 500;
   font-style: normal;
   font-display: swap;
@@ -1362,7 +1362,7 @@
 }
 @font-face {
   font-family: "MiSans";
-  src: url("./fonts/MiSans-Medium.30.woff2") format("woff2");
+  src: url("./fonts/MiSans-Medium.small.woff2") format("woff2");
   font-weight: 500;
   font-style: normal;
   font-display: swap;
@@ -1370,7 +1370,7 @@
 }
 @font-face {
   font-family: "MiSans";
-  src: url("./fonts/MiSans-Medium.31.woff2") format("woff2");
+  src: url("./fonts/MiSans-Medium.small.woff2") format("woff2");
   font-weight: 500;
   font-style: normal;
   font-display: swap;
@@ -1378,7 +1378,7 @@
 }
 @font-face {
   font-family: "MiSans";
-  src: url("./fonts/MiSans-Medium.32.woff2") format("woff2");
+  src: url("./fonts/MiSans-Medium.small.woff2") format("woff2");
   font-weight: 500;
   font-style: normal;
   font-display: swap;
@@ -1386,7 +1386,7 @@
 }
 @font-face {
   font-family: "MiSans";
-  src: url("./fonts/MiSans-Medium.33.woff2") format("woff2");
+  src: url("./fonts/MiSans-Medium.small.woff2") format("woff2");
   font-weight: 500;
   font-style: normal;
   font-display: swap;
@@ -1394,7 +1394,7 @@
 }
 @font-face {
   font-family: "MiSans";
-  src: url("./fonts/MiSans-Medium.34.woff2") format("woff2");
+  src: url("./fonts/MiSans-Medium.small.woff2") format("woff2");
   font-weight: 500;
   font-style: normal;
   font-display: swap;
@@ -1402,7 +1402,7 @@
 }
 @font-face {
   font-family: "MiSans";
-  src: url("./fonts/MiSans-Medium.35.woff2") format("woff2");
+  src: url("./fonts/MiSans-Medium.small.woff2") format("woff2");
   font-weight: 500;
   font-style: normal;
   font-display: swap;
@@ -1410,7 +1410,7 @@
 }
 @font-face {
   font-family: "MiSans";
-  src: url("./fonts/MiSans-Medium.36.woff2") format("woff2");
+  src: url("./fonts/MiSans-Medium.small.woff2") format("woff2");
   font-weight: 500;
   font-style: normal;
   font-display: swap;
@@ -1418,7 +1418,7 @@
 }
 @font-face {
   font-family: "MiSans";
-  src: url("./fonts/MiSans-Medium.37.woff2") format("woff2");
+  src: url("./fonts/MiSans-Medium.small.woff2") format("woff2");
   font-weight: 500;
   font-style: normal;
   font-display: swap;
@@ -1434,7 +1434,7 @@
 }
 @font-face {
   font-family: "MiSans";
-  src: url("./fonts/MiSans-Medium.40.woff2") format("woff2");
+  src: url("./fonts/MiSans-Medium.small.woff2") format("woff2");
   font-weight: 500;
   font-style: normal;
   font-display: swap;
@@ -1442,7 +1442,7 @@
 }
 @font-face {
   font-family: "MiSans";
-  src: url("./fonts/MiSans-Medium.41.woff2") format("woff2");
+  src: url("./fonts/MiSans-Medium.small.woff2") format("woff2");
   font-weight: 500;
   font-style: normal;
   font-display: swap;
@@ -1450,7 +1450,7 @@
 }
 @font-face {
   font-family: "MiSans";
-  src: url("./fonts/MiSans-Medium.42.woff2") format("woff2");
+  src: url("./fonts/MiSans-Medium.small.woff2") format("woff2");
   font-weight: 500;
   font-style: normal;
   font-display: swap;
@@ -1970,7 +1970,7 @@
 }
 @font-face {
   font-family: "MiSans";
-  src: url("./fonts/MiSans-Medium.107.woff2") format("woff2");
+  src: url("./fonts/MiSans-Medium.small.woff2") format("woff2");
   font-weight: 500;
   font-style: normal;
   font-display: swap;
@@ -1978,7 +1978,7 @@
 }
 @font-face {
   font-family: "MiSans";
-  src: url("./fonts/MiSans-Medium.108.woff2") format("woff2");
+  src: url("./fonts/MiSans-Medium.small.woff2") format("woff2");
   font-weight: 500;
   font-style: normal;
   font-display: swap;
@@ -1986,7 +1986,7 @@
 }
 @font-face {
   font-family: "MiSans";
-  src: url("./fonts/MiSans-Medium.109.woff2") format("woff2");
+  src: url("./fonts/MiSans-Medium.small.woff2") format("woff2");
   font-weight: 500;
   font-style: normal;
   font-display: swap;
@@ -1994,7 +1994,7 @@
 }
 @font-face {
   font-family: "MiSans";
-  src: url("./fonts/MiSans-Medium.110.woff2") format("woff2");
+  src: url("./fonts/MiSans-Medium.small.woff2") format("woff2");
   font-weight: 500;
   font-style: normal;
   font-display: swap;
@@ -2002,7 +2002,7 @@
 }
 @font-face {
   font-family: "MiSans";
-  src: url("./fonts/MiSans-Medium.111.woff2") format("woff2");
+  src: url("./fonts/MiSans-Medium.small.woff2") format("woff2");
   font-weight: 500;
   font-style: normal;
   font-display: swap;
@@ -2010,7 +2010,7 @@
 }
 @font-face {
   font-family: "MiSans";
-  src: url("./fonts/MiSans-Medium.112.woff2") format("woff2");
+  src: url("./fonts/MiSans-Medium.small.woff2") format("woff2");
   font-weight: 500;
   font-style: normal;
   font-display: swap;
@@ -2018,7 +2018,7 @@
 }
 @font-face {
   font-family: "MiSans";
-  src: url("./fonts/MiSans-Medium.113.woff2") format("woff2");
+  src: url("./fonts/MiSans-Medium.small.woff2") format("woff2");
   font-weight: 500;
   font-style: normal;
   font-display: swap;
@@ -2026,7 +2026,7 @@
 }
 @font-face {
   font-family: "MiSans";
-  src: url("./fonts/MiSans-Medium.114.woff2") format("woff2");
+  src: url("./fonts/MiSans-Medium.small.woff2") format("woff2");
   font-weight: 500;
   font-style: normal;
   font-display: swap;
@@ -2034,7 +2034,7 @@
 }
 @font-face {
   font-family: "MiSans";
-  src: url("./fonts/MiSans-Medium.115.woff2") format("woff2");
+  src: url("./fonts/MiSans-Medium.small.woff2") format("woff2");
   font-weight: 500;
   font-style: normal;
   font-display: swap;
@@ -2202,7 +2202,7 @@
 }
 @font-face {
   font-family: "MiSans";
-  src: url("./fonts/MiSans-Medium.136.woff2") format("woff2");
+  src: url("./fonts/MiSans-Medium.small.woff2") format("woff2");
   font-weight: 500;
   font-style: normal;
   font-display: swap;
@@ -2210,7 +2210,7 @@
 }
 @font-face {
   font-family: "MiSans";
-  src: url("./fonts/MiSans-Medium.137.woff2") format("woff2");
+  src: url("./fonts/MiSans-Medium.small.woff2") format("woff2");
   font-weight: 500;
   font-style: normal;
   font-display: swap;

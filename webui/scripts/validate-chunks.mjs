@@ -16,6 +16,9 @@ const assetsDir = fileURLToPath(new URL("../../pages/console/assets/", import.me
 // 语法表体积容易在加一门语言时悄悄翻倍（ruby 单文件 52 KB，闭包 1961 KB），
 // 这个上限是拿来在 CI 里绊一下的，不是精确目标。
 const MAX_JS_KB = 1600;
+// CSS 里有 MiSans 的 unicode-range 分块声明（每个字重约 87 KB）。宿主是
+// no-store，CSS 每次打开都要重下，再加字重前先想清楚这 87 KB 值不值。
+const MAX_CSS_KB = 340;
 
 const failures = [];
 const files = readdirSync(assetsDir);
@@ -43,11 +46,15 @@ const jsKb = Math.round(statSync(join(assetsDir, "console.js")).size / 1024);
 if (jsKb > MAX_JS_KB) {
   failures.push(`console.js ${jsKb} KB 超过上限 ${MAX_JS_KB} KB（多半是又拖进了 shiki 语法）`);
 }
+const cssKb = Math.round(statSync(join(assetsDir, "console.css")).size / 1024);
+if (cssKb > MAX_CSS_KB) {
+  failures.push(`console.css ${cssKb} KB 超过上限 ${MAX_CSS_KB} KB（多半是又加了 CJK 字重）`);
+}
 
 // 4) 语法表规模：顶层 Object.freeze(JSON.parse(...)) 是首屏同步解析的成本
 const grammarCount = (entry.match(/Object\.freeze\(JSON\.parse\(/g) ?? []).length;
 
-console.log(`单文件核对: ${jsFiles.length} 个 .js, ${jsKb} KB`);
+console.log(`单文件核对: ${jsFiles.length} 个 .js, ${jsKb} KB | css ${cssKb} KB`);
 console.log(`相对导入核对: ${failures.some((f) => f.includes("./")) ? "失败" : "0 个"}`);
 console.log(`内联语法数: ${grammarCount}（首屏同步 JSON.parse）`);
 

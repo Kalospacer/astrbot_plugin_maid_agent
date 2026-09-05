@@ -58,13 +58,17 @@
   /*
    * UI 正文字体。
    *
-   * 拉丁走 Anthropic Sans；中文这里显式指定，而不是像 Claude 那样留给系统兜底。
-   * claude.com 的 `cjk-fonts` 模块只覆盖了 ja / ko（Noto Sans JP / KR），没有 zh，
-   * 中文一路掉到 system-ui 再由 OS 字体链接接管（Windows→微软雅黑，macOS→苹方）。
-   * 显式列出这两个能拿到同样的结果，但确定性更好、不依赖 OS 的兜底行为。
+   * 拉丁走 Anthropic Sans（零 CJK 字形），中文接 MiSans。两者按字形逐字回退：
+   * 拉丁命中前者，汉字落到后者，互不干扰。
+   *
+   * MiSans 自带完整拉丁，但排在 Anthropic Sans 之后，所以拉丁永远不会用到它——
+   * 也因此 MiSans 的拉丁分块不会被下载。
+   *
+   * 末尾仍留系统中文字体：MiSans 分块已覆盖它 cmap 里的全部码位（字频划分 +
+   * 补缺粗段），但 MiSans 本身没有的字（繁体扩展、部分符号）仍需兜底。
    */
   --maid-font-sans:
-    "Anthropic Sans", "Anthropic Sans Fallback",
+    "Anthropic Sans", "Anthropic Sans Fallback", "MiSans",
     "PingFang SC", "Microsoft YaHei", "Noto Sans SC", "Hiragino Sans GB",
     system-ui, -apple-system, "Segoe UI", sans-serif;
 

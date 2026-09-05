@@ -109,10 +109,31 @@ try:
         browser = p.chromium.launch()
         page = browser.new_page(viewport={"width": 1280, "height": 800}, device_scale_factor=2)
         page.on("console", lambda m: print("[console]", m.type, m.text[:300]))
-        page.on("response", lambda r: print("[HTTP %d]" % r.status, r.url[-70:])
+        page.on("response", lambda r: print(f"[HTTP {r.status}]", r.url[-70:])
                 if r.status >= 400 else None)
+
+        # 统计首屏实际拉取的资源：CJK 分块字体的真实成本只能测，不能估——
+        # 汉字会散布在多个字频段，命中的块数远不是「常用字都在头几块」那么简单。
+        # 两个口径都记：解压后字节 = 宿主（FastAPI 直出，无压缩）每次打开的真实
+        # 下载量；编码后字节 = vite preview 已 gzip 的线上传输量，也就是前面
+        # 加一层反代开压缩后能到的水平。只报其中一个都会误导。
+        #
+        # 事件回调里只收集、不测量：在回调里做 body()/sizes() 这种阻塞往返会让
+        # 后续事件的派发被推后，实测 italic 字体的响应就这样漏到汇总之后才到。
+        responses: list = []
+
+        def classify(url: str) -> str | None:
+            if ".woff2" in url:
+                return "font:misans" if "MiSans" in url else "font:latin"
+            if url.endswith(".js"):
+                return "js"
+            if url.endswith(".css"):
+                return "css"
+            return None
+
+        page.on("response", lambda r: responses.append(r) if r.status < 400 else None)
         page.add_init_script(MOCK)
-        page.goto("http://127.0.0.1:%d/" % PORT, wait_until="networkidle")
+        page.goto(f"http://127.0.0.1:{PORT}/", wait_until="networkidle")
         rendered = True
         try:
             page.wait_for_selector("[data-composer-seat]", timeout=8000)
@@ -121,7 +142,7 @@ try:
             print("!! 应用未渲染")
 
         for i, err in enumerate(page.evaluate("() => window.__errs || []")):
-            print("--- err[%d] ---" % i)
+            print(f"--- err[{i}] ---")
             print(err[:1500])
 
         page.wait_for_timeout(1000)  # 等字体 swap 落地
@@ -134,8 +155,30 @@ try:
         print("italic 按需加载:", json.dumps(italic, ensure_ascii=False))
         brand = page.evaluate(BRAND_PROBE)
         print(json.dumps(brand, ensure_ascii=False, indent=2))
+
+        page.wait_for_timeout(300)  # 让最后几条响应事件派发完
+        decoded: dict[str, int] = {}
+        encoded: dict[str, int] = {}
+        misans_hits = 0
+        for resp in responses:
+            key = classify(resp.url)
+            if key is None:
+                continue
+            # body() 会等响应结束，之后 sizes() 才可靠
+            decoded[key] = decoded.get(key, 0) + len(resp.body())
+            encoded[key] = encoded.get(key, 0) + resp.request.sizes()["responseBodySize"]
+            if key == "font:misans":
+                misans_hits += 1
+        print(f"--- 首屏实际传输（宿主 no-store，每次打开；MiSans 命中 {misans_hits} 块）---")
+        print(f"  {'':<14} {'解压后/宿主直连':>16} {'编码后/preview gzip':>20}")
+        for key in sorted(decoded):
+            print(f"  {key:<14} {decoded[key] / 1024:13.1f} KB {encoded[key] / 1024:17.1f} KB")
+        print(
+            f"  {'合计':<14} {sum(decoded.values()) / 1024:13.1f} KB "
+            f"{sum(encoded.values()) / 1024:17.1f} KB"
+        )
         # 生产构建里 CSS Modules 类名被压成纯哈希，按类名选不到；侧栏恒定贴左。
-        page.screenshot(path=str(OUT), clip={"x": 0, "y": 0, "width": 320, "height": 210})
+        page.screenshot(path=str(OUT), clip={"x": 0, "y": 0, "width": 760, "height": 420})
         print("screenshot ->", OUT)
         browser.close()
 
@@ -145,17 +188,19 @@ try:
     if not rendered:
         failures.append("应用未渲染")
     if brand.get("error"):
-        failures.append("字样未找到: %s" % brand["error"])
+        failures.append(f"字样未找到: {brand['error']}")
     else:
         if not brand.get("fitsAtMinSidebar"):
-            failures.append("字样在最窄侧栏放不下: %s > %s"
-                            % (brand.get("naturalWidth"), brand.get("budgetAtMinSidebar")))
+            failures.append(
+                f"字样在最窄侧栏放不下: {brand.get('naturalWidth')} > "
+                f"{brand.get('budgetAtMinSidebar')}"
+            )
         for name, ok in (brand.get("fontsLoaded") or {}).items():
             # italic 首屏不渲染斜体文字时本就不会下载，由上面的按需 load 单独核对
             if name != "anthropicItalic" and not ok:
-                failures.append("字体未加载: %s" % name)
+                failures.append(f"字体未加载: {name}")
     if italic.get("error") or not italic.get("ok"):
-        failures.append("italic 按需加载失败: %s" % json.dumps(italic, ensure_ascii=False))
+        failures.append(f"italic 按需加载失败: {json.dumps(italic, ensure_ascii=False)}")
 
     if failures:
         for f in failures:

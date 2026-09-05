@@ -40,6 +40,14 @@ export function formatMessageClock(time: number, now: number = Date.now()): stri
   return `${md} ${clock}`;
 }
 
+/** 解码吞吐：「103 tok/s」（DSH stats.tokensPerSecond 模板）。 */
+export function formatThroughput(tokensPerSecond: number): string {
+  const rounded = tokensPerSecond >= 100
+    ? Math.round(tokensPerSecond)
+    : Math.round(tokensPerSecond * 10) / 10;
+  return `${rounded} tok/s`;
+}
+
 /** 紧凑 token 数：517 / 12.2K / 517K / 1.2M（DSH formatTokens）。 */
 export function formatTokens(value: number): string {
   const scaled = (candidate: number): string =>

@@ -1,12 +1,19 @@
-// 尾部统计 pill + 点击弹窗（DSH TurnUsagePanel/TurnTimePanel 合并简化版）：
-// 用量 pill（IconDatabase + 总量）点击展开本轮用量明细弹窗。
-// maid 无 per-turn 路由/推理 token 明细，展示可用字段。
+// 尾部统计 pill + 点击弹窗（对齐 DSH TurnUsagePanel / TurnTimePanel）：
+// 用量 pill 展开本轮 token 明细；用时 pill 展开本轮总用时 / TPS / TTFT。
+// 文案取自 DSH zh 词条（message.turnUsage.* / message.turnTime.*）。
 
-import { useEffect, useRef, useState, type CSSProperties } from "react";
+import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
 
 import { IconClockOutline16, IconDatabaseOutline16 } from "@/ui/primitives/icons";
 import { useDismissOnOutsidePointer } from "@/ui/chrome/dismiss";
-import { formatExactTokens, formatTokens, formatCacheHitPercent, formatRunDuration } from "@/ui/chrome/format";
+import {
+  formatExactTokens,
+  formatTokens,
+  formatCacheHitPercent,
+  formatDuration,
+  formatRunDuration,
+  formatThroughput,
+} from "@/ui/chrome/format";
 
 export interface StatUsage {
   inputTokens?: number;
@@ -14,6 +21,15 @@ export interface StatUsage {
   cacheReadTokens?: number;
   cacheWriteTokens?: number;
   totalTokens: number;
+}
+
+export interface StatTiming {
+  /** 本轮墙上时间，pill 的标签。 */
+  runMs: number;
+  /** 本轮解码吞吐，已知时作为弹窗一行。 */
+  tokensPerSecond?: number | undefined;
+  /** 本轮首个 step 的 TTFT，已知时作为弹窗一行。 */
+  ttftMs?: number | undefined;
 }
 
 /** 触发器旁弹窗定位：固定于触发器上方 8px，钳制在视口内。 */
@@ -47,12 +63,13 @@ function usePanelPosition(open: boolean) {
   return { rootRef, panelRef, pos };
 }
 
-/**
- * 用量 pill 簇：仅在有 usage 数据时渲染。
- * DSH 中用量和时间是两个 pill；maid 只有 usage 事件（无 turn 起止计时数据可靠来源），
- * 时间 pill 仅在 runMs 提供时出现。
- */
-export function StatPanel(props: { usage: StatUsage; runMs?: number }) {
+/** pill 触发器 + 受控弹窗的共用外壳（两个面板的几何/关闭行为完全一致）。 */
+function StatDisclosure(props: {
+  icon: ReactNode;
+  label: string;
+  dialogLabel: string;
+  children: (close: () => void) => ReactNode;
+}) {
   const [open, setOpen] = useState(false);
   const { rootRef, panelRef, pos } = usePanelPosition(open);
   useDismissOnOutsidePointer(rootRef, open, setOpen, panelRef);
@@ -66,11 +83,6 @@ export function StatPanel(props: { usage: StatUsage; runMs?: number }) {
     return () => document.removeEventListener("keydown", onKey);
   }, [open]);
 
-  const usage = props.usage;
-  const billedInput =
-    (usage.inputTokens ?? 0) + (usage.cacheReadTokens ?? 0) + (usage.cacheWriteTokens ?? 0);
-  const total = usage.totalTokens ?? billedInput + (usage.outputTokens ?? 0);
-
   return (
     <span ref={rootRef} style={{ display: "inline-flex", minWidth: 0 }}>
       <button
@@ -80,52 +92,68 @@ export function StatPanel(props: { usage: StatUsage; runMs?: number }) {
         aria-expanded={open}
         onClick={() => setOpen(!open)}
       >
-        <IconDatabaseOutline16 size={15} />
-        <span className="stat-label">用量 {formatTokens(total)}</span>
+        {props.icon}
+        <span className="stat-label">{props.label}</span>
       </button>
-      {props.runMs !== undefined ? (
-        <span className="stat-pill" style={{ cursor: "default" }} aria-hidden="false">
-          <IconClockOutline16 size={15} />
-          <span className="stat-label">用时 {formatRunDuration(props.runMs)}</span>
-        </span>
-      ) : null}
       {open ? (
         <div
           ref={panelRef}
           className="stat-panel"
           role="dialog"
-          aria-label="本轮用量"
+          aria-label={props.dialogLabel}
           style={pos ?? { visibility: "hidden", left: 0, top: 0 }}
         >
-          <div className="stat-panel-title">
-            <span className="stat-panel-label">
-              <IconDatabaseOutline16 size={14} />
-              本轮用量
-            </span>
-            <span className="stat-panel-value">{formatExactTokens(total)} tok</span>
-          </div>
-          <div className="stat-panel-rule" aria-hidden />
-          <dl>
-            <dt>未缓存输入</dt>
-            <dd>{formatExactTokens(usage.inputTokens ?? 0)}</dd>
-            {usage.cacheReadTokens !== undefined ? (
-              <>
-                <dt>缓存读取</dt>
-                <dd>{formatExactTokens(usage.cacheReadTokens)}</dd>
-              </>
-            ) : null}
-            {usage.cacheWriteTokens !== undefined ? (
-              <>
-                <dt>缓存写入</dt>
-                <dd>{formatExactTokens(usage.cacheWriteTokens)}</dd>
-              </>
-            ) : null}
-            <dt>输出</dt>
-            <dd>{formatExactTokens(usage.outputTokens ?? 0)}</dd>
-          </dl>
-          {(() => {
-            const hit = formatCacheHitPercent(usage.cacheReadTokens ?? 0, billedInput);
-            return hit !== null ? (
+          {props.children(() => setOpen(false))}
+        </div>
+      ) : null}
+    </span>
+  );
+}
+
+/** 本轮用量面板（DSH TurnUsagePanel）。 */
+export function StatPanel(props: { usage: StatUsage; timing?: StatTiming }) {
+  const usage = props.usage;
+  const billedInput =
+    (usage.inputTokens ?? 0) + (usage.cacheReadTokens ?? 0) + (usage.cacheWriteTokens ?? 0);
+  const total = usage.totalTokens ?? billedInput + (usage.outputTokens ?? 0);
+  const hit = formatCacheHitPercent(usage.cacheReadTokens ?? 0, billedInput);
+
+  return (
+    <>
+      <StatDisclosure
+        icon={<IconDatabaseOutline16 size={15} />}
+        label={`用量 ${formatTokens(total)}`}
+        dialogLabel="本轮用量"
+      >
+        {() => (
+          <>
+            <div className="stat-panel-title">
+              <span className="stat-panel-label">
+                <IconDatabaseOutline16 size={14} />
+                本轮用量
+              </span>
+              <span className="stat-panel-value">{formatExactTokens(total)} tok</span>
+            </div>
+            <div className="stat-panel-rule" aria-hidden />
+            <dl>
+              <dt>未缓存输入</dt>
+              <dd>{formatExactTokens(usage.inputTokens ?? 0)}</dd>
+              {usage.cacheReadTokens !== undefined ? (
+                <>
+                  <dt>缓存读取</dt>
+                  <dd>{formatExactTokens(usage.cacheReadTokens)}</dd>
+                </>
+              ) : null}
+              {usage.cacheWriteTokens !== undefined ? (
+                <>
+                  <dt>缓存写入</dt>
+                  <dd>{formatExactTokens(usage.cacheWriteTokens)}</dd>
+                </>
+              ) : null}
+              <dt>输出</dt>
+              <dd>{formatExactTokens(usage.outputTokens ?? 0)}</dd>
+            </dl>
+            {hit !== null ? (
               <>
                 <div className="stat-panel-rule" aria-hidden />
                 <dl>
@@ -133,10 +161,51 @@ export function StatPanel(props: { usage: StatUsage; runMs?: number }) {
                   <dd>{hit}%</dd>
                 </dl>
               </>
-            ) : null;
-          })()}
-        </div>
-      ) : null}
-    </span>
+            ) : null}
+          </>
+        )}
+      </StatDisclosure>
+      {props.timing !== undefined ? <TimePanel timing={props.timing} /> : null}
+    </>
+  );
+}
+
+/** 本轮用时和速度面板（DSH TurnTimePanel）。 */
+function TimePanel(props: { timing: StatTiming }) {
+  const { runMs, tokensPerSecond, ttftMs } = props.timing;
+  return (
+    <StatDisclosure
+      icon={<IconClockOutline16 size={15} />}
+      label={`用时 ${formatRunDuration(runMs)}`}
+      dialogLabel="本轮用时和速度"
+    >
+      {() => (
+        <>
+          <div className="stat-panel-title">
+            <span className="stat-panel-label">
+              <IconClockOutline16 size={14} />
+              本轮用时和速度
+            </span>
+          </div>
+          <div className="stat-panel-rule" aria-hidden />
+          <dl>
+            <dt>本轮总用时</dt>
+            <dd>{formatRunDuration(runMs)}</dd>
+            {tokensPerSecond !== undefined ? (
+              <>
+                <dt>输出速度（TPS）</dt>
+                <dd>{formatThroughput(tokensPerSecond)}</dd>
+              </>
+            ) : null}
+            {ttftMs !== undefined ? (
+              <>
+                <dt>首 token 用时（TTFT）</dt>
+                <dd>{formatDuration(ttftMs)}</dd>
+              </>
+            ) : null}
+          </dl>
+        </>
+      )}
+    </StatDisclosure>
   );
 }

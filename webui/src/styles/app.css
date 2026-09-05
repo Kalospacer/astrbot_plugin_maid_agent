@@ -1,11 +1,12 @@
 
+@import "../ui/theme/fonts.css";
 @import "../ui/theme/base.css";
 @import "../ui/theme/design-platform.css";
 @import "../ui/theme/gradient-shadow-text.css";
 @import "../ui/theme/scrollbar.css";
 
 :root {
-  --app-font: "PingFang SC", "Microsoft YaHei", "Noto Sans SC", system-ui, sans-serif;
+  --app-font: var(--maid-font-sans);
 }
 
 html,
@@ -84,11 +85,24 @@ body {
   gap: 8px;
   height: 28px;
 }
+/* 本行的 pill / 图标按钮都是按「height 含 padding」写的；本文件没有全局
+   border-box reset，content-box 下 28px + 6px padding 会渲染成 40px 高的盒，
+   与 24px 行高的时间文本居中对齐后基线错开（时间与用量看着没对齐）。 */
+.icon-actions > *,
+.icon-actions .icon-action,
+.icon-actions .stat-pill {
+  box-sizing: border-box;
+}
+/* 时间文本也走同高度的 flex 盒，与 pill 共用同一条居中轴 */
 .icon-actions .time-start,
 .icon-actions .time-end {
+  display: inline-flex;
+  align-items: center;
+  height: 28px;
   font-size: 13px;
-  line-height: 24px;
+  line-height: 1;
   color: var(--maid-alias-label-tertiary);
+  font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
 .icon-actions .time-start {
@@ -140,7 +154,7 @@ body {
   background: transparent;
   color: var(--maid-alias-label-tertiary);
   font-size: 13px;
-  line-height: 24px;
+  line-height: 1;
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
   cursor: pointer;
@@ -296,13 +310,21 @@ body {
   text-align: start;
   text-overflow: clip;
 }
+/* 思考正文：Claude 风格的斜体。
+   Anthropic Sans 自带真 Italic 字形（AnthropicSans-Italic），拉丁部分走真斜体；
+   中文没有斜体字形，会退化成浏览器合成倾斜——这与 Claude 自身表现一致。 */
 .think-body {
   padding: 4px 0 4px 22px;
   color: var(--maid-alias-label-tertiary);
   font-size: 13px;
   line-height: 20px;
+  font-style: italic;
   white-space: pre-wrap;
   word-break: break-word;
+}
+/* 折叠态的摘要跟随同一风格，展开/收起之间不跳字形 */
+.think-summary-text {
+  font-style: italic;
 }
 .flow-sep {
   flex: none;
@@ -452,7 +474,11 @@ body {
   -webkit-text-fill-color: transparent;
   animation: maid-turn-status-shimmer 1.8s linear infinite;
 }
-.turn-status-clock {
+/* 计时 · 上下文占用：跟在 shimmer 文案后面，本身不参与渐变（要恒定可读） */
+.turn-status-meta {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   margin-left: 8px;
   font-size: 13px;
   font-weight: 400;
@@ -460,6 +486,12 @@ body {
   font-variant-numeric: tabular-nums;
   color: var(--maid-alias-label-caption);
   -webkit-text-fill-color: var(--maid-alias-label-caption);
+}
+.turn-status-sep {
+  opacity: 0.6;
+}
+.turn-status-context {
+  cursor: default;
 }
 @keyframes maid-turn-status-shimmer {
   to { background-position: 0 0; }

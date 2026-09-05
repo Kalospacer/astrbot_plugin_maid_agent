@@ -62,13 +62,21 @@ type FrameStyle = CSSProperties & { "--turn-natural-height": string; "--turn-scr
 
 interface TurnRailProps {
   nodes: readonly ChatNode[];
-  /** 最近一次活动轮（外部传入可为空，内部会自行跟踪滚动）。 */
+  /**
+   * nodes 的长度。folder 原地增长 nodes，引用恒定——只传 nodes 的话本组件
+   * 的 memo 会永久 bail out，梯子在整个会话里再也不更新（首次挂载不足 2 轮
+   * 就返回 null，之后永远不再出现）。size 变化即“多了一行”。
+   */
+  size: number;
   scrollerQuery: string;
 }
 
 /** 导航轨主体；少于 2 轮时不渲染。 */
 export const TurnRail = memo(function TurnRail(props: TurnRailProps) {
-  const items = useMemo(() => deriveTurnRailItems(props.nodes), [props.nodes]);
+  // 依赖 size 而非 nodes：nodes 引用恒定，流式 chunk 走 replaceNode 不改长度，
+  // 所以每个 token 不会重算，新增行才会。
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const items = useMemo(() => deriveTurnRailItems(props.nodes), [props.nodes, props.size]);
   const [previewTurn, setPreviewTurn] = useState<number | null>(null);
   const [activeTurn, setActiveTurn] = useState<number | null>(null);
   const [scrollTop, setScrollTop] = useState(0);
@@ -104,9 +112,13 @@ export const TurnRail = memo(function TurnRail(props: TurnRailProps) {
       const line = rect.top + Math.min(96, rect.height * 0.2);
       let next: number | null = null;
       for (const item of items) {
-        const el = root.querySelector<HTMLElement>(`[data-turn-rail-anchor="${item.anchorKey}"]`);
-        const target = el ?? root; // anchor 行不存在时退回容器顶
-        if (target.getBoundingClientRect().top > line) break;
+        // 锚行由 ChatView 打在用户行上（data-chat-anchor-key），在滚动口里而不是
+        // 梯子里；navigate() 用的也是同一个属性，两处必须保持一致。
+        const el = scroller.querySelector<HTMLElement>(
+          `[data-chat-anchor-key="${item.anchorKey}"]`,
+        );
+        if (el === null) continue; // 该轮尚未渲染（历史未加载），跳过而不是误判
+        if (el.getBoundingClientRect().top > line) break;
         next = item.turn;
       }
       if (next === null) next = items[0]?.turn ?? null;

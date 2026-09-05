@@ -1,5 +1,5 @@
 
-import type { ContentBlock, DeliveryStatus, SessionEvent, ToolEventView } from "@/types";
+import type { ContentBlock, SessionEvent, ToolEventView } from "@/types";
 
 export interface AssistantPartial {
   kind: "assistant-partial";
@@ -18,6 +18,16 @@ export interface UserNode {
   time: number;
 }
 
+/** 本轮的时延/解码吞吐读数（口径对齐 DSH turn-metrics）。 */
+export interface TurnMetrics {
+  /** turn/start → turn/end 的墙上时间。 */
+  runMs: number;
+  /** 本轮首个 step 的 step/start → 首个 token delta；无记录时缺省。 */
+  ttftMs?: number;
+  /** 同时具备解码计时与 provider 用量的 step 上，输出 token / 解码墙上时间。 */
+  tokensPerSecond?: number;
+}
+
 export interface AssistantNode {
   kind: "assistant";
   key: string;
@@ -29,6 +39,11 @@ export interface AssistantNode {
   time: number;
   /** 中间步骤消息（带工具调用块）：归属轮次过程，随折叠条显隐。 */
   inProcess?: boolean;
+  /**
+   * 本轮指标，turn/end 时回填到该轮最后一条助手消息上（尾部用时 pill 的数据源）。
+   * 之所以回填而不是让消费方按轮号查表：节点是 memo 化的，只有换新对象才会重渲染。
+   */
+  metrics?: TurnMetrics;
 }
 
 export interface ToolNode {
@@ -61,34 +76,28 @@ export interface TurnTailNode {
   deliveryCount: number;
 }
 
-export interface UsageNode {
-  kind: "usage";
-  key: string;
-  turn: number;
-  step: number;
-  usage: any;
-  time: number;
-}
-
-export interface DeliveryNode {
-  kind: "delivery";
-  key: string;
-  turn: number;
-  status?: DeliveryStatus;
-  taskId?: string;
-  agentId?: string;
-  time: number;
-  inProcess?: boolean;
-}
-
-export type ChatNode = UserNode | AssistantNode | ToolNode | TurnTailNode | AssistantPartial | UsageNode | DeliveryNode;
+export type ChatNode = UserNode | AssistantNode | ToolNode | TurnTailNode | AssistantPartial;
 
 export interface FoldResult {
   nodes: ChatNode[];
   running: boolean;
+  /**
+   * nodes 的长度。nodes 是原地增长的（见下方 folder 说明），引用恒定，
+   * 消费方无法靠引用比较感知“多了一行”——memo 化的组件会一直 bail out。
+   * 流式 chunk 走的是 replaceNode（长度不变），所以用长度当版本号既能
+   * 让新增行触发重算，又不会让每个 token 都触发。
+   */
+  size: number;
+  /** 运行中轮次的 turn/start 时刻（工作状态行计时的锚点）；未运行为 undefined。 */
+  runningSince?: number;
+  /**
+   * 当前上下文占用：最近一条带 usage 的助手消息的计费输入
+   * （未缓存输入 + 缓存读取 + 缓存写入），即那次请求的 prompt 规模。
+   */
+  contextTokens?: number;
 }
 
-export const EMPTY_FOLD: FoldResult = { nodes: [], running: false };
+export const EMPTY_FOLD: FoldResult = { nodes: [], running: false, size: 0 };
 
 /**
  * 增量会话折叠器。
@@ -117,6 +126,17 @@ export class ConversationFolder {
   private turnDeliveryCount = 0;
   /** 本轮折叠条节点：首个过程行出现时创建在行之前（DSH TurnProcess 位置）。 */
   private turnBar: TurnTailNode | null = null;
+  /** ---- 本轮计时（口径见 TurnMetrics）---- */
+  private turnStartedAt: number | null = null;
+  private stepStartedAt: number | null = null;
+  private stepFirstTokenAt: number | null = null;
+  private turnTtftMs: number | undefined = undefined;
+  private turnDecodeMs = 0;
+  private turnDecodeTokens = 0;
+  /** 本轮最后一条“非过程”助手消息：turn/end 时把指标回填到它身上。 */
+  private turnLastAssistant: AssistantNode | null = null;
+  /** 最近一次 usage 的计费输入，即当前上下文占用。 */
+  private contextTokens: number | undefined = undefined;
 
   ingest(events: Map<number, SessionEvent>, views: Map<number, ToolEventView>): FoldResult {
     let fresh: SessionEvent[] | null = [];
@@ -151,7 +171,13 @@ export class ConversationFolder {
     }
     this.processed = events.size;
     this.viewsCount = views.size;
-    this.result = { nodes: this.nodes, running: this.running };
+    this.result = {
+      nodes: this.nodes,
+      running: this.running,
+      size: this.nodes.length,
+      runningSince: this.running && this.turnStartedAt !== null ? this.turnStartedAt : undefined,
+      contextTokens: this.contextTokens,
+    };
     return this.result;
   }
 
@@ -170,6 +196,18 @@ export class ConversationFolder {
     this.turnMessageCount = 0;
     this.turnDeliveryCount = 0;
     this.turnBar = null;
+    this.resetTurnTiming();
+    this.contextTokens = undefined;
+  }
+
+  private resetTurnTiming(): void {
+    this.turnStartedAt = null;
+    this.stepStartedAt = null;
+    this.stepFirstTokenAt = null;
+    this.turnTtftMs = undefined;
+    this.turnDecodeMs = 0;
+    this.turnDecodeTokens = 0;
+    this.turnLastAssistant = null;
   }
 
   private push(node: ChatNode): void {
@@ -180,6 +218,22 @@ export class ConversationFolder {
     const idx = this.nodes.lastIndexOf(prev);
     if (idx >= 0) this.nodes.splice(idx, 1, next);
     else this.nodes.push(next);
+  }
+
+  /**
+   * turn/end 时把本轮指标回填到该轮最后一条助手消息上。
+   * 换新对象而非原地改：节点视图是 memo 化的，原地改不会重渲染。
+   */
+  private backfillMetrics(endTime: number): void {
+    const target = this.turnLastAssistant;
+    this.turnLastAssistant = null;
+    if (target === null || this.turnStartedAt === null) return;
+    const metrics: TurnMetrics = { runMs: Math.max(0, endTime - this.turnStartedAt) };
+    if (this.turnTtftMs !== undefined) metrics.ttftMs = this.turnTtftMs;
+    if (this.turnDecodeMs > 0 && this.turnDecodeTokens > 0) {
+      metrics.tokensPerSecond = (this.turnDecodeTokens * 1000) / this.turnDecodeMs;
+    }
+    this.replaceNode(target, { ...target, metrics });
   }
 
   /** 首个过程行入列前调用：把折叠条插到它前面（用户消息下方）。 */
@@ -207,6 +261,14 @@ export class ConversationFolder {
         this.turnMessageCount = 0;
         this.turnDeliveryCount = 0;
         this.turnBar = null;
+        this.resetTurnTiming();
+        this.turnStartedAt = event.time;
+        break;
+      }
+      case "step/start": {
+        this.lastStep = data.step ?? this.lastStep;
+        this.stepStartedAt = event.time;
+        this.stepFirstTokenAt = null;
         break;
       }
       case "turn/end": {
@@ -214,6 +276,7 @@ export class ConversationFolder {
         this.partial = null;
         const reason = data.reason;
         const turn = data.turn ?? this.lastTurn;
+        this.backfillMetrics(event.time);
         if (this.turnBar !== null) {
           // 折叠条在轮首已就位，回填计数与终态
           const bar = this.turnBar;
@@ -255,6 +318,13 @@ export class ConversationFolder {
       case "assistant/chunk": {
         const chunk = data.chunk;
         if (!chunk) break;
+        // 首个 token delta 落地：本 step 的 TTFT 与解码起点
+        if (this.stepFirstTokenAt === null && isTokenDelta(chunk)) {
+          this.stepFirstTokenAt = event.time;
+          if (this.turnTtftMs === undefined && this.stepStartedAt !== null) {
+            this.turnTtftMs = Math.max(0, event.time - this.stepStartedAt);
+          }
+        }
         const turn = data.turn ?? this.lastTurn;
         const step = data.step ?? this.lastStep;
         let partial = this.partial;
@@ -273,6 +343,15 @@ export class ConversationFolder {
       case "assistant/message": {
         const turn = data.turn ?? this.lastTurn;
         const step = data.step ?? this.lastStep;
+        // 只统计同时具备解码计时与 provider 用量的 step（DSH 口径）
+        const outputTokens = Number(data.usage?.outputTokens ?? 0);
+        if (this.stepFirstTokenAt !== null && outputTokens > 0) {
+          this.turnDecodeMs += Math.max(0, event.time - this.stepFirstTokenAt);
+          this.turnDecodeTokens += outputTokens;
+        }
+        this.stepFirstTokenAt = null;
+        const billedInput = billedInputTokens(data.usage);
+        if (billedInput !== undefined) this.contextTokens = billedInput;
         const blocks: ContentBlock[] = data.message?.content ?? [];
         if (blocks.length === 0) blocks.push({ type: "text", text: "" });
         // 带工具调用块的是中间步骤消息：归入轮次过程（计一条），受折叠条控制
@@ -306,16 +385,10 @@ export class ConversationFolder {
         } else {
           this.push(node);
         }
-        if (data.usage) {
-          this.push({
-            kind: "usage",
-            key: `s${event.seq}`,
-            turn,
-            step,
-            usage: data.usage,
-            time: event.time,
-          });
-        }
+        // 尾部 pill 挂在本轮最后一条“非过程”助手消息上；指标要等 turn/end
+        // 才齐（runMs 需要轮尾时间），先记住这条节点，届时回填。
+        if (!inProcess) this.turnLastAssistant = node;
+        // usage 不单独建行：它挂在本轮最后一条助手消息尾部的 StatPanel 上。
         for (const block of blocks) {
           if (block.type === "tool-call" && !this.openTools.has(block.id)) {
             const toolNode: ToolNode = {
@@ -402,27 +475,35 @@ export class ConversationFolder {
         break;
       }
       case "maid/delivery": {
-        const inProcess = this.running || this.turnBar !== null;
-        if (inProcess) {
+        // 投递本身不建行，只计入本轮过程统计（折叠条标签的“N 次投递”）。
+        if (this.running || this.turnBar !== null) {
           this.ensureTurnBar(event.time);
           this.turnDeliveryCount += 1;
         }
-        this.push({
-          kind: "delivery",
-          key: `d${event.seq}`,
-          turn: data.turn ?? this.lastTurn,
-          status: data.status ?? data.deliveryStatus,
-          taskId: data.taskId,
-          agentId: data.agentId,
-          time: event.time,
-          inProcess: inProcess || undefined,
-        });
         break;
       }
       default:
         break;
     }
   }
+}
+
+/** token 增量 chunk（text/reasoning delta）；usage 之类的控制 chunk 不算。 */
+function isTokenDelta(chunk: any): boolean {
+  return chunk?.type === "text-delta" || chunk?.type === "reasoning-delta";
+}
+
+/**
+ * 三个不相交的计费输入桶之和 = 那次请求的 prompt 规模 = 当前上下文占用。
+ * usage 缺失或全为 0 时返回 undefined，避免把“没数据”显示成 0。
+ */
+function billedInputTokens(usage: any): number | undefined {
+  if (usage === undefined || usage === null) return undefined;
+  const total =
+    Number(usage.inputTokens ?? 0) +
+    Number(usage.cacheReadTokens ?? 0) +
+    Number(usage.cacheWriteTokens ?? 0);
+  return total > 0 ? total : undefined;
 }
 
 /** 兼容入口：一次性全量折叠。 */

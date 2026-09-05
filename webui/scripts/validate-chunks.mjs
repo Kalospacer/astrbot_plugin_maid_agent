@@ -1,65 +1,58 @@
-// 校验构建产物中所有动态导入路径都指向真实存在的 chunk 文件，
-// 并通过 vite preview 实际请求每个 chunk，确认按需加载链路完整。
-import { spawn } from "node:child_process";
-import { readdirSync, readFileSync } from "node:fs";
+// 守护宿主约束（AstrBot plugin_page_service）：产物必须是零相对导入的单文件，
+// 且体积不能失控。
+//
+// 旧版本校验的是「动态 import 引用的 chunk 是否存在」——但 vite.config.ts 强制
+// inlineDynamicImports，产物里永远是 0 个动态导入，那个门禁从来没有真正跑过。
+//
+// 真正会出事的是反过来：一旦有人拆出了 chunk，60s 的 asset_token 过期后运行时
+// 再去加载它就是 401；而 minify 后的 from"./x.js" 也不匹配宿主的 URL 改写正则。
+// 所以这里断言「不许出现相对导入」，并给体积上一道回归闸。
+import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { setTimeout as delay } from "node:timers/promises";
 
-const PORT = 7138;
-const BASE = `http://127.0.0.1:${PORT}/`;
 const assetsDir = fileURLToPath(new URL("../../pages/console/assets/", import.meta.url));
 
-// 1) 静态核对：console.js 里出现的相对 import 都有对应文件
+// 语法表体积容易在加一门语言时悄悄翻倍（ruby 单文件 52 KB，闭包 1961 KB），
+// 这个上限是拿来在 CI 里绊一下的，不是精确目标。
+const MAX_JS_KB = 1600;
+
+const failures = [];
+const files = readdirSync(assetsDir);
 const entry = readFileSync(join(assetsDir, "console.js"), "utf8");
-const importRefs = new Set(
-  [...entry.matchAll(/import\(\s*["']\.\/([^"']+)["']\s*\)/g)].map((m) => m[1]),
-);
-const files = new Set(readdirSync(assetsDir));
-let missing = 0;
-for (const ref of importRefs) {
-  if (!files.has(ref)) {
-    console.log(`FAIL 动态导入引用了不存在的文件: ${ref}`);
-    missing++;
-  }
-}
-console.log(`静态核对: ${importRefs.size} 个动态导入, 缺失 ${missing}`);
 
-// 2) HTTP 核对：所有 chunk 都能被 preview 服务
-const server = spawn(
-  process.execPath,
-  ["node_modules/vite/bin/vite.js", "preview", "--port", String(PORT), "--strictPort"],
-  { cwd: process.cwd(), stdio: ["ignore", "pipe", "pipe"] },
-);
-
-async function waitReady() {
-  for (let i = 0; i < 60; i++) {
-    try {
-      const res = await fetch(BASE);
-      if (res.ok) return;
-    } catch { /* retry */ }
-    await delay(250);
-  }
-  throw new Error("preview server did not start");
+// 1) 单文件：assets/ 下不该有第二个 .js
+const jsFiles = files.filter((f) => f.endsWith(".js"));
+if (jsFiles.length !== 1) {
+  failures.push(`产物应为单个 .js，实际 ${jsFiles.length} 个: ${jsFiles.join(", ")}`);
 }
 
-try {
-  await waitReady();
-  const chunks = [...files].filter((f) => f.endsWith(".js") || f.endsWith(".css"));
-  let failed = 0;
-  for (const file of chunks) {
-    const res = await fetch(BASE + "assets/" + file);
-    if (!res.ok) {
-      console.log(`FAIL ${res.status} assets/${file}`);
-      failed++;
-    }
-    await res.arrayBuffer();
-  }
-  console.log(`HTTP 核对: ${chunks.length} 个资源, 失败 ${failed}`);
-  server.kill();
-  setTimeout(() => process.exit(missing === 0 && failed === 0 ? 0 : 1), 300);
-} catch (error) {
-  console.error("ERROR:", error.message);
-  server.kill();
-  setTimeout(() => process.exit(1), 300);
+// 2) 零相对导入：静态 import/export-from 与动态 import() 都不许指向 ./
+const relativePatterns = [
+  [/import\(\s*["'`]\.\//g, "动态 import('./…')"],
+  [/\bfrom\s*["']\.\//g, "静态 from './…'"],
+  [/\bimport\s*["']\.\//g, "副作用 import './…'"],
+];
+for (const [pattern, label] of relativePatterns) {
+  const hits = entry.match(pattern);
+  if (hits !== null) failures.push(`${label} 出现 ${hits.length} 次——宿主 token 会 401`);
 }
+
+// 3) 体积闸
+const jsKb = Math.round(statSync(join(assetsDir, "console.js")).size / 1024);
+if (jsKb > MAX_JS_KB) {
+  failures.push(`console.js ${jsKb} KB 超过上限 ${MAX_JS_KB} KB（多半是又拖进了 shiki 语法）`);
+}
+
+// 4) 语法表规模：顶层 Object.freeze(JSON.parse(...)) 是首屏同步解析的成本
+const grammarCount = (entry.match(/Object\.freeze\(JSON\.parse\(/g) ?? []).length;
+
+console.log(`单文件核对: ${jsFiles.length} 个 .js, ${jsKb} KB`);
+console.log(`相对导入核对: ${failures.some((f) => f.includes("./")) ? "失败" : "0 个"}`);
+console.log(`内联语法数: ${grammarCount}（首屏同步 JSON.parse）`);
+
+if (failures.length > 0) {
+  for (const line of failures) console.log(`FAIL ${line}`);
+  process.exit(1);
+}
+console.log("OK");

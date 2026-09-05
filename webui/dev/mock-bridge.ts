@@ -369,6 +369,14 @@ const bridge: MockBridge = {
       if (envelope.type !== "client-request") {
         return { type: "server-response", rpcId: "", result: { ok: false, error: { code: "bad-request", message: "bad envelope", details: {} } } };
       }
+      // 与真实后端（main.py web_rpc）一致：路径 method 必须与信封 method 相符
+      if (envelope.method !== method) {
+        return {
+          type: "server-response",
+          rpcId: envelope.rpcId ?? "",
+          result: { ok: false, error: { code: "internal", message: `信封 method 与路径不一致: ${envelope.method}`, details: {} } },
+        };
+      }
       try {
         const value = await respond(envelope.method, envelope.payload ?? {});
         return { type: "server-response", rpcId: envelope.rpcId, result: { ok: true, value } };

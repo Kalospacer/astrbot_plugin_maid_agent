@@ -14,8 +14,5 @@ export function clampWidth(px: number, min: number, max: number): number {
 
 export function computeColumns(viewport: number, sidebar: number): Columns {
   const s = sidebar === 0 ? SIDEBAR_COLLAPSED : clampWidth(sidebar, SIDEBAR_MIN, SIDEBAR_MAX)
-
-  if (s + CENTER_MIN <= viewport) return { sidebar: s, center: viewport - s }
-
   return { sidebar: s, center: Math.max(0, viewport - s) }
 }

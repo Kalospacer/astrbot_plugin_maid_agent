@@ -49,5 +49,7 @@ data/
 webui/node_modules/
 webui/.vite/
 
-# KaTeX 字体由后端启动时从 dashboard dist 物化，不进 git/zip
-pages/console/assets/fonts/
+# KaTeX 字体由后端启动时从 dashboard dist 物化，不进 git/zip。
+# 只忽略 KaTeX_*：同目录下还有随构建产出、必须随仓库分发的界面字体
+# （Anthropic Sans / Outfit），整目录忽略会让它们在部署环境 404。
+pages/console/assets/fonts/KaTeX_*

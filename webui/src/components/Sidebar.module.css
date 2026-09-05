@@ -87,9 +87,11 @@
   background: transparent;
   color: inherit;
   cursor: pointer;
-  font-size: 15px;
-  font-weight: 500;
-  letter-spacing: 0.02em;
+  /* 字样与 AstrBot 本体 logo 同源（Outfit）：几何无衬线、半粗、略收紧字距 */
+  font-family: var(--maid-font-brand);
+  font-size: 16px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
   white-space: nowrap;
 }
 

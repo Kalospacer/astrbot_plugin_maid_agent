@@ -1,6 +1,6 @@
 import { useEffect, useId, useRef, useState } from "react";
 
-import { Button, Input, Modal } from "@/ui/primitives";
+import { Button, Input } from "@/ui/primitives";
 import {
   IconCloseOutline16,
   IconDataOutline16,
@@ -47,8 +47,12 @@ export function SettingsDialog(props: { open: boolean; onClose: () => void }) {
       .catch((exc: any) => setError(exc?.message ?? String(exc)))
       .finally(() => setLoading(false));
     // 打开时焦点给关闭按钮（DSH SettingsPanel）；挂载后再取
+    const restoreTo = document.activeElement as HTMLElement | null;
     const timer = window.setTimeout(() => closeRef.current?.focus(), 0);
-    return () => window.clearTimeout(timer);
+    return () => {
+      window.clearTimeout(timer);
+      restoreTo?.focus?.();
+    };
   }, [props.open]);
 
   useEffect(() => {

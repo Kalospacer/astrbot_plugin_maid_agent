@@ -64,11 +64,11 @@
    * MiSans 自带完整拉丁，但排在 Anthropic Sans 之后，所以拉丁永远不会用到它——
    * 也因此 MiSans 的拉丁分块不会被下载。
    *
-   * 末尾仍留系统中文字体：MiSans 分块只覆盖 Google 对 Noto Sans SC 的 101 段
-   * 划分，落在划分之外的生僻字仍需兜底。
+   * 末尾仍留系统中文字体：MiSans 分块已覆盖它 cmap 里的全部码位（字频划分 +
+   * 补缺粗段），但 MiSans 本身没有的字（繁体扩展、部分符号）仍需兜底。
    */
   --maid-font-sans:
-    "Anthropic Sans", "Anthropic Sans Fallback", MiSans,
+    "Anthropic Sans", "Anthropic Sans Fallback", "MiSans",
     "PingFang SC", "Microsoft YaHei", "Noto Sans SC", "Hiragino Sans GB",
     system-ui, -apple-system, "Segoe UI", sans-serif;
 

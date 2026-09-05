@@ -68,6 +68,8 @@
     "PingFang SC", "Microsoft YaHei", "Noto Sans SC", "Hiragino Sans GB",
     system-ui, -apple-system, "Segoe UI", sans-serif;
 
-  /* 品牌字样（侧栏 Maid Console）：与 AstrBot 本体 logo 同源 */
-  --maid-font-brand: Outfit, var(--maid-font-sans);
+  /* 品牌字样（侧栏 Maid Console）：与 AstrBot 本体 logo 同源。
+     这里小写不是笔误——CSS 的字体族名匹配大小写不敏感，与上面 @font-face
+     声明的 Outfit 仍然是同一个族。 */
+  --maid-font-brand: outfit, var(--maid-font-sans);
 }

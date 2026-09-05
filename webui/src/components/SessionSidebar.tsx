@@ -556,6 +556,9 @@ function SessionRow(props: { item: SessionSummary; currentId: SessionId | undefi
       tabIndex={0}
       onClick={open}
       onKeyDown={(e) => {
+        // 只处理落在行本身上的按键：行内还有「会话操作」菜单按钮，它的
+        // Enter / 空格会冒泡到这里，被 preventDefault 掉就再也打不开菜单了。
+        if (e.target !== e.currentTarget) return;
         if (e.key !== "Enter" && e.key !== " ") return;
         e.preventDefault();
         open();

@@ -113,9 +113,11 @@ try:
                 if r.status >= 400 else None)
         page.add_init_script(MOCK)
         page.goto("http://127.0.0.1:%d/" % PORT, wait_until="networkidle")
+        rendered = True
         try:
             page.wait_for_selector("[data-composer-seat]", timeout=8000)
         except Exception:
+            rendered = False
             print("!! 应用未渲染")
 
         for i, err in enumerate(page.evaluate("() => window.__errs || []")):
@@ -130,10 +132,35 @@ try:
             " catch (e) { return { error: String(e) }; } }"
         )
         print("italic 按需加载:", json.dumps(italic, ensure_ascii=False))
-        print(json.dumps(page.evaluate(BRAND_PROBE), ensure_ascii=False, indent=2))
+        brand = page.evaluate(BRAND_PROBE)
+        print(json.dumps(brand, ensure_ascii=False, indent=2))
         # 生产构建里 CSS Modules 类名被压成纯哈希，按类名选不到；侧栏恒定贴左。
         page.screenshot(path=str(OUT), clip={"x": 0, "y": 0, "width": 320, "height": 210})
         print("screenshot ->", OUT)
         browser.close()
+
+    # 探针得能当门禁用：截图存下来但状态码要如实反映失败，
+    # 否则「白屏」「字体没加载」「字样放不下」都会被 exit 0 掩盖过去。
+    failures = []
+    if not rendered:
+        failures.append("应用未渲染")
+    if brand.get("error"):
+        failures.append("字样未找到: %s" % brand["error"])
+    else:
+        if not brand.get("fitsAtMinSidebar"):
+            failures.append("字样在最窄侧栏放不下: %s > %s"
+                            % (brand.get("naturalWidth"), brand.get("budgetAtMinSidebar")))
+        for name, ok in (brand.get("fontsLoaded") or {}).items():
+            # italic 首屏不渲染斜体文字时本就不会下载，由上面的按需 load 单独核对
+            if name != "anthropicItalic" and not ok:
+                failures.append("字体未加载: %s" % name)
+    if italic.get("error") or not italic.get("ok"):
+        failures.append("italic 按需加载失败: %s" % json.dumps(italic, ensure_ascii=False))
+
+    if failures:
+        for f in failures:
+            print("FAIL", f)
+        sys.exit(1)
+    print("PROBE OK")
 finally:
     server.terminate()

@@ -5,7 +5,6 @@ import type {
   AgentPresetEntry,
   HistoryEntry,
   HostFrame,
-  Message,
   MuxFrame,
   PromptContentPart,
   QueuedInboxItem,
@@ -247,8 +246,16 @@ export function applyMuxFrame(frame: MuxFrame): void {
       });
     }
     touchSession(session);
-    touchSessions();
-    if (state.current === frame.sessionId) emit();
+    // 侧栏只关心“轮次边界”级别的变化（排序用的 updatedAt、blank、投递状态）。
+    // 每个 assistant/chunk 都 touchSessions + emit 会让整列会话跟着流式重渲染；
+    // 反过来，只在当前会话 emit 又会让后台会话的时间标签/排序一直冻着。
+    const notable =
+      frame.event.type === "turn/start" ||
+      frame.event.type === "turn/end" ||
+      frame.event.type === "user/message" ||
+      frame.event.type === "maid/delivery";
+    if (notable) touchSessions();
+    if (state.current === frame.sessionId || notable) emit();
     return;
   }
   if (frame.type === "session/subscribed") {
@@ -265,8 +272,14 @@ export function applyMuxFrame(frame: MuxFrame): void {
   if (frame.type === "session/projection") {
     applyProjections(frame.sessionId, { [frame.key]: frame.value }, frame.seq);
     const summary = state.sessions.get(frame.sessionId);
-    if (summary?.projections && frame.key === "title") {
-      summary.projections.values.title = frame.value;
+    if (summary && frame.key === "title") {
+      // 新会话首次拿到标题时 summary.projections 往往还不存在，旧写法直接跳过，
+      // 侧栏会一直显示“新会话”直到下一次 refreshSessions。
+      summary.projections ??= { asOfSeq: frame.seq, values: {} };
+      if (frame.seq >= summary.projections.asOfSeq) {
+        summary.projections.asOfSeq = frame.seq;
+        summary.projections.values.title = frame.value;
+      }
     }
     const session = state.byId.get(frame.sessionId);
     if (session) touchSession(session);
@@ -517,7 +530,10 @@ export async function boot(): Promise<void> {
       if (state.current) await loadHistoryTail(state.current).catch(() => undefined);
     },
   });
-  await controller.start().catch(() => undefined);
+  // SSE 订阅不挡首屏：两条流的建立是两次桥往返，串在数据 RPC 前面会把
+  // 启动拉长一整个 round-trip。并发跑，订阅期间到达的帧由 ensureSession
+  // 兜底建壳，随后 refreshSessions 会用真实 summary 覆盖。
+  const streaming = controller.start().catch(() => undefined);
   await Promise.allSettled([refreshSessions(), refreshPresets(), refreshSettings()]);
   if (state.current === undefined && state.sessions.size > 0) {
     const newest = [...state.sessions.values()].sort((a, b) => b.updatedAt - a.updatedAt)[0];
@@ -526,6 +542,7 @@ export async function boot(): Promise<void> {
   }
   state.booting = false;
   emit();
+  await streaming;
 }
 
 export async function shutdown(): Promise<void> {

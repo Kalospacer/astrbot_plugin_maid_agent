@@ -26,6 +26,7 @@ export { SearchBlock, DEFAULT_SEARCH_MAX_LINES } from './SearchBlock.tsx'
 export type {
   SearchBlockProps, SearchMatchesBlockProps, SearchPathsBlockProps, SearchFileGroup, SearchBlockLineMatch,
 } from './SearchBlock.tsx'
-// markdown 渲染栈（micromark/katex/shiki）与 ReadBlock（shiki）刻意不走 barrel：
-// 由使用方 React.lazy 动态引入，避免重型依赖被 barrel 的副作用牵引进入口 chunk。
+// markdown 渲染栈（micromark/katex/shiki）与 ReadBlock（shiki）不走 barrel：
+// 产物是单文件，拆不拆 chunk 都一样，但让重型依赖留在 barrel 外可以避免
+// 只用一个 icon 的模块顺带把整个 shiki 拖进依赖图。使用方直接按路径引入。
 export * from './icons/index.tsx'

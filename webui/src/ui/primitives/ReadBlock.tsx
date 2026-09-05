@@ -1,13 +1,8 @@
 
-import { useCallback, useMemo, useState, useSyncExternalStore } from 'react'
+import { useCallback, useMemo, useState } from 'react'
 import clsx from 'clsx'
 import { writeClipboard } from './clipboard.ts'
-import {
-  grammarLoadCount,
-  highlightLines,
-  subscribeGrammarLoaded,
-  type HighlightSpan,
-} from './markdown/highlight.ts'
+import { highlightLines, type HighlightSpan } from './markdown/highlight.ts'
 import css from './ReadBlock.module.css'
 
 export const DEFAULT_READ_MAX_LINES = 16
@@ -39,8 +34,7 @@ export function ReadBlock({
   className,
 }: ReadBlockProps) {
   const raw = useMemo(() => lines.map(line => line.text).join('\n'), [lines])
-  const loaded = useSyncExternalStore(subscribeGrammarLoaded, grammarLoadCount, grammarLoadCount)
-  const highlighted = useMemo(() => highlightLines(raw, lang), [raw, lang, loaded])
+  const highlighted = useMemo(() => highlightLines(raw, lang), [raw, lang])
   const [expanded, setExpanded] = useState(false)
   const [copied, setCopied] = useState(false)
 

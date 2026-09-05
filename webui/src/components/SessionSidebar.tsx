@@ -163,7 +163,7 @@ export function SessionSidebar(props: {
             aria-label="新会话"
             onClick={startSession}
           >
-            代理女仆
+            Maid Console
           </button>
         )}
         <Tooltip label={collapsed ? "展开侧边栏" : "收起侧边栏"} delayMs={500}>
@@ -506,7 +506,7 @@ function SearchResultList(props: {
 
   return (
     <div className={css.treeBody}>
-      <div className={css.list}>
+      <div className={css.list} role="tree" aria-label="搜索结果">
         {rows.map((row) => (
           <button
             key={row.id}
@@ -543,12 +543,20 @@ function SessionRow(props: { item: SessionSummary; currentId: SessionId | undefi
   const title = summaryTitle(item);
   const status = item.running ? "ongoing" : "done";
 
+  const open = () => void app.selectSession(item.sessionId);
+
   const ownRow = (
     <div
       className={clsx(css.sessionRow, selected && css.selected, menuOpen && css.menuOpen)}
       role="treeitem"
       aria-selected={selected}
-      onClick={() => void app.selectSession(item.sessionId)}
+      tabIndex={0}
+      onClick={open}
+      onKeyDown={(e) => {
+        if (e.key !== "Enter" && e.key !== " ") return;
+        e.preventDefault();
+        open();
+      }}
     >
       <span className={css.slot}>
         <StateDot state={status} />

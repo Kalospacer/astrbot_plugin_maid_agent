@@ -137,7 +137,12 @@ async function respond(method, payload) {
     }
     case "session.prompt": {
       const s = sessions.get(payload.sessionId);
-      void runMockTurn(s);
+      // 回显用户真实输入，否则多轮断言会被同一句话糊弄过去
+      const text = (payload.content ?? [])
+        .filter((part) => part?.type === "text")
+        .map((part) => part.text)
+        .join("\n");
+      void runMockTurn(s, text || "你好，女仆");
       return { accepted: true };
     }
     case "session.cancel": return { accepted: true };
@@ -159,52 +164,56 @@ async function respond(method, payload) {
   }
 }
 
-async function runMockTurn(session) {
+async function runMockTurn(session, prompt = "你好，女仆") {
   if (!session) return;
+  const turn = (session.turn ?? 0) + 1;
+  session.turn = turn;
   session.running = true;
   session.blank = false;
   broadcast("host", { type: "host/session-status", sessionId: session.sessionId, running: true });
-  append(session, "turn/start", { turn: 1 });
+  append(session, "turn/start", { turn });
   append(session, "user/message", {
-    id: "u1", role: "user",
-    content: [{ type: "text", text: "你好，女仆" }],
+    id: `u${turn}`, role: "user",
+    content: [{ type: "text", text: prompt }],
     source: { kind: "user" },
   });
-  append(session, "step/start", { turn: 1, step: 1 });
+  append(session, "step/start", { turn, step: 1 });
   const answer = "收到，**正在处理**。\n\n- 项目一\n- 项目二\n\n```python\nprint('ok')\n```";
   for (const char of answer) {
-    append(session, "assistant/chunk", { turn: 1, step: 1, chunk: { type: "text-delta", index: 0, text: char } });
+    append(session, "assistant/chunk", { turn, step: 1, chunk: { type: "text-delta", index: 0, text: char } });
     await delay(4);
   }
   append(session, "assistant/message", {
-    turn: 1, step: 1,
-    message: { id: "a1", role: "assistant", content: [{ type: "text", text: answer }], source: { kind: "model" } },
-    usage: { inputTokens: 120, outputTokens: answer.length },
+    turn, step: 1,
+    message: { id: `a${turn}`, role: "assistant", content: [{ type: "text", text: answer }], source: { kind: "model" } },
+    usage: { inputTokens: 120, outputTokens: answer.length, cacheReadTokens: 2048 },
   });
-  append(session, "step/end", { turn: 1, step: 1 });
+  append(session, "step/end", { turn, step: 1 });
   // 工具调用一轮（真实后端形状：结果正文嵌在 tool-result 块内层）
-  append(session, "step/start", { turn: 1, step: 2 });
+  append(session, "step/start", { turn, step: 2 });
   append(session, "tool/call", {
-    turn: 1, step: 2, callId: "call_1", name: "web_search",
+    turn, step: 2, callId: `call_${turn}`, name: "web_search",
     arguments: JSON.stringify({ query: "今天天气" }),
   });
+  // 工具执行耗时：真实工具不会瞬时返回，这段时间正是「正在工作」状态行可见的窗口
+  await delay(400);
   append(session, "tool/result", {
-    turn: 1, step: 2,
+    turn, step: 2,
     message: {
-      id: "t1", role: "user",
+      id: `t${turn}`, role: "user",
       content: [{
-        type: "tool-result", toolCallId: "call_1", isError: false,
+        type: "tool-result", toolCallId: `call_${turn}`, isError: false,
         content: [{ type: "text", text: "晴，26 度，适合出门。" }],
       }],
-      source: { kind: "tool", callId: "call_1" },
+      source: { kind: "tool", callId: `call_${turn}` },
     },
   });
   session.deliveryStatus = "sent";
   append(session, "maid/delivery", {
-    turn: 1, status: session.deliveryStatus, agentId: session.agentId, taskId: session.taskId,
+    turn, status: session.deliveryStatus, agentId: session.agentId, taskId: session.taskId,
   });
-  append(session, "step/end", { turn: 1, step: 2 });
-  append(session, "turn/end", { turn: 1, reason: { kind: "completed" } });
+  append(session, "step/end", { turn, step: 2 });
+  append(session, "turn/end", { turn, reason: { kind: "completed" } });
   session.running = false;
   broadcast("host", { type: "host/session-status", sessionId: session.sessionId, running: false });
 }
@@ -319,9 +328,52 @@ if (barBtn && toolRow) {
 console.log(`${expandOk ? "PASS" : "FAIL"} 折叠条展开过程行`);
 console.log(`${outputOk ? "PASS" : "FAIL"} 工具输出正文`);
 
-// Node/jsdom 中懒加载 chunk 的 URL 解析依赖浏览器环境（fetch http://localhost/...），
-// 属于测试环境限制而非应用缺陷——真实浏览器中这些 chunk 由 vite preview/插件页正常服务
-// （已由 scripts/validate-chunks.mjs 全量核对）。此处单独归类为 envSkip。
+// 轮次导航轨回归：folder 是原地增长 nodes 的，引用恒定。TurnRail 若只按 nodes
+// 引用做 memo 比较就会永久 bail out——首次挂载不足 2 轮返回 null，之后再也不出现。
+// 跑第二轮后梯子必须出现，且刻度数跟上轮次数。
+setter.call(textarea, "第二个问题");
+textarea.dispatchEvent(new window.Event("input", { bubbles: true }));
+textarea.dispatchEvent(new window.KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+
+// 轮次运行期间采样工作状态行：应带计时，并在拿到首个 usage 后带上下文占用
+let statusSample = "";
+for (let i = 0; i < 60; i++) {
+  await delay(50);
+  const el = document.querySelector(".turn-status");
+  if (el) statusSample = el.textContent ?? "";
+  if (/\d+秒/.test(statusSample) && /K|\d{3}/.test(statusSample)) break;
+}
+const statusClockOk = /正在工作/.test(statusSample) && /\d+秒/.test(statusSample);
+console.log(`${statusClockOk ? "PASS" : "FAIL"} 工作中显示计时（"${statusSample}"）`);
+const statusCtxOk = /\d/.test(statusSample.replace(/\d+秒/, ""));
+console.log(`${statusCtxOk ? "PASS" : "FAIL"} 工作中显示上下文占用`);
+
+await delay(2500);
+const railMarks = document.querySelectorAll(".turn-rail-mark");
+const railOk = railMarks.length >= 2;
+console.log(`${railOk ? "PASS" : "FAIL"} 轮次导航轨随新轮次更新（${railMarks.length} 个刻度）`);
+
+const secondTurnOk = document.getElementById("root").textContent.includes("第二个问题");
+console.log(`${secondTurnOk ? "PASS" : "FAIL"} 第二轮用户消息上屏`);
+
+// 用时 pill：turn/end 时把 runMs/TTFT/TPS 回填到本轮最后一条助手消息
+const timePill = [...document.querySelectorAll(".stat-pill")]
+  .find((b) => (b.textContent ?? "").includes("用时"));
+const timePillOk = timePill !== undefined;
+console.log(`${timePillOk ? "PASS" : "FAIL"} 本轮用时 pill（"${timePill?.textContent ?? "缺失"}"）`);
+
+let timeDialogOk = false;
+if (timePill) {
+  timePill.dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+  await delay(200);
+  const dlg = document.querySelector('[role="dialog"][aria-label="本轮用时和速度"]');
+  const txt = dlg?.textContent ?? "";
+  timeDialogOk = txt.includes("本轮总用时") && (txt.includes("TPS") || txt.includes("TTFT"));
+  console.log(`${timeDialogOk ? "PASS" : "FAIL"} 用时弹窗明细（${txt.replace(/\s+/g, " ").slice(0, 60)}）`);
+}
+
+// 产物是零 chunk 单文件（宿主约束，见 vite.config.ts），正常不该有 fetch failed；
+// 保留归类是为了让偶发的环境噪音不至于伪装成应用缺陷。
 const envSkip = errors.filter((e) => /fetch failed/.test(e));
 const runtimeErrors = errors.filter((e) => !/fetch failed/.test(e) && !/favicon|resize|loop/i.test(e));
 if (envSkip.length) {
@@ -341,6 +393,11 @@ const allOk =
   collapsedOk &&
   expandOk &&
   outputOk &&
+  railOk &&
+  secondTurnOk &&
+  statusClockOk &&
+  timePillOk &&
+  timeDialogOk &&
   runtimeErrors.length === 0;
 console.log(allOk ? "\nSMOKE OK" : "\nSMOKE FAILED");
 process.exit(allOk ? 0 : 1);

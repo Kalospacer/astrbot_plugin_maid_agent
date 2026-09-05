@@ -163,7 +163,10 @@ export function SessionSidebar(props: {
             aria-label="新会话"
             onClick={startSession}
           >
-            代理女仆
+            {/* 空白文本节点在 flex 布局里不成项（间距由 gap 给），但留在 DOM 中，
+                保证 textContent 仍是「Maid Console」而不是「MaidConsole」。 */}
+            <span className={css.brandStrong}>Maid</span>{" "}
+            <span className={css.brandLight}>Console</span>
           </button>
         )}
         <Tooltip label={collapsed ? "展开侧边栏" : "收起侧边栏"} delayMs={500}>
@@ -506,7 +509,7 @@ function SearchResultList(props: {
 
   return (
     <div className={css.treeBody}>
-      <div className={css.list}>
+      <div className={css.list} role="tree" aria-label="搜索结果">
         {rows.map((row) => (
           <button
             key={row.id}
@@ -543,12 +546,23 @@ function SessionRow(props: { item: SessionSummary; currentId: SessionId | undefi
   const title = summaryTitle(item);
   const status = item.running ? "ongoing" : "done";
 
+  const open = () => void app.selectSession(item.sessionId);
+
   const ownRow = (
     <div
       className={clsx(css.sessionRow, selected && css.selected, menuOpen && css.menuOpen)}
       role="treeitem"
       aria-selected={selected}
-      onClick={() => void app.selectSession(item.sessionId)}
+      tabIndex={0}
+      onClick={open}
+      onKeyDown={(e) => {
+        // 只处理落在行本身上的按键：行内还有「会话操作」菜单按钮，它的
+        // Enter / 空格会冒泡到这里，被 preventDefault 掉就再也打不开菜单了。
+        if (e.target !== e.currentTarget) return;
+        if (e.key !== "Enter" && e.key !== " ") return;
+        e.preventDefault();
+        open();
+      }}
     >
       <span className={css.slot}>
         <StateDot state={status} />

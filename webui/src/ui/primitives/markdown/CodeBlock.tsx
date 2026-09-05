@@ -1,8 +1,8 @@
 
-import { useCallback, useMemo, useRef, useState, useSyncExternalStore } from 'react'
+import { useCallback, useMemo, useRef, useState } from 'react'
 import clsx from 'clsx'
 import { writeClipboard } from '../clipboard.ts'
-import { grammarLoadCount, highlightToHtml, subscribeGrammarLoaded } from './highlight.ts'
+import { highlightToHtml } from './highlight.ts'
 import css from './CodeBlock.module.css'
 
 export interface CodeBlockProps {
@@ -15,8 +15,7 @@ export interface CodeBlockProps {
 
 export function CodeBlock({ code, lang, className, copyLabel = '复制', copiedLabel = '复制成功' }: CodeBlockProps) {
   const trimmed = code.endsWith('\n') ? code.slice(0, -1) : code
-  const loaded = useSyncExternalStore(subscribeGrammarLoaded, grammarLoadCount, grammarLoadCount)
-  const html = useMemo(() => highlightToHtml(trimmed, lang), [trimmed, lang, loaded])
+  const html = useMemo(() => highlightToHtml(trimmed, lang), [trimmed, lang])
   const rootRef = useRef<HTMLDivElement>(null)
   const [copied, setCopied] = useState(false)
 

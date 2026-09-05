@@ -1,14 +1,11 @@
-import { createContext, memo, lazy, Suspense, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { createContext, memo, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
 import { DiffBlock, DisclosureRow, StateDot, TerminalBlock, Tooltip, diffTotals } from "@/ui/primitives";
 import {
-  IconBranchOutline16,
   IconCheckOutline16,
   IconChevronDownOutline14,
   IconCopyOutline16,
   IconThinkOutline14,
-  IconDatabaseOutline16,
-  IconClockOutline16,
   IconSearchOutline16,
   IconBrowseOutline16,
   IconApiOutline14,
@@ -19,17 +16,15 @@ import {
 import { useApp } from "@/hooks";
 import * as app from "@/store/app";
 import { getSnapshot } from "@/store/app";
-import { EMPTY_FOLD, type ChatNode, type ToolNode } from "@/store/conversation";
-import { formatMessageClock, formatRunDuration } from "@/ui/chrome/format";
+import { EMPTY_FOLD, type ChatNode, type ToolNode, type TurnMetrics } from "@/store/conversation";
+import { formatMessageClock, formatRunDuration, formatTokens } from "@/ui/chrome/format";
 import { toolRowModel, type ToolRowVariant } from "@/ui/chrome/tool-row-model";
 import { TurnRail } from "@/components/TurnRail";
 import { StatPanel } from "@/components/StatPanel";
-
-// Markdown 渲染栈（micromark + katex + shiki）体积大，首屏 hero 用不到，
-// 懒加载到首个助手消息出现时再拉取；加载期间先以纯文本兜底。
-const MarkdownText = lazy(() =>
-  import("@/ui/primitives/markdown/MarkdownText.tsx").then((m) => ({ default: m.MarkdownText })),
-);
+// 宿主强制单文件产物（inlineDynamicImports），React.lazy 省不下任何字节，
+// 只会多一层 Suspense——markdown 栈与 ReadBlock 一律静态引入。
+import { MarkdownText } from "@/ui/primitives/markdown/MarkdownText.tsx";
+import { ReadBlock } from "@/ui/primitives/ReadBlock.tsx";
 
 const COPY_RESET_MS = 1000;
 
@@ -209,7 +204,12 @@ export function ChatView() {
   return (
     <TurnOpenContext.Provider value={processCtx}>
     <div className="chat-inner" ref={innerRef}>
-      <TurnRail nodes={folded.nodes} scrollerQuery="[data-conversation-scroll]" />
+      <TurnRail
+        nodes={folded.nodes}
+        size={folded.size}
+        contentRevision={folded.contentRevision}
+        scrollerQuery="[data-conversation-scroll]"
+      />
       {session.hasMore && (
         <button
           type="button"
@@ -228,7 +228,9 @@ export function ChatView() {
           revealHover={index < lastUserIndex}
         />
       ))}
-      {working ? <TurnStatus /> : null}
+      {working ? (
+        <TurnStatus since={folded.runningSince} contextTokens={folded.contextTokens} />
+      ) : null}
       {!atBottom && (
         <div className="to-bottom-slot">
           <Tooltip label="回到底部" side="top" delayMs={500}>
@@ -243,10 +245,16 @@ export function ChatView() {
   );
 }
 
-/** 运行中回合状态行：中性渐变 shimmer + ≥15s 计时器（布局对齐 DSH TurnStatus，文案走 Kimi）。 */
-function TurnStatus(props: { startTime?: number }) {
+/**
+ * 运行中回合状态行：中性渐变 shimmer + 计时 + 上下文占用
+ * （布局对齐 DSH TurnStatus，文案走 Kimi）。
+ *
+ * 计时锚点用 turn/start 的事件时刻而非组件挂载时刻——切走再切回、
+ * 或首屏落在半途时，挂载时刻会把已经跑了几分钟的轮次显示成「0秒」。
+ */
+function TurnStatus(props: { since?: number; contextTokens?: number }) {
   const [mountedAt] = useState(() => Date.now());
-  const anchor = props.startTime ?? mountedAt;
+  const anchor = props.since ?? mountedAt;
   const [elapsed, setElapsed] = useState(() => Math.max(0, Date.now() - anchor));
   useEffect(() => {
     const tick = () => setElapsed(Math.max(0, Date.now() - anchor));
@@ -256,12 +264,18 @@ function TurnStatus(props: { startTime?: number }) {
   }, [anchor]);
   return (
     <div className="turn-status" role="status">
-      正在工作...
-      {elapsed >= 15_000 ? (
-        <span className="turn-status-clock" aria-hidden>
-          {formatRunDuration(elapsed)}
-        </span>
-      ) : null}
+      <span className="turn-status-label">正在工作...</span>
+      <span className="turn-status-meta" aria-hidden>
+        <span className="turn-status-clock">{formatRunDuration(elapsed)}</span>
+        {props.contextTokens !== undefined ? (
+          <>
+            <span className="turn-status-sep">·</span>
+            <span className="turn-status-context" title="上下文占用">
+              {formatTokens(props.contextTokens)}
+            </span>
+          </>
+        ) : null}
+      </span>
     </div>
   );
 }
@@ -297,6 +311,7 @@ const ChatNodeView = memo(function ChatNodeView(props: {
         blocks={node.blocks}
         streaming={false}
         usage={node.usage}
+        metrics={node.metrics}
         time={node.time}
         interrupted={false}
         hidden={Boolean(node.inProcess) && !process.isOpen(node.turn) ? true : undefined}
@@ -310,12 +325,6 @@ const ChatNodeView = memo(function ChatNodeView(props: {
   if (node.kind === "tool") {
     return <ToolRowView node={node} hidden={!process.isOpen(node.turn)} />;
   }
-  if (node.kind === "usage") {
-    return <UsageLine usage={node.usage} />;
-  }
-  if (node.kind === "delivery") {
-    return null;
-  }
   // 折叠条节点：位置在轮首（用户消息下方、过程行之前，DSH TurnProcess 几何）。
   // 有过程行时渲染折叠按钮；有终态（失败/中断/截断）时在其下渲染终态行。
   const reasonKind = node.reason?.kind ?? "completed";
@@ -323,6 +332,7 @@ const ChatNodeView = memo(function ChatNodeView(props: {
   const labels: string[] = [];
   if (node.toolCallCount > 0) labels.push(`${node.toolCallCount} 次工具调用`);
   if (node.messageCount > 0) labels.push(`${node.messageCount} 条消息`);
+  if (node.deliveryCount > 0) labels.push(`${node.deliveryCount} 次投递`);
   return (
     <>
       {labels.length > 0 ? (
@@ -405,18 +415,11 @@ function AttachedImage(props: { sessionId: string; attachmentId: string }) {
   return <img src={src} alt="附件" style={{ maxWidth: 180, borderRadius: 8 }} />;
 }
 
-/**
- * 用量节点：DSH 中 usage 不单独渲染——它挂在本轮最后一条助手的尾部
- * IconActions 用量 pill 上（StatPills）。这里返回 null 避免双重展示。
- */
-function UsageLine(props: { usage: any }) {
-  return null;
-}
-
 function AssistantBody(props: {
   blocks: any[];
   streaming: boolean;
   usage?: any;
+  metrics?: TurnMetrics;
   time?: number;
   interrupted: boolean;
   hidden?: boolean;
@@ -429,11 +432,7 @@ function AssistantBody(props: {
   return (
     <div className="message-assistant" hidden={props.hidden || undefined}>
       {reasoning?.text ? <ThinkRow text={reasoning.text} running={props.streaming && !text} /> : null}
-      {text ? (
-        <Suspense fallback={<div className="message-plain">{text}</div>}>
-          <MarkdownText text={text} streaming={props.streaming} />
-        </Suspense>
-      ) : null}
+      {text ? <MarkdownText text={text} streaming={props.streaming} /> : null}
       {props.interrupted ? <span className="stopped-tag">已停止</span> : null}
       {!props.streaming && text !== "" ? (
         <IconActions
@@ -441,26 +440,21 @@ function AssistantBody(props: {
           time={props.time}
           clock="end"
           className="assistant-actions"
-          extra={
-            <StatPills
-              usage={props.usage}
-              onFork={undefined}
-            />
-          }
+          extra={<StatPills usage={props.usage} metrics={props.metrics} />}
         />
       ) : null}
     </div>
   );
 }
 
-/** 尾部用量/时间 pill 簇（DSH TurnUsagePanel 触发器）；无 usage 时返回 null。 */
-function StatPills(props: { usage?: any; onFork?: () => void }) {
+/** 尾部用量/用时 pill 簇（DSH TurnUsagePanel + TurnTimePanel）；无 usage 时返回 null。 */
+function StatPills(props: { usage?: any; metrics?: TurnMetrics }) {
   if (props.usage === undefined || props.usage === null) return null;
   const usage = props.usage;
   const billedInput =
     (usage.inputTokens ?? 0) + (usage.cacheReadTokens ?? 0) + (usage.cacheWriteTokens ?? 0);
   const total = billedInput + (usage.outputTokens ?? 0);
-  return <StatPanel usage={{ ...usage, totalTokens: total }} />;
+  return <StatPanel usage={{ ...usage, totalTokens: total }} timing={props.metrics} />;
 }
 
 /** 思考行（DSH ReasoningRow）：24px 披露行 + 流式摘要跟随末行 + 扫光。 */
@@ -609,20 +603,12 @@ function ToolBody(props: { node: ToolNode; variant: ToolRowVariant; error: boole
   if (resultView?.card === "read") {
     return (
       <div className="tool-block-body">
-        <Suspense
-          fallback={
-            <pre style={{ margin: 0, whiteSpace: "pre-wrap", wordBreak: "break-word", fontSize: 12 }}>
-              {(resultView.lines ?? []).map((l: any) => l.text ?? "").join("\n")}
-            </pre>
-          }
-        >
-          <ReadBlock
-            label={resultView.path}
-            lines={resultView.lines}
-            totalLines={resultView.totalLines}
-            lang={resultView.lang}
-          />
-        </Suspense>
+        <ReadBlock
+          label={resultView.path}
+          lines={resultView.lines}
+          totalLines={resultView.totalLines}
+          lang={resultView.lang}
+        />
       </div>
     );
   }
@@ -683,7 +669,3 @@ function formatToolBodySafe(raw: string): string | null {
     ? `${text.slice(0, PARAMS_MAX_CHARS)}\n… 已截断，共 ${text.length} 字符`
     : text;
 }
-
-const ReadBlock = lazy(() =>
-  import("@/ui/primitives/ReadBlock.tsx").then((m) => ({ default: m.ReadBlock })),
-);

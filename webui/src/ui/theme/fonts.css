@@ -1,0 +1,75 @@
+/* ==========================================================================
+   字体层
+   ========================================================================== */
+
+/*
+ * Anthropic Sans —— Claude 界面用的字体（claude.com 的 --font-anthropic-sans）。
+ * 可变字重 300–800，带光学尺寸轴 opsz 16–48，另有一份真 Italic 字形。
+ * 实测字形覆盖：Roman 625 码位 / Italic 578 码位，其中 CJK 为 0——纯拉丁字体，
+ * 中文必须由下面字体栈里的中文字体承担。
+ */
+@font-face {
+  font-family: "Anthropic Sans";
+  src: url("./fonts/AnthropicSans-Roman.woff2") format("woff2");
+  font-weight: 300 800;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Anthropic Sans";
+  src: url("./fonts/AnthropicSans-Italic.woff2") format("woff2");
+  font-weight: 300 800;
+  font-style: italic;
+  font-display: swap;
+}
+
+/*
+ * 度量校正后的本地后备：字体还没下完时先用 Arial 顶上，但把 Arial 的
+ * 行高与字面尺寸校正到 Anthropic Sans 的度量，swap 时不会有布局跳动。
+ * 这几个数值取自 claude.com 自己的 `anthropicSans Fallback`（同一份字体，
+ * 数值直接适用）。
+ */
+@font-face {
+  font-family: "Anthropic Sans Fallback";
+  src: local("Arial");
+  ascent-override: 92.99%;
+  descent-override: 24.13%;
+  line-gap-override: 0%;
+  size-adjust: 106.73%;
+}
+
+/*
+ * Outfit —— AstrBot 本体的品牌字体（dashboard/index.html 从 Google Fonts 载入
+ * `family=Outfit`，logo 字样用的就是它）。这里自托管而不是照抄 CDN 链接：
+ *   1. 插件页是独立文档，父窗口 dashboard 载入的 @font-face 不会继承进 iframe；
+ *   2. 部署环境在国内，fonts.googleapis.com 常年不可达，CDN 方案等于没有。
+ * 许可：Outfit 是 SIL OFL-1.1，允许随产品分发。
+ * latin 子集可变字体（32 KB），100–900 全字重一份搞定。
+ */
+@font-face {
+  font-family: Outfit;
+  src: url("./fonts/Outfit-latin.woff2") format("woff2");
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
+
+:root {
+  /*
+   * UI 正文字体。
+   *
+   * 拉丁走 Anthropic Sans；中文这里显式指定，而不是像 Claude 那样留给系统兜底。
+   * claude.com 的 `cjk-fonts` 模块只覆盖了 ja / ko（Noto Sans JP / KR），没有 zh，
+   * 中文一路掉到 system-ui 再由 OS 字体链接接管（Windows→微软雅黑，macOS→苹方）。
+   * 显式列出这两个能拿到同样的结果，但确定性更好、不依赖 OS 的兜底行为。
+   */
+  --maid-font-sans:
+    "Anthropic Sans", "Anthropic Sans Fallback",
+    "PingFang SC", "Microsoft YaHei", "Noto Sans SC", "Hiragino Sans GB",
+    system-ui, -apple-system, "Segoe UI", sans-serif;
+
+  /* 品牌字样（侧栏 Maid Console）：与 AstrBot 本体 logo 同源。
+     这里小写不是笔误——CSS 的字体族名匹配大小写不敏感，与上面 @font-face
+     声明的 Outfit 仍然是同一个族。 */
+  --maid-font-brand: outfit, var(--maid-font-sans);
+}

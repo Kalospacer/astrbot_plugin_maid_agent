@@ -1,0 +1,8 @@
+# 仓库 core.autocrlf=true。Git 靠启发式判定二进制，字体一旦被误判成文本
+# 做了换行转换就是静默损坏（部署后字形错乱，很难查），这里显式钉死。
+*.woff2 binary
+*.woff  binary
+*.ttf   binary
+*.otf   binary
+*.png   binary
+*.zip   binary

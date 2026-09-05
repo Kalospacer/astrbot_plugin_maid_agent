@@ -218,8 +218,13 @@ function ModelChip(props: { sessionId: SessionId }) {
     void app.loadModels(props.sessionId).catch(() => undefined);
   }, [props.sessionId]);
 
-  if (!models || models.providers.length === 0) return null;
-  const label = models.current.model || models.current.provider || "选择模型";
+  // 防御式读取：session.models 一旦返回缺字段的响应（旧后端、异常分支），
+  // 直接取 .providers.length / .current.model 会在渲染期抛错，而这是渲染树里
+  // 相当靠上的一层——整个控制台会白屏，而不是少一个模型选择器。
+  const providers = models?.providers;
+  if (!providers || providers.length === 0) return null;
+  const current = models.current;
+  const label = current?.model || current?.provider || "选择模型";
 
   return (
     <Menu
@@ -245,12 +250,12 @@ function ModelChip(props: { sessionId: SessionId }) {
       items={[
         { id: "__default", label: "默认（跟随子代理配置）" },
         { type: "separator" as const, id: "sep" },
-        ...models.providers.map((p) => ({
+        ...providers.map((p) => ({
           id: p.id,
           label: p.model ? `${p.model}（${p.id}）` : p.id,
         })),
       ]}
-      selectedId={models.current.override ? models.current.provider : "__default"}
+      selectedId={current?.override ? current.provider : "__default"}
       onSelect={(id) => {
         setOpen(false);
         void app.selectModel(props.sessionId, id === "__default" ? "" : id).catch(() => undefined);

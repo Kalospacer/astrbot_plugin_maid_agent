@@ -163,7 +163,10 @@ export function SessionSidebar(props: {
             aria-label="新会话"
             onClick={startSession}
           >
-            Maid Console
+            {/* 空白文本节点在 flex 布局里不成项（间距由 gap 给），但留在 DOM 中，
+                保证 textContent 仍是「Maid Console」而不是「MaidConsole」。 */}
+            <span className={css.brandStrong}>Maid</span>{" "}
+            <span className={css.brandLight}>Console</span>
           </button>
         )}
         <Tooltip label={collapsed ? "展开侧边栏" : "收起侧边栏"} delayMs={500}>

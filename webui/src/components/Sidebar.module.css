@@ -87,12 +87,27 @@
   background: transparent;
   color: inherit;
   cursor: pointer;
-  /* 字样与 AstrBot 本体 logo 同源（Outfit）：几何无衬线、半粗、略收紧字距 */
+  /* 字样与 AstrBot 本体 logo 同源（Outfit）：几何无衬线。
+     尺度：侧栏正文一律 14px，此前品牌字样 16px——只大 2px，等于没有层级，
+     在 60px 高的行里显得空荡。22px 约为正文 1.6 倍，才立得住；最窄侧栏
+     (264px) 扣掉根 padding/左轨/折叠按钮后余 200px，22px 下约占 137px，安全。
+     字距：显示级字号要收紧，否则字间显松散。 */
   font-family: var(--maid-font-brand);
-  font-size: 16px;
-  font-weight: 600;
-  letter-spacing: -0.01em;
+  font-size: 22px;
+  line-height: 1.1;
+  letter-spacing: -0.02em;
   white-space: nowrap;
+  gap: 0.28em;
+}
+/* 两段式字样：Maid 是品牌，Console 是界面本身——用字重与色阶拉开层级，
+   不引入任何图形标记或徽标。 */
+.brandStrong {
+  font-weight: 700;
+  color: var(--maid-alias-label-primary);
+}
+.brandLight {
+  font-weight: 500;
+  color: var(--maid-alias-label-secondary);
 }
 
 .iconButton {

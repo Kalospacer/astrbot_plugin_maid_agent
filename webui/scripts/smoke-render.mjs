@@ -142,7 +142,7 @@ async function respond(method, payload) {
         .filter((part) => part?.type === "text")
         .map((part) => part.text)
         .join("\n");
-      void runMockTurn(s, text || "你好，女仆");
+      void runMockTurn(s, text || "你好，女仆", !text.startsWith("纯文本"));
       return { accepted: true };
     }
     case "session.cancel": return { accepted: true };
@@ -164,7 +164,7 @@ async function respond(method, payload) {
   }
 }
 
-async function runMockTurn(session, prompt = "你好，女仆") {
+async function runMockTurn(session, prompt = "你好，女仆", withTool = true) {
   if (!session) return;
   const turn = (session.turn ?? 0) + 1;
   session.turn = turn;
@@ -189,6 +189,14 @@ async function runMockTurn(session, prompt = "你好，女仆") {
     usage: { inputTokens: 120, outputTokens: answer.length, cacheReadTokens: 2048 },
   });
   append(session, "step/end", { turn, step: 1 });
+  // 纯文本轮：正文定稿后不再有任何入列，节点数自 partial 建立起就没变过——
+  // 这正是「只按节点数当版本号」会让导航轨预览停在空正文的场景。
+  if (!withTool) {
+    append(session, "turn/end", { turn, reason: { kind: "completed" } });
+    session.running = false;
+    broadcast("host", { type: "host/session-status", sessionId: session.sessionId, running: false });
+    return;
+  }
   // 工具调用一轮（真实后端形状：结果正文嵌在 tool-result 块内层）
   append(session, "step/start", { turn, step: 2 });
   append(session, "tool/call", {
@@ -356,6 +364,28 @@ console.log(`${railOk ? "PASS" : "FAIL"} 轮次导航轨随新轮次更新（${r
 const secondTurnOk = document.getElementById("root").textContent.includes("第二个问题");
 console.log(`${secondTurnOk ? "PASS" : "FAIL"} 第二轮用户消息上屏`);
 
+// 导航轨预览的回复正文。跑一轮纯文本（无工具）：正文定稿走等长替换，
+// turn/end 也不入列，节点数自 partial 建立起就没再变过。若只按节点数当版本号，
+// 这一轮的预览会永远停在空正文——带工具的轮次会因随后入列的工具行而被掩盖。
+setter.call(textarea, "纯文本轮，不要用工具");
+textarea.dispatchEvent(new window.Event("input", { bubbles: true }));
+textarea.dispatchEvent(new window.KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+await delay(2000);
+
+let railPreviewOk = false;
+const marks = [...document.querySelectorAll(".turn-rail-mark")];
+const lastMark = marks[marks.length - 1];
+if (lastMark) {
+  lastMark.focus();
+  lastMark.dispatchEvent(new window.FocusEvent("focus", { bubbles: false }));
+  await delay(200);
+  const preview = document.querySelector(".turn-rail-preview")?.textContent ?? "";
+  railPreviewOk = preview.includes("收到");
+  console.log(`${railPreviewOk ? "PASS" : "FAIL"} 导航轨预览含回复正文（"${preview.slice(0, 40)}"）`);
+} else {
+  console.log("FAIL 导航轨预览：找不到刻度");
+}
+
 // 用时 pill：turn/end 时把 runMs/TTFT/TPS 回填到本轮最后一条助手消息
 const timePill = [...document.querySelectorAll(".stat-pill")]
   .find((b) => (b.textContent ?? "").includes("用时"));
@@ -396,6 +426,8 @@ const allOk =
   railOk &&
   secondTurnOk &&
   statusClockOk &&
+  statusCtxOk &&
+  railPreviewOk &&
   timePillOk &&
   timeDialogOk &&
   runtimeErrors.length === 0;

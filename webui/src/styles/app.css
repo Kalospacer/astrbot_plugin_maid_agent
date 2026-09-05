@@ -75,7 +75,7 @@ body {
   line-height: 22px;
   color: var(--maid-alias-label-primary);
   white-space: pre-wrap;
-  word-break: break-word;
+  overflow-wrap: anywhere;
 }
 
 /* ===== IconActions（DSH MessageIconActions.module.css）===== */
@@ -320,7 +320,7 @@ body {
   line-height: 20px;
   font-style: italic;
   white-space: pre-wrap;
-  word-break: break-word;
+  overflow-wrap: anywhere;
 }
 /* 折叠态的摘要跟随同一风格，展开/收起之间不跳字形 */
 .think-summary-text {
@@ -429,7 +429,7 @@ body {
 .io-text {
   min-width: 0;
   white-space: pre-wrap;
-  word-break: break-word;
+  overflow-wrap: anywhere;
   color: var(--maid-alias-label-secondary);
 }
 .io-text[data-error] {
@@ -820,7 +820,7 @@ body {
 
 .message-plain {
   white-space: pre-wrap;
-  word-break: break-word;
+  overflow-wrap: anywhere;
   color: var(--maid-alias-label-secondary);
 }
 

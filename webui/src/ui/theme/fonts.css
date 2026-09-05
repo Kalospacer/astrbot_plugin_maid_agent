@@ -47,7 +47,7 @@
  * latin 子集可变字体（32 KB），100–900 全字重一份搞定。
  */
 @font-face {
-  font-family: "Outfit";
+  font-family: Outfit;
   src: url("./fonts/Outfit-latin.woff2") format("woff2");
   font-weight: 100 900;
   font-style: normal;
@@ -69,5 +69,5 @@
     system-ui, -apple-system, "Segoe UI", sans-serif;
 
   /* 品牌字样（侧栏 Maid Console）：与 AstrBot 本体 logo 同源 */
-  --maid-font-brand: "Outfit", var(--maid-font-sans);
+  --maid-font-brand: Outfit, var(--maid-font-sans);
 }

@@ -68,15 +68,24 @@ interface TurnRailProps {
    * 就返回 null，之后永远不再出现）。size 变化即“多了一行”。
    */
   size: number;
+  /**
+   * 助手消息定稿计数。只看 size 不够：流式最后一步是用定稿节点等长替换 partial，
+   * 预览里的回复会永远停在 partial 刚建时的空正文。
+   */
+  contentRevision: number;
   scrollerQuery: string;
 }
 
 /** 导航轨主体；少于 2 轮时不渲染。 */
 export const TurnRail = memo(function TurnRail(props: TurnRailProps) {
-  // 依赖 size 而非 nodes：nodes 引用恒定，流式 chunk 走 replaceNode 不改长度，
-  // 所以每个 token 不会重算，新增行才会。
+  // 依赖 size + contentRevision 而非 nodes：nodes 引用恒定，逐 token 的
+  // replaceNode 既不改长度也不改定稿计数，所以每个 token 不会重算；
+  // 新增行（size）或某步正文定稿（contentRevision）才会。
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  const items = useMemo(() => deriveTurnRailItems(props.nodes), [props.nodes, props.size]);
+  const items = useMemo(
+    () => deriveTurnRailItems(props.nodes),
+    [props.nodes, props.size, props.contentRevision],
+  );
   const [previewTurn, setPreviewTurn] = useState<number | null>(null);
   const [activeTurn, setActiveTurn] = useState<number | null>(null);
   const [scrollTop, setScrollTop] = useState(0);

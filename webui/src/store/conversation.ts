@@ -88,6 +88,15 @@ export interface FoldResult {
    * 让新增行触发重算，又不会让每个 token 都触发。
    */
   size: number;
+  /**
+   * 内容版本号：助手消息定稿（assistant/message）时 +1。
+   *
+   * 光靠 size 不够——流式的最后一步是用定稿节点 replaceNode 掉 partial，长度
+   * 不变。只订阅 size 的消费方会停在「partial 刚建、正文还是空」的那一帧，
+   * 例如轮次导航轨的预览会一直显示空回复。
+   * 按步递增而不是按 token 递增：正文在流式期间不实时跟，但每步定稿即正确。
+   */
+  contentRevision: number;
   /** 运行中轮次的 turn/start 时刻（工作状态行计时的锚点）；未运行为 undefined。 */
   runningSince?: number;
   /**
@@ -97,7 +106,7 @@ export interface FoldResult {
   contextTokens?: number;
 }
 
-export const EMPTY_FOLD: FoldResult = { nodes: [], running: false, size: 0 };
+export const EMPTY_FOLD: FoldResult = { nodes: [], running: false, size: 0, contentRevision: 0 };
 
 /**
  * 增量会话折叠器。
@@ -126,6 +135,8 @@ export class ConversationFolder {
   private turnDeliveryCount = 0;
   /** 本轮折叠条节点：首个过程行出现时创建在行之前（DSH TurnProcess 位置）。 */
   private turnBar: TurnTailNode | null = null;
+  /** 助手消息定稿计数（见 FoldResult.contentRevision）。 */
+  private contentRevision = 0;
   /** ---- 本轮计时（口径见 TurnMetrics）---- */
   private turnStartedAt: number | null = null;
   private stepStartedAt: number | null = null;
@@ -175,6 +186,7 @@ export class ConversationFolder {
       nodes: this.nodes,
       running: this.running,
       size: this.nodes.length,
+      contentRevision: this.contentRevision,
       runningSince: this.running && this.turnStartedAt !== null ? this.turnStartedAt : undefined,
       contextTokens: this.contextTokens,
     };
@@ -196,6 +208,7 @@ export class ConversationFolder {
     this.turnMessageCount = 0;
     this.turnDeliveryCount = 0;
     this.turnBar = null;
+    this.contentRevision = 0;
     this.resetTurnTiming();
     this.contextTokens = undefined;
   }
@@ -341,6 +354,8 @@ export class ConversationFolder {
         break;
       }
       case "assistant/message": {
+        // 定稿即内容变化：partial 被同长度替换，size 感知不到
+        this.contentRevision += 1;
         const turn = data.turn ?? this.lastTurn;
         const step = data.step ?? this.lastStep;
         // 只统计同时具备解码计时与 provider 用量的 step（DSH 口径）

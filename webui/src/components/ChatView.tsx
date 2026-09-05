@@ -207,6 +207,7 @@ export function ChatView() {
       <TurnRail
         nodes={folded.nodes}
         size={folded.size}
+        contentRevision={folded.contentRevision}
         scrollerQuery="[data-conversation-scroll]"
       />
       {session.hasMore && (

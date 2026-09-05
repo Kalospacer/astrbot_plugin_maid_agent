@@ -123,6 +123,11 @@ def coarse_gap_ranges(
     会含一部分已被字频块覆盖的字，但这些块只在「某个码位只匹配到粗段」时才
     下载——粗段声明在字频块之前，同一码位两者都匹配时后声明的字频块胜出。
 
+    声明用连续区间，但文件里只装差集本身的字。区间内那些已被字频块覆盖的
+    字永远不会从粗段读（同码位后声明的字频块胜出），装进去纯属白带——实测
+    39 个粗段块里 45% 的字形是这种重复，剃掉后体积少四成、渲染一个像素不变。
+    调用方按 `parse_codepoints(range) & have - covered` 取实际子集。
+
     `max_gap` 是必要的：差集元素之间可能隔着一大片字体根本没有的码位，光按
     数量分组会把首尾拉成横跨十几万码位的区间（实测出现过 U+9e6f-2ce93，
     143396 个码位），等于把整个补充平面连 emoji 一起圈进来——那一段 MiSans
@@ -146,6 +151,36 @@ def coarse_gap_ranges(
         group.append(cp)
     flush()
     return out
+
+
+def verify_coverage(ranges: list[str], cmaps: dict[str, set[int]]) -> None:
+    """按浏览器规则复算：每个码位由最后一个声明区间含它的块负责，该块必须真有字形。
+
+    粗段块剃掉重复字形后，这是唯一能证明「没剃错」的检查——单看文件大小说明不了。
+    """
+    from fontTools.ttLib import TTFont
+
+    for name, have in cmaps.items():
+        owner: dict[int, int] = {}
+        for index, unicode_range in enumerate(ranges):  # 后声明覆盖先声明
+            for cp in parse_codepoints(unicode_range) & have:
+                owner[cp] = index
+        missing = have - owner.keys()
+        if missing:
+            raise SystemExit(f"MiSans-{name}: {len(missing)} 个码位不在任何声明区间内，如 U+{min(missing):x}")
+        by_block: dict[int, set[int]] = {}
+        for cp, index in owner.items():
+            by_block.setdefault(index, set()).add(cp)
+        bad = 0
+        for index, cps in by_block.items():
+            path = OUT_DIR / f"MiSans-{name}.{index}.woff2"
+            if not path.exists():
+                raise SystemExit(f"{path.name} 应负责 {len(cps)} 个码位却不存在")
+            got = set(TTFont(str(path)).getBestCmap())
+            bad += len(cps - got)
+        if bad:
+            raise SystemExit(f"MiSans-{name}: {bad} 个码位被分派到的块里没有对应字形")
+        print(f"MiSans-{name}: 覆盖自检通过，{len(have)} 码位全部可达")
 
 
 def main() -> None:
@@ -191,13 +226,17 @@ def main() -> None:
             # 该段与字体 cmap 无交集才跳过。早先按产物字节数（<=1KB）判空壳，
             # 结果把只含一两个字形的小块也删了，而它们的 range 同时不会写进
             # CSS——实测漏掉 13 个码位。这类沉默缺口正是要避免的。
-            if not (parse_codepoints(unicode_range) & have):
+            subset = parse_codepoints(unicode_range) & have
+            if index < len(extra):
+                # 粗段：只装字频块没覆盖的字，声明区间不变（见 coarse_gap_ranges）
+                subset -= covered
+            if not subset:
                 continue
             dst = OUT_DIR / f"MiSans-{name}.{index}.woff2"
             subprocess.run(
                 [
                     sys.executable, "-m", "fontTools.subset", str(src),
-                    f"--unicodes={to_unicodes_arg(unicode_range)}",
+                    f"--unicodes={to_unicodes_arg(to_unicode_range(sorted(subset)))}",
                     "--flavor=woff2",
                     "--layout-features=*",
                     "--no-hinting",
@@ -220,6 +259,8 @@ def main() -> None:
                 "}"
             )
         print(f"MiSans-{name} ({weight}): {made} 块")
+
+    verify_coverage(ranges, cmaps)
 
     header = (
         "/* 本文件由 scripts/build-cjk-font.py 生成，不要手改。\n"

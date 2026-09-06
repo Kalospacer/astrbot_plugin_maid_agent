@@ -55,7 +55,7 @@ from .katex_fonts import materialize_katex_fonts
 from .maid_dispatcher import ensure_default_subagent
 from .toolset_adapter import apply_main_tool_policy
 
-__version__ = "2.0.66"
+__version__ = "2.0.67"
 
 _SETTINGS_SCHEMA_CACHE: dict | None = None
 
@@ -691,13 +691,14 @@ class MaidAgent(Star):
             req = ProviderRequest()
             req.conversation = conv
             req.contexts = json.loads(conv.history or "[]")
-            req.prompt = summary
-            req.system_prompt = (
-                "A maid subagent finished. The maid already narrated its intermediate steps "
-                "to the user; only its final report reaches you here. Relay that report to "
-                "the user in your own voice, concisely, without repeating what was narrated. "
-                "Just write the reply as your normal answer — it is delivered for you. "
-                "Call send_message_to_user only when you need to attach media."
+            # 转述要求放正文而非 system_prompt：system_prompt 是人格区，一次性
+            # 任务指令混进去会污染人设；正文只随本轮请求生效，且不会落历史。
+            req.prompt = (
+                "女仆子代理的后台任务已结束，下面是它的终态报告。"
+                "请用你自己的口吻向用户简短转述报告内容，不要展开复述中间过程。"
+                "直接把转述写成正文回复即可，正文会自动送达用户；"
+                "仅在需要附带媒体文件时才调用 send_message_to_user。\n\n"
+                f"{summary}"
             )
             req.func_tool = ToolSet()
             send_tool = ctx.get_llm_tool_manager().get_builtin_tool(SendMessageToUserTool)

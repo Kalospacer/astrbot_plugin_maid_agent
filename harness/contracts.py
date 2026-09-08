@@ -32,6 +32,10 @@ def image_block(attachment: dict) -> dict:
     return {"type": "image", "attachment": attachment}
 
 
+def file_block(attachment: dict) -> dict:
+    return {"type": "file", "attachment": attachment}
+
+
 def tool_call_block(call_id: str, name: str, arguments: str) -> dict:
     return {"type": "tool-call", "id": call_id, "name": name, "arguments": arguments}
 
@@ -128,6 +132,7 @@ KNOWN_EVENT_TYPES = SURFACE_EVENT_TYPES | {
     "maid/delivery",
     "maid/rewind",
     "maid/notification",
+    "maid/artifact",
 }
 
 

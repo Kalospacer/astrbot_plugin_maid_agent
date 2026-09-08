@@ -10,11 +10,11 @@ import css from "./Composer.module.css";
 
 const EMPTY_QUEUE: never[] = [];
 
-interface PendingImage {
+interface PendingAttachment {
   name: string;
   mediaType: string;
-  data: string;
-  preview: string;
+  file: File;
+  preview?: string;
 }
 
 export function Composer(props: {
@@ -26,7 +26,7 @@ export function Composer(props: {
   const busy = useApp((s) => s.busy);
   const queue = useApp((s) => (s.current ? s.byId.get(s.current) : undefined)?.queue) ?? EMPTY_QUEUE;
   const [text, setText] = useState("");
-  const [images, setImages] = useState<PendingImage[]>([]);
+  const [attachments, setAttachments] = useState<PendingAttachment[]>([]);
   const [sending, setSending] = useState(false);
   const [error, setError] = useState("");
   const fileRef = useRef<HTMLInputElement | null>(null);
@@ -36,29 +36,31 @@ export function Composer(props: {
   const mode: "queue" | "steer" = props.running ? "steer" : "queue";
   const disabled = props.disabled === true;
   const draftDisabled = disabled || sending;
-  const empty = !text.trim() && images.length === 0;
+  const empty = !text.trim() && attachments.length === 0;
 
   async function onSend() {
     if (sendingRef.current || disabled || busy) return;
     const trimmed = text.trim();
-    if (!trimmed && images.length === 0) return;
+    if (!trimmed && attachments.length === 0) return;
+    const target = await app.ensurePromptSession(current);
     const parts: PromptContentPart[] = [];
     if (trimmed) parts.push({ type: "text", text: trimmed });
-    for (const image of images) {
-      parts.push({ type: "image", mediaType: image.mediaType, data: image.data, name: image.name });
+    for (const attachment of attachments) {
+      const ref = await app.uploadAttachment(target, attachment.file);
+      parts.push({ type: "file", attachment: ref });
     }
-    const pendingImages = images;
+    const pendingAttachments = attachments;
     sendingRef.current = true;
     setSending(true);
     setError("");
     setText("");
-    setImages([]);
+    setAttachments([]);
     try {
-      await app.sendPrompt(current, parts, mode);
+      await app.sendPrompt(target, parts, mode);
     } catch (error) {
       console.error(error);
       setText(trimmed);
-      setImages(pendingImages);
+      setAttachments(pendingAttachments);
       setError(error instanceof Error ? error.message : "发送失败，请重试。");
     } finally {
       sendingRef.current = false;
@@ -66,22 +68,25 @@ export function Composer(props: {
     }
   }
 
-  async function onPickImages(files: FileList | null) {
+  async function addFiles(files: FileList | File[]) {
     if (!files || sendingRef.current) {
       if (fileRef.current) fileRef.current.value = "";
       return;
     }
-    const next: PendingImage[] = [];
+    const next: PendingAttachment[] = [];
     for (const file of Array.from(files).slice(0, 5)) {
-      if (!file.type.startsWith("image/")) continue;
-      const data = await fileToBase64(file);
-      next.push({ name: file.name, mediaType: file.type, data, preview: `data:${file.type};base64,${data}` });
+      next.push({
+        name: file.name || "attachment",
+        mediaType: file.type || "application/octet-stream",
+        file,
+        preview: file.type.startsWith("image/") ? URL.createObjectURL(file) : undefined,
+      });
     }
     if (sendingRef.current) {
       if (fileRef.current) fileRef.current.value = "";
       return;
     }
-    if (next.length) setImages((prev) => [...prev, ...next].slice(0, 5));
+    if (next.length) setAttachments((prev) => [...prev, ...next].slice(0, 5));
     setError("");
     if (fileRef.current) fileRef.current.value = "";
   }
@@ -95,17 +100,17 @@ export function Composer(props: {
       )}
       {error !== "" && <div className={css.error} role="alert">{error}</div>}
       <div className={css.card} data-composer-card="">
-        {images.length > 0 && (
+        {attachments.length > 0 && (
           <div className={css.attachments}>
-            {images.map((image, index) => (
-              <span key={`${image.name}-${index}`} className={css.chip}>
-                <img src={image.preview} alt={image.name} />
-                <span className={css.chipName}>{image.name}</span>
+            {attachments.map((attachment, index) => (
+              <span key={`${attachment.name}-${index}`} className={css.chip}>
+                {attachment.preview ? <img src={attachment.preview} alt={attachment.name} /> : <span aria-hidden>📎</span>}
+                <span className={css.chipName}>{attachment.name}</span>
                 <button
                   type="button"
                   className={css.chipRemove}
                   aria-label="移除附件"
-                  onClick={() => setImages((prev) => prev.filter((_, i) => i !== index))}
+                  onClick={() => setAttachments((prev) => prev.filter((_, i) => i !== index))}
                 >
                   <IconCloseFill14 />
                 </button>
@@ -135,17 +140,29 @@ export function Composer(props: {
                   void onSend();
                 }
               }}
+              onPaste={(e) => {
+                const files = Array.from(e.clipboardData.files);
+                if (files.length > 0) {
+                  e.preventDefault();
+                  void addFiles(files);
+                }
+              }}
+              onDragOver={(e) => e.preventDefault()}
+              onDrop={(e) => {
+                e.preventDefault();
+                if (e.dataTransfer.files.length > 0) void addFiles(e.dataTransfer.files);
+              }}
             />
             <div aria-hidden className={css.mirror} data-input-mirror="">{`${text}\n`}</div>
           </div>
         </div>
         <div className={css.row}>
           <div className={css.tools}>
-            <Tooltip label="附加图片" side="top" delayMs={500}>
+            <Tooltip label="附加文件" side="top" delayMs={500}>
               <button
                 type="button"
                 className={css.add}
-                aria-label="附加图片"
+                aria-label="附加文件"
                 disabled={draftDisabled}
                 onClick={() => fileRef.current?.click()}
               >
@@ -155,11 +172,12 @@ export function Composer(props: {
             <input
               ref={fileRef}
               type="file"
-              accept="image/png,image/jpeg,image/webp,image/gif"
               multiple
               hidden
               disabled={draftDisabled}
-              onChange={(e) => void onPickImages(e.target.files)}
+              onChange={(e) => {
+                if (e.target.files) void addFiles(e.target.files);
+              }}
             />
             {current ? <ModelChip sessionId={current} /> : null}
           </div>
@@ -196,18 +214,6 @@ export function Composer(props: {
       </div>
     </div>
   );
-}
-
-function fileToBase64(file: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => {
-      const result = String(reader.result ?? "");
-      resolve(result.slice(result.indexOf(",") + 1));
-    };
-    reader.onerror = () => reject(reader.error);
-    reader.readAsDataURL(file);
-  });
 }
 
 function ModelChip(props: { sessionId: SessionId }) {

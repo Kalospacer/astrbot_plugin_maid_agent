@@ -1,5 +1,6 @@
 
 import { call, ConnectionController, type ConnectionState } from "@/api/client";
+import * as bridge from "@/api/bridge";
 import { ConversationFolder } from "@/store/conversation";
 import type {
   AgentPresetEntry,
@@ -402,6 +403,20 @@ export async function sendPrompt(
     state.busy = false;
     emit();
   }
+}
+
+export async function ensurePromptSession(sessionId: SessionId | undefined): Promise<SessionId> {
+  return sessionId ?? createSession(chosenPreset());
+}
+
+export async function uploadAttachment(sessionId: SessionId, file: File) {
+  const result = await bridge.upload(`api/upload?sessionId=${encodeURIComponent(sessionId)}`, file);
+  if (!result?.attachment) throw new Error(result?.error || "附件上传失败，请重试。");
+  return result.attachment;
+}
+
+export async function downloadAttachment(sessionId: SessionId, attachmentId: string, filename?: string): Promise<void> {
+  await bridge.download("api/file", { sessionId, attachmentId }, filename);
 }
 
 export async function cancelTurn(sessionId: SessionId): Promise<void> {

@@ -305,6 +305,16 @@ const ChatNodeView = memo(function ChatNodeView(props: {
       </div>
     );
   }
+  if (node.kind === "artifact") {
+    return (
+      <div className="user-row" data-chat-anchor-key={node.key}>
+        <div className="user-stack">
+          <AttachmentChip sessionId={props.sessionId} attachment={node.attachment} />
+          {node.remark ? <div className="user-bubble">{node.remark}</div> : null}
+        </div>
+      </div>
+    );
+  }
   if (node.kind === "assistant") {
     return (
       <AssistantBody

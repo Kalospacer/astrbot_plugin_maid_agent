@@ -864,8 +864,10 @@ class SessionDriver:
         source = Path(path).expanduser()
         if not source.is_file():
             raise ValueError("文件不存在或不是普通文件。")
-        raw = source.read_bytes()
         max_bytes = self.registry.config.max_upload_mb * 1024 * 1024
+        if source.stat().st_size > max_bytes:
+            raise ValueError(f"附件超过大小限制（最多 {max_bytes} bytes）。")
+        raw = source.read_bytes()
         ref = self.registry.store.save_attachment_bytes(
             self.session_id,
             raw,
@@ -875,6 +877,7 @@ class SessionDriver:
         )
         async with self.log.lock:
             await self._emit("maid/artifact", {"attachment": ref, **({"remark": remark[:500]} if remark else {})})
+        delivery = "available"
         sink = self._voice_sink
         if sink is not None:
             try:
@@ -884,9 +887,11 @@ class SessionDriver:
                 stored = self.registry.store.attachment_path(self.session_id, ref["attachmentId"])
                 component = Image.fromFileSystem(str(stored)) if ref["mediaType"].startswith("image/") else File(name=ref["name"], file=str(stored))
                 await sink.send(MessageChain(chain=[component]))
+                delivery = "sent"
             except Exception as exc:  # noqa: BLE001
                 logger.warning("[maid] 文件聊天投递失败: session=%s err=%s", self.session_id[:8], exc)
-        return ref
+                delivery = "failed"
+        return {"attachment": ref, "delivery": delivery}
 
     async def claim_delivery(self) -> bool:
         """原子认领「这份汇报由我转达」。已被认领过则返回 False。
@@ -998,11 +1003,15 @@ class SessionDriver:
         events = self.log.read_events()
         for event in reversed(events):
             if event.get("type") == "user/message":
-                return "".join(
+                blocks = event.get("data", {}).get("content", [])
+                text = "".join(
                     block.get("text", "")
-                    for block in event.get("data", {}).get("content", [])
+                    for block in blocks
                     if block.get("type") == "text"
                 )
+                files = [block.get("attachment") or {} for block in blocks if block.get("type") == "file"]
+                references = self.store.attachment_prompt_text(self.session_id, files)
+                return f"{text}\n\n[Attached files]\n{references}" if references else text
         return ""
 
     def append_title(self, title: str, source: str = "auto") -> None:

@@ -383,10 +383,6 @@ class ApiProxy:
                     saved, _ = self.store.load_attachment(session_id, attachment_id)
                 except (FileNotFoundError, ValueError) as exc:
                     raise RpcError("attachment-error", "文件附件不存在。", {"reason": "missing"}) from exc
-                # Never accept display metadata from the browser as authority.
-                for key in ("name", "mediaType", "byteLength"):
-                    if key in ref:
-                        saved[key] = ref[key]
                 blocks.append(c.file_block(saved))
 
         if not blocks:

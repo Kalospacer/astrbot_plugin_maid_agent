@@ -245,12 +245,19 @@ class SessionStore:
         with open(tmp, "wb") as fh:
             fh.write(raw)
         os.replace(tmp, path)
-        return {
+        ref = {
             "attachmentId": attachment_id,
             "mediaType": media_type,
             "byteLength": len(raw),
             "name": display_name,
         }
+        meta_path = target_dir / f".{attachment_id}.json"
+        meta_tmp = meta_path.with_suffix(".tmp")
+        import json
+
+        meta_tmp.write_text(json.dumps(ref, ensure_ascii=False), encoding="utf-8")
+        os.replace(meta_tmp, meta_path)
+        return ref
 
     def save_attachment(self, session_id: str, media_type: str, data_b64: str, name: str | None = None) -> dict:
         """持久化 base64 图片，返回 ImageAttachmentRef。"""
@@ -295,7 +302,7 @@ class SessionStore:
         if not target_dir.is_dir():
             raise FileNotFoundError(attachment_id)
         for child in target_dir.iterdir():
-            if not child.is_file():
+            if not child.is_file() or child.name.startswith("."):
                 continue
             stem = child.stem
             if stem != attachment_id:
@@ -308,6 +315,15 @@ class SessionStore:
                 "mediaType": media_type,
                 "byteLength": len(raw),
             }
+            meta_path = target_dir / f".{attachment_id}.json"
+            try:
+                import json
+
+                saved = json.loads(meta_path.read_text(encoding="utf-8"))
+                if isinstance(saved, dict):
+                    ref.update({key: saved[key] for key in ("name", "mediaType") if key in saved})
+            except (OSError, ValueError):
+                pass
             return ref, raw
         raise FileNotFoundError(attachment_id)
 
@@ -319,7 +335,7 @@ class SessionStore:
         if not target_dir.is_dir():
             raise FileNotFoundError(attachment_id)
         for child in target_dir.iterdir():
-            if child.is_file() and child.stem == attachment_id:
+            if child.is_file() and not child.name.startswith(".") and child.stem == attachment_id:
                 return child
         raise FileNotFoundError(attachment_id)
 
@@ -338,6 +354,20 @@ class SessionStore:
             if path.exists():
                 paths.append(str(path))
         return paths
+
+    def attachment_prompt_text(self, session_id: str, refs: list[dict]) -> str:
+        """Build trusted local-file instructions for non-image agent attachments."""
+        lines: list[str] = []
+        for ref in refs:
+            try:
+                stored, _ = self.load_attachment(session_id, str(ref.get("attachmentId") or ""))
+                path = self.attachment_path(session_id, str(stored["attachmentId"]))
+            except (FileNotFoundError, ValueError):
+                continue
+            lines.append(
+                f"- {stored.get('name') or 'attachment'} ({stored.get('mediaType') or 'application/octet-stream'}): {path}"
+            )
+        return "\n".join(lines)
 
 
     def delete_session(self, session_id: str) -> None:

@@ -42,13 +42,6 @@ export function Composer(props: {
     if (sendingRef.current || disabled || busy) return;
     const trimmed = text.trim();
     if (!trimmed && attachments.length === 0) return;
-    const target = await app.ensurePromptSession(current);
-    const parts: PromptContentPart[] = [];
-    if (trimmed) parts.push({ type: "text", text: trimmed });
-    for (const attachment of attachments) {
-      const ref = await app.uploadAttachment(target, attachment.file);
-      parts.push({ type: "file", attachment: ref });
-    }
     const pendingAttachments = attachments;
     sendingRef.current = true;
     setSending(true);
@@ -56,6 +49,13 @@ export function Composer(props: {
     setText("");
     setAttachments([]);
     try {
+      const target = await app.ensurePromptSession(current);
+      const parts: PromptContentPart[] = [];
+      if (trimmed) parts.push({ type: "text", text: trimmed });
+      for (const attachment of pendingAttachments) {
+        const ref = await app.uploadAttachment(target, attachment.file);
+        parts.push({ type: "file", attachment: ref });
+      }
       await app.sendPrompt(target, parts, mode);
     } catch (error) {
       console.error(error);
@@ -74,7 +74,7 @@ export function Composer(props: {
       return;
     }
     const next: PendingAttachment[] = [];
-    for (const file of Array.from(files).slice(0, 5)) {
+    for (const file of Array.from(files)) {
       next.push({
         name: file.name || "attachment",
         mediaType: file.type || "application/octet-stream",
@@ -86,7 +86,7 @@ export function Composer(props: {
       if (fileRef.current) fileRef.current.value = "";
       return;
     }
-    if (next.length) setAttachments((prev) => [...prev, ...next].slice(0, 5));
+    if (next.length) setAttachments((prev) => [...prev, ...next]);
     setError("");
     if (fileRef.current) fileRef.current.value = "";
   }

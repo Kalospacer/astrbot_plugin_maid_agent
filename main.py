@@ -964,8 +964,11 @@ class MaidAgent(Star):
         if driver is None:
             return self._json_outcome({"status": "error", "error": "此工具只能由运行中的女仆使用。"})
         try:
-            ref = await driver.deliver_file(path, name, remark)
-            return self._json_outcome({"status": "delivered", "attachment": ref})
+            result = await driver.deliver_file(path, name, remark)
+            status = "delivered" if result["delivery"] == "sent" else "persisted"
+            if result["delivery"] == "failed":
+                status = "delivery-failed"
+            return self._json_outcome({"status": status, **result})
         except (OSError, ValueError) as exc:
             return self._json_outcome({"status": "error", "error": str(exc)})
 

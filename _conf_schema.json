@@ -84,5 +84,11 @@
     "hint": "一个 turn 运行超过该秒数会被看门狗强制终止并标记为 interrupted（防止网络挂死/工具卡住导致 webui 永远显示工作中）。0 表示关闭看门狗。",
     "type": "int",
     "default": 1800
+  },
+  "max_upload_mb": {
+    "description": "单个附件最大体积（MB）",
+    "hint": "控制台上传和 Agent 交付文件共用此上限。文件以随机 ID 保存，并仅可由所属会话下载。",
+    "type": "int",
+    "default": 25
   }
 }

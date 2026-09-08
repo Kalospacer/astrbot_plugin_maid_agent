@@ -29,7 +29,7 @@ if TYPE_CHECKING:
     from astrbot.api.star import Context
     from astrbot.core.agent.handoff import HandoffTool
 
-from .constants import MAID_AGENT_TOOL_NAME, MAID_TOOL_NAMES, PLUGIN_DATA_DIR_NAME
+from .constants import MAID_AGENT_TOOL_NAME, MAID_DELIVER_FILE_TOOL_NAME, MAID_TOOL_NAMES, PLUGIN_DATA_DIR_NAME
 
 MEMORY_SUBDIR = "memory"
 MEMORY_INDEX_FILENAME = "MEMORY.md"
@@ -122,7 +122,7 @@ def apply_main_tool_policy(
                 toolset.remove_tool(tool.name)
     else:
         for tool in list(toolset.tools):
-            if _is_handoff_tool(tool):
+            if _is_handoff_tool(tool) or tool.name == MAID_DELIVER_FILE_TOOL_NAME:
                 toolset.remove_tool(tool.name)
     return toolset
 

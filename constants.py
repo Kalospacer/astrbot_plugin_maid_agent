@@ -8,6 +8,7 @@ MAID_SEND_MESSAGE_TOOL_NAME = "maid_send_message"
 MAID_LIST_AGENTS_TOOL_NAME = "maid_list_agents"
 MAID_TASK_OUTPUT_TOOL_NAME = "maid_task_output"
 MAID_TASK_STOP_TOOL_NAME = "maid_task_stop"
+MAID_DELIVER_FILE_TOOL_NAME = "maid_deliver_file"
 MAID_TOOL_NAMES = frozenset(
     {
         MAID_AGENT_TOOL_NAME,

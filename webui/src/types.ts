@@ -24,17 +24,19 @@ export interface ServerRequest {
 
 export interface TextBlock { type: "text"; text: string }
 export interface ReasoningBlock { type: "reasoning"; text: string }
-export interface ImageAttachmentRef {
+export interface FileAttachmentRef {
   attachmentId: string;
   mediaType: string;
   byteLength: number;
   name?: string;
 }
+export type ImageAttachmentRef = FileAttachmentRef;
 export interface ImageBlock { type: "image"; attachment: ImageAttachmentRef }
+export interface FileBlock { type: "file"; attachment: FileAttachmentRef }
 export interface ToolCallBlock { type: "tool-call"; id: string; name: string; arguments: string }
 export interface ToolResultBlock { type: "tool-result"; toolCallId: string; content: ContentBlock[]; isError?: boolean }
 
-export type ContentBlock = TextBlock | ReasoningBlock | ImageBlock | ToolCallBlock | ToolResultBlock;
+export type ContentBlock = TextBlock | ReasoningBlock | ImageBlock | FileBlock | ToolCallBlock | ToolResultBlock;
 
 export type MessageSource =
   | { kind: "user"; rpcId?: string; clientTimeZone?: string }
@@ -150,7 +152,8 @@ export interface AgentPresetEntry {
 
 export type PromptContentPart =
   | { type: "text"; text: string }
-  | { type: "image"; mediaType: string; data: string; name?: string };
+  | { type: "image"; mediaType: string; data: string; name?: string }
+  | { type: "file"; attachment: FileAttachmentRef };
 
 export interface SettingsFieldSchema {
   description?: string;

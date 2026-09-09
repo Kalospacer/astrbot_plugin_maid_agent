@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from urllib.parse import quote
 import time
 import uuid
 from dataclasses import asdict
@@ -29,6 +30,7 @@ from .constants import (
     MAID_SEND_MESSAGE_TOOL_NAME,
     MAID_TASK_OUTPUT_TOOL_NAME,
     MAID_TASK_STOP_TOOL_NAME,
+    MAID_DELIVER_FILE_TOOL_NAME,
     MAID_NOTIFICATION_ID_META_KEY,
     MAID_NOTIFICATION_IDS_META_KEY,
     PLUGIN_DATA_DIR_NAME,
@@ -218,6 +220,8 @@ class MaidAgent(Star):
     def _register_web_apis(self) -> None:
         prefix = f"/{PLUGIN_DATA_DIR_NAME}"
         routes = [
+            (f"{prefix}/api/upload", self.web_upload, ["POST"], "attachment upload"),
+            (f"{prefix}/api/file", self.web_file, ["GET"], "attachment download"),
             (f"{prefix}/api/events.mux", self.web_events_mux, ["GET"], "events.mux SSE"),
             (f"{prefix}/api/events.host", self.web_events_host, ["GET"], "events.host SSE"),
             (f"{prefix}/api/respond", self.web_respond, ["POST"], "RPC respond"),
@@ -225,6 +229,67 @@ class MaidAgent(Star):
         ]
         for route, handler, methods, desc in routes:
             self.context.register_web_api(route, handler, methods, desc)
+
+    @staticmethod
+    def _referenced_attachment(log, attachment_id: str) -> dict | None:
+        for event in log.read_events():
+            data = event.get("data", {})
+            candidates = []
+            if event.get("type") in {"user/message", "assistant/message"}:
+                candidates.extend(data.get("content") or data.get("message", {}).get("content") or [])
+            elif event.get("type") == "maid/artifact":
+                candidates.append({"attachment": data.get("attachment")})
+            for block in candidates:
+                ref = block.get("attachment") if isinstance(block, dict) else None
+                if isinstance(ref, dict) and ref.get("attachmentId") == attachment_id:
+                    return ref
+        return None
+
+    async def web_upload(self):
+        session_id = str(request.args.get("sessionId") or "")
+        if not self.store.exists(session_id):
+            return jsonify({"error": "会话不存在。"}), 404
+        try:
+            files = await request.files
+            uploaded = files.get("file")
+            if uploaded is None:
+                return jsonify({"error": "缺少 file 字段。"}), 400
+            raw = uploaded.read()
+            max_bytes = self.maid_mode_config.max_upload_mb * 1024 * 1024
+            ref = self.store.save_attachment_bytes(
+                session_id,
+                raw,
+                str(getattr(uploaded, "mimetype", "") or "application/octet-stream"),
+                str(getattr(uploaded, "filename", "") or "attachment"),
+                max_bytes=max_bytes,
+            )
+            return jsonify({"attachment": ref})
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[maid] 控制台附件上传失败: %s", exc)
+            return jsonify({"error": "附件上传失败。"}), 500
+
+    async def web_file(self):
+        session_id = str(request.args.get("sessionId") or "")
+        attachment_id = str(request.args.get("attachmentId") or "")
+        if not self.store.exists(session_id):
+            return jsonify({"error": "会话不存在。"}), 404
+        ref = self._referenced_attachment(self.store.log(session_id), attachment_id)
+        if ref is None:
+            return jsonify({"error": "会话未引用该附件。"}), 404
+        try:
+            _, raw = self.store.load_attachment(session_id, attachment_id)
+        except (FileNotFoundError, ValueError):
+            return jsonify({"error": "附件不存在。"}), 404
+        response = await make_response(raw)
+        response.headers["Content-Type"] = str(ref.get("mediaType") or "application/octet-stream")
+        filename = self.store._attachment_name(str(ref.get("name") or "attachment"))
+        response.headers["Content-Disposition"] = (
+            f"attachment; filename*=UTF-8''{quote(filename)}"
+        )
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        return response
 
     async def web_rpc(self, method: str):
         try:
@@ -327,6 +392,7 @@ class MaidAgent(Star):
             MAID_SEND_MESSAGE_TOOL_NAME,
             MAID_TASK_OUTPUT_TOOL_NAME,
             MAID_TASK_STOP_TOOL_NAME,
+            MAID_DELIVER_FILE_TOOL_NAME,
         ):
             if manager is not None and manager.get_func(tool_name) is None:
                 logger.warning("[maid] 工具 %s 未注册，模型将看到空参数 schema。", tool_name)
@@ -385,6 +451,18 @@ class MaidAgent(Star):
                 "additionalProperties": False,
                 "properties": {"task_id": {"type": "string"}},
                 "required": ["task_id"],
+            }
+        deliver_file_tool = manager.get_func(MAID_DELIVER_FILE_TOOL_NAME) if manager else None
+        if deliver_file_tool is not None:
+            deliver_file_tool.parameters = {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "path": {"type": "string", "minLength": 1},
+                    "name": {"type": "string"},
+                    "remark": {"type": "string"},
+                },
+                "required": ["path"],
             }
 
     @filter.on_llm_request()
@@ -877,6 +955,22 @@ class MaidAgent(Star):
             return self._json_outcome({"status": "completed", "agent_id": agent_id, "task_id": task_id})
         driver.request_stop()
         return self._json_outcome({"status": "stopping", "agent_id": agent_id, "task_id": task_id})
+
+    @filter.llm_tool(name=MAID_DELIVER_FILE_TOOL_NAME)
+    async def maid_deliver_file(self, event, path: str, name: str = "", remark: str = "") -> str:
+        """Deliver a generated local file to the active chat or Dashboard session."""
+        session_id = str(getattr(event, "_maid_session_id", "") or "")
+        driver = self.registry.driver(session_id)
+        if driver is None:
+            return self._json_outcome({"status": "error", "error": "此工具只能由运行中的女仆使用。"})
+        try:
+            result = await driver.deliver_file(path, name, remark)
+            status = "delivered" if result["delivery"] == "sent" else "persisted"
+            if result["delivery"] == "failed":
+                status = "delivery-failed"
+            return self._json_outcome({"status": status, **result})
+        except (OSError, ValueError) as exc:
+            return self._json_outcome({"status": "error", "error": str(exc)})
 
 
     @filter.command_group("maid")

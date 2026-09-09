@@ -16,6 +16,7 @@ DEFAULT_MAX_ACTIVE_PER_UMO = 5
 DEFAULT_MAX_ACTIVE_GLOBAL = 20
 DEFAULT_RETENTION_DAYS = 30
 DEFAULT_MAX_TURN_SECONDS = 1800
+DEFAULT_MAX_UPLOAD_MB = 25
 MAID_AGENT_PERSONA = (
     "你是MuiceMaid，大小姐的管家。你的任务是完成大小姐交给你的请求，"
     "并使用你拥有的工具达成目的；遇到不确定信息时直接说明，不编造结果。"
@@ -49,6 +50,7 @@ class MaidModeConfig:
     max_active_global: int = DEFAULT_MAX_ACTIVE_GLOBAL
     retention_days: int = DEFAULT_RETENTION_DAYS
     max_turn_seconds: int = DEFAULT_MAX_TURN_SECONDS
+    max_upload_mb: int = DEFAULT_MAX_UPLOAD_MB
 
 
 def _safe_int(value: Any, default: int) -> int:
@@ -183,6 +185,7 @@ def load_maid_mode_config(config: Mapping[str, Any] | None = None, *, strict: bo
             max_active_global=_tolerant_int(cfg, "max_active_global", DEFAULT_MAX_ACTIVE_GLOBAL, minimum=1),
             retention_days=_tolerant_int(cfg, "retention_days", DEFAULT_RETENTION_DAYS, minimum=1),
             max_turn_seconds=_tolerant_int(cfg, "max_turn_seconds", DEFAULT_MAX_TURN_SECONDS, minimum=0),
+            max_upload_mb=_tolerant_int(cfg, "max_upload_mb", DEFAULT_MAX_UPLOAD_MB, minimum=1),
         )
     allowed = _strict_names(cfg.get("allowed_agent_names", DEFAULT_ALLOWED_AGENT_NAMES), "allowed_agent_names", allow_empty=False)
     default_name = str(cfg.get("default_agent_name", DEFAULT_MAID_AGENT_NAME) or "").strip()
@@ -213,6 +216,7 @@ def load_maid_mode_config(config: Mapping[str, Any] | None = None, *, strict: bo
         max_active_global=_strict_int(cfg, "max_active_global", DEFAULT_MAX_ACTIVE_GLOBAL, minimum=1),
         retention_days=_strict_int(cfg, "retention_days", DEFAULT_RETENTION_DAYS, minimum=1),
         max_turn_seconds=_strict_int(cfg, "max_turn_seconds", DEFAULT_MAX_TURN_SECONDS, minimum=0),
+        max_upload_mb=_strict_int(cfg, "max_upload_mb", DEFAULT_MAX_UPLOAD_MB, minimum=1),
     )
 
 

@@ -289,15 +289,29 @@ const ChatNodeView = memo(function ChatNodeView(props: {
       .map((b: any) => b.text)
       .join("\n");
     const images = node.message.content.filter((b) => b.type === "image") as any[];
+    const files = node.message.content.filter((b) => b.type === "file") as any[];
     return (
       <div className="user-row" data-reveal-hover={props.revealHover || undefined} data-chat-anchor-key={node.key}>
         <div className="user-stack">
           {images.length > 0 ? (
             <UserImages sessionId={props.sessionId} refs={images.map((b) => b.attachment)} />
           ) : null}
+          {files.map((block, index) => (
+            <AttachmentChip key={block.attachment?.attachmentId ?? index} sessionId={props.sessionId} attachment={block.attachment} />
+          ))}
           {text !== "" ? <div className="user-bubble">{text}</div> : null}
         </div>
         <IconActions text={text} time={node.time} clock="start" />
+      </div>
+    );
+  }
+  if (node.kind === "artifact") {
+    return (
+      <div className="user-row" data-chat-anchor-key={node.key}>
+        <div className="user-stack">
+          <AttachmentChip sessionId={props.sessionId} attachment={node.attachment} />
+          {node.remark ? <div className="user-bubble">{node.remark}</div> : null}
+        </div>
       </div>
     );
   }
@@ -409,6 +423,20 @@ function AttachedImage(props: { sessionId: string; attachmentId: string }) {
   }, [props.sessionId, props.attachmentId]);
   if (!src) return null;
   return <img src={src} alt="附件" style={{ maxWidth: 180, borderRadius: 8 }} />;
+}
+
+function AttachmentChip(props: { sessionId: string; attachment: { attachmentId: string; name?: string; mediaType?: string } }) {
+  const attachment = props.attachment;
+  return (
+    <button
+      type="button"
+      className="turn-process"
+      onClick={() => void app.downloadAttachment(props.sessionId, attachment.attachmentId, attachment.name).catch(() => undefined)}
+      title={attachment.mediaType || "application/octet-stream"}
+    >
+      📎 {attachment.name || "附件"}
+    </button>
+  );
 }
 
 function AssistantBody(props: {

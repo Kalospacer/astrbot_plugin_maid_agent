@@ -44,6 +44,22 @@ export async function rpcPost(method: string, payload: unknown) {
   return response;
 }
 
+export async function upload(endpoint: string, file: File): Promise<any> {
+  const page = resolveBridge();
+  if (typeof page.upload !== "function") {
+    throw new Error("当前 AstrBot 页面桥不支持文件上传，请升级 AstrBot 后重试。");
+  }
+  return page.upload(endpoint, file);
+}
+
+export async function download(endpoint: string, params?: unknown, filename?: string): Promise<any> {
+  const page = resolveBridge();
+  if (typeof page.download !== "function") {
+    throw new Error("当前 AstrBot 页面桥不支持文件下载，请升级 AstrBot 后重试。");
+  }
+  return page.download(endpoint, params, filename);
+}
+
 export async function subscribeStream(
   endpoint: "api/events.mux" | "api/events.host",
   handlers: BridgeHandlers,

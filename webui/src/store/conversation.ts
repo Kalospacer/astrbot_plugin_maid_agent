@@ -18,6 +18,14 @@ export interface UserNode {
   time: number;
 }
 
+export interface ArtifactNode {
+  kind: "artifact";
+  key: string;
+  attachment: { attachmentId: string; name?: string; mediaType?: string };
+  remark?: string;
+  time: number;
+}
+
 /** 本轮的时延/解码吞吐读数（口径对齐 DSH turn-metrics）。 */
 export interface TurnMetrics {
   /** turn/start → turn/end 的墙上时间。 */
@@ -76,7 +84,7 @@ export interface TurnTailNode {
   deliveryCount: number;
 }
 
-export type ChatNode = UserNode | AssistantNode | ToolNode | TurnTailNode | AssistantPartial;
+export type ChatNode = UserNode | ArtifactNode | AssistantNode | ToolNode | TurnTailNode | AssistantPartial;
 
 export interface FoldResult {
   nodes: ChatNode[];
@@ -324,6 +332,18 @@ export class ConversationFolder {
           key: `u${event.seq}`,
           seq: event.seq,
           message: { content: data.content ?? [], source: data.source ?? { kind: "user" } },
+          time: event.time,
+        });
+        break;
+      }
+      case "maid/artifact": {
+        const attachment = data.attachment;
+        if (!attachment?.attachmentId) break;
+        this.push({
+          kind: "artifact",
+          key: `f${event.seq}`,
+          attachment,
+          remark: typeof data.remark === "string" ? data.remark : undefined,
           time: event.time,
         });
         break;

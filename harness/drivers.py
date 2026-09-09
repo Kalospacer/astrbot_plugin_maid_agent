@@ -16,7 +16,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import mimetypes
 import time
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 try:  # pragma: no cover - AstrBot 运行时
@@ -526,6 +528,7 @@ class SessionDriver:
             self.sender_id,
             identity=meta.get("identity"),
         )
+        child_event._maid_session_id = self.session_id
         # 只有聊天来源的女仆往聊天里说话；控制台会话说给控制台听就够了。
         self._voice_sink = child_event if meta.get("sourceKind") == "chat" else None
 
@@ -856,6 +859,40 @@ class SessionDriver:
             )
         self._meta_update(deliveryStatus=status)
 
+    async def deliver_file(self, path: str, name: str = "", remark: str = "") -> dict:
+        """Persist a generated file and publish an artifact event for its owner."""
+        source = Path(path).expanduser()
+        if not source.is_file():
+            raise ValueError("文件不存在或不是普通文件。")
+        max_bytes = self.registry.config.max_upload_mb * 1024 * 1024
+        if source.stat().st_size > max_bytes:
+            raise ValueError(f"附件超过大小限制（最多 {max_bytes} bytes）。")
+        raw = source.read_bytes()
+        ref = self.registry.store.save_attachment_bytes(
+            self.session_id,
+            raw,
+            mimetypes.guess_type(source.name)[0] or "application/octet-stream",
+            name or source.name,
+            max_bytes=max_bytes,
+        )
+        async with self.log.lock:
+            await self._emit("maid/artifact", {"attachment": ref, **({"remark": remark[:500]} if remark else {})})
+        delivery = "available"
+        sink = self._voice_sink
+        if sink is not None:
+            try:
+                from astrbot.api.event import MessageChain
+                from astrbot.core.message.components import File, Image
+
+                stored = self.registry.store.attachment_path(self.session_id, ref["attachmentId"])
+                component = Image.fromFileSystem(str(stored)) if ref["mediaType"].startswith("image/") else File(name=ref["name"], file=str(stored))
+                await sink.send(MessageChain(chain=[component]))
+                delivery = "sent"
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("[maid] 文件聊天投递失败: session=%s err=%s", self.session_id[:8], exc)
+                delivery = "failed"
+        return {"attachment": ref, "delivery": delivery}
+
     async def claim_delivery(self) -> bool:
         """原子认领「这份汇报由我转达」。已被认领过则返回 False。
 
@@ -966,11 +1003,15 @@ class SessionDriver:
         events = self.log.read_events()
         for event in reversed(events):
             if event.get("type") == "user/message":
-                return "".join(
+                blocks = event.get("data", {}).get("content", [])
+                text = "".join(
                     block.get("text", "")
-                    for block in event.get("data", {}).get("content", [])
+                    for block in blocks
                     if block.get("type") == "text"
                 )
+                files = [block.get("attachment") or {} for block in blocks if block.get("type") == "file"]
+                references = self.store.attachment_prompt_text(self.session_id, files)
+                return f"{text}\n\n[Attached files]\n{references}" if references else text
         return ""
 
     def append_title(self, title: str, source: str = "auto") -> None:

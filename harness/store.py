@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+import mimetypes
 import os
 import re
 import time
@@ -37,6 +38,8 @@ _EXT_MEDIA_TYPE = {
     ".webp": "image/webp",
     ".gif": "image/gif",
 }
+
+_SAFE_FILENAME_RE = re.compile(r"[^A-Za-z0-9._ ()\-\[\]]+")
 
 _IMAGE_MAGIC = (
     (b"\x89PNG\r\n\x1a\n", "image/png"),
@@ -196,6 +199,66 @@ class SessionStore:
         log.save_meta(meta)
 
 
+    @staticmethod
+    def _attachment_name(name: str | None) -> str:
+        """Keep display names harmless; storage never uses them as paths."""
+        candidate = Path(str(name or "attachment")).name.strip().replace("\x00", "")
+        candidate = _SAFE_FILENAME_RE.sub("_", candidate).strip(". ")
+        return candidate[:160] or "attachment"
+
+    @staticmethod
+    def _attachment_extension(media_type: str, name: str | None = None) -> str:
+        known = IMAGE_MEDIA_EXT.get(media_type)
+        if known:
+            return known
+        guessed = mimetypes.guess_extension(media_type, strict=False)
+        if guessed and re.fullmatch(r"\.[A-Za-z0-9]{1,12}", guessed):
+            return guessed
+        suffix = Path(str(name or "")).suffix.lower()
+        return suffix if re.fullmatch(r"\.[A-Za-z0-9]{1,12}", suffix) else ".bin"
+
+    def save_attachment_bytes(
+        self,
+        session_id: str,
+        raw: bytes,
+        media_type: str = "application/octet-stream",
+        name: str | None = None,
+        *,
+        max_bytes: int | None = None,
+    ) -> dict:
+        """Save arbitrary attachment bytes under an opaque id and return its public ref."""
+        if not self.exists(session_id):
+            raise ValueError("会话不存在。")
+        if not raw:
+            raise ValueError("附件内容为空。")
+        if max_bytes is not None and len(raw) > max_bytes:
+            raise ValueError(f"附件超过大小限制（最多 {max_bytes} bytes）。")
+        media_type = str(media_type or "application/octet-stream").split(";", 1)[0].strip().lower()
+        if not re.fullmatch(r"[a-z0-9!#$&^_.+-]+/[a-z0-9!#$&^_.+-]+", media_type):
+            media_type = "application/octet-stream"
+        display_name = self._attachment_name(name)
+        attachment_id = uuid.uuid4().hex
+        target_dir = self.attachments_dir / session_id
+        target_dir.mkdir(parents=True, exist_ok=True)
+        path = target_dir / f"{attachment_id}{self._attachment_extension(media_type, display_name)}"
+        tmp = path.with_suffix(path.suffix + ".tmp")
+        with open(tmp, "wb") as fh:
+            fh.write(raw)
+        os.replace(tmp, path)
+        ref = {
+            "attachmentId": attachment_id,
+            "mediaType": media_type,
+            "byteLength": len(raw),
+            "name": display_name,
+        }
+        meta_path = target_dir / f".{attachment_id}.json"
+        meta_tmp = meta_path.with_suffix(".tmp")
+        import json
+
+        meta_tmp.write_text(json.dumps(ref, ensure_ascii=False), encoding="utf-8")
+        os.replace(meta_tmp, meta_path)
+        return ref
+
     def save_attachment(self, session_id: str, media_type: str, data_b64: str, name: str | None = None) -> dict:
         """持久化 base64 图片，返回 ImageAttachmentRef。"""
         ext = IMAGE_MEDIA_EXT.get(media_type)
@@ -207,22 +270,7 @@ class SessionStore:
             raise ValueError("图片 base64 解码失败。") from exc
         if not raw:
             raise ValueError("图片内容为空。")
-        attachment_id = uuid.uuid4().hex
-        target_dir = self.attachments_dir / session_id
-        target_dir.mkdir(parents=True, exist_ok=True)
-        path = target_dir / f"{attachment_id}{ext}"
-        tmp = path.with_suffix(path.suffix + ".tmp")
-        with open(tmp, "wb") as fh:
-            fh.write(raw)
-        os.replace(tmp, path)
-        ref: dict = {
-            "attachmentId": attachment_id,
-            "mediaType": media_type,
-            "byteLength": len(raw),
-        }
-        if name:
-            ref["name"] = name
-        return ref
+        return self.save_attachment_bytes(session_id, raw, media_type, name)
 
     def save_attachment_from_path(self, session_id: str, path: str | Path) -> dict | None:
         """把本地图片复制进会话附件区，返回 ImageAttachmentRef；无法识别时返回 None。
@@ -254,15 +302,12 @@ class SessionStore:
         if not target_dir.is_dir():
             raise FileNotFoundError(attachment_id)
         for child in target_dir.iterdir():
-            if not child.is_file():
+            if not child.is_file() or child.name.startswith("."):
                 continue
             stem = child.stem
             if stem != attachment_id:
                 continue
-            media_type = next(
-                (mt for mt, ext in IMAGE_MEDIA_EXT.items() if ext == child.suffix),
-                "application/octet-stream",
-            )
+            media_type = mimetypes.guess_type(child.name)[0] or "application/octet-stream"
             with open(child, "rb") as fh:
                 raw = fh.read()
             ref = {
@@ -270,7 +315,28 @@ class SessionStore:
                 "mediaType": media_type,
                 "byteLength": len(raw),
             }
+            meta_path = target_dir / f".{attachment_id}.json"
+            try:
+                import json
+
+                saved = json.loads(meta_path.read_text(encoding="utf-8"))
+                if isinstance(saved, dict):
+                    ref.update({key: saved[key] for key in ("name", "mediaType") if key in saved})
+            except (OSError, ValueError):
+                pass
             return ref, raw
+        raise FileNotFoundError(attachment_id)
+
+    def attachment_path(self, session_id: str, attachment_id: str) -> Path:
+        """Resolve an opaque attachment id without accepting a user-controlled path."""
+        if not ATTACHMENT_ID_RE.match(attachment_id or ""):
+            raise ValueError("非法附件 id。")
+        target_dir = self.attachments_dir / session_id
+        if not target_dir.is_dir():
+            raise FileNotFoundError(attachment_id)
+        for child in target_dir.iterdir():
+            if child.is_file() and not child.name.startswith(".") and child.stem == attachment_id:
+                return child
         raise FileNotFoundError(attachment_id)
 
     def attachment_paths_for_prompt(self, session_id: str, refs: list[dict]) -> list[str]:
@@ -288,6 +354,20 @@ class SessionStore:
             if path.exists():
                 paths.append(str(path))
         return paths
+
+    def attachment_prompt_text(self, session_id: str, refs: list[dict]) -> str:
+        """Build trusted local-file instructions for non-image agent attachments."""
+        lines: list[str] = []
+        for ref in refs:
+            try:
+                stored, _ = self.load_attachment(session_id, str(ref.get("attachmentId") or ""))
+                path = self.attachment_path(session_id, str(stored["attachmentId"]))
+            except (FileNotFoundError, ValueError):
+                continue
+            lines.append(
+                f"- {stored.get('name') or 'attachment'} ({stored.get('mediaType') or 'application/octet-stream'}): {path}"
+            )
+        return "\n".join(lines)
 
 
     def delete_session(self, session_id: str) -> None:

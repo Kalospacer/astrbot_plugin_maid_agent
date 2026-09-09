@@ -37,6 +37,7 @@ SETTINGS_KEYS = {
     "max_active_global",
     "retention_days",
     "max_turn_seconds",
+    "max_upload_mb",
 }
 
 
@@ -373,6 +374,16 @@ class ApiProxy:
                 except ValueError as exc:
                     raise RpcError("attachment-error", str(exc), {"reason": str(exc)}) from exc
                 blocks.append(c.image_block(ref))
+            elif ptype == "file":
+                ref = part.get("attachment")
+                if not isinstance(ref, dict):
+                    raise RpcError("attachment-error", "文件附件格式无效。", {})
+                attachment_id = str(ref.get("attachmentId") or "")
+                try:
+                    saved, _ = self.store.load_attachment(session_id, attachment_id)
+                except (FileNotFoundError, ValueError) as exc:
+                    raise RpcError("attachment-error", "文件附件不存在。", {"reason": "missing"}) from exc
+                blocks.append(c.file_block(saved))
 
         if not blocks:
             raise bad_request("content 没有可发送的块。")
@@ -398,7 +409,7 @@ class ApiProxy:
         attachment_id = str(payload.get("attachmentId") or "")
         log = self._require_session(session_id)
         referenced = any(
-            block.get("type") == "image"
+            block.get("type") in {"image", "file"}
             and (block.get("attachment") or {}).get("attachmentId") == attachment_id
             for event in log.read_events()
             if event.get("type") == "user/message"

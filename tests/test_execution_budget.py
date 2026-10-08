@@ -367,3 +367,104 @@ def test_turn_runs_on_legacy_provider_settings_layout(tmp_path, monkeypatch):
         assert (await driver.run_turn(message))["status"] == "completed"
 
     asyncio.run(run())
+
+
+def test_scoped_context_satisfies_framework_type_and_guards_delivery(tmp_path):
+    """框架构造 AstrAgentContext 时会校验 context 类型，代理必须继承真实 Context；
+    执行代次失效后投递必须静默丢弃。"""
+    from astrbot_plugin_maid_agent.harness.events_shim import ScopedContext
+
+    from astrbot.core.astr_agent_context import AstrAgentContext
+    from astrbot.core.star.context import Context
+
+    async def run():
+        sent = []
+
+        class RealContext:
+            conversation_manager = "conversation-manager"
+
+            async def send_message(self, session, chain):
+                sent.append((session, chain))
+                return True
+
+        allowed = [True]
+        scoped = ScopedContext(RealContext(), lambda: allowed[0])
+        assert isinstance(scoped, Context)
+        assert scoped.conversation_manager == "conversation-manager"
+
+        registry = build_registry(tmp_path, MaidModeConfig())
+        event = registry.build_child_event("aiocqhttp:FriendMessage:1", "1")
+        # 与 _build_runner 相同的构造方式：类型不符时这里就会抛校验错误。
+        AstrAgentContext(context=scoped, event=event)
+
+        assert await scoped.send_message("umo", "chain") is True
+        allowed[0] = False
+        assert await scoped.send_message("umo", "chain") is False
+        assert sent == [("umo", "chain")]
+
+    asyncio.run(run())
+
+
+def test_real_runner_build_accepts_guarded_context(tmp_path):
+    """真实 ToolLoopAgentRunner 的构造路径必须接受守卫上下文。
+
+    前两次线上故障都出在这条路径上（导入框架内部函数、AstrAgentContext 类型校验），
+    这里直接走真实 _build_runner 与真实 Context 实例，不再替换它。
+    """
+    from astrbot_plugin_maid_agent.harness.events_shim import ScopedContext
+    from astrbot_plugin_maid_agent.maid_dispatcher import _build_runner
+
+    from astrbot.core.star.context import Context
+
+    class Provider:
+        provider_config = {"max_context_tokens": 128000}
+
+        def get_model(self):
+            return "fake-model"
+
+    async def run():
+        registry = build_registry(tmp_path, MaidModeConfig())
+        real_context = Context(
+            event_queue=asyncio.Queue(),
+            config=SimpleNamespace(),
+            db=None,
+            provider_manager=None,
+            platform_manager=None,
+            conversation_manager=None,
+            message_history_manager=None,
+            persona_manager=None,
+            astrbot_config_mgr=SimpleNamespace(get_conf=lambda *_a, **_k: {}),
+            knowledge_base_manager=None,
+            cron_manager=None,
+        )
+        guarded = ScopedContext(real_context, lambda: True)
+        event = registry.build_child_event("aiocqhttp:FriendMessage:1", "1", identity={})
+
+        runner = await _build_runner(
+            context=guarded,
+            event=event,
+            provider=Provider(),
+            prompt="任务要求",
+            image_urls=[],
+            system_prompt="子代理人格",
+            tools=None,
+            contexts=[{"role": "user", "content": "此前的工作记录"}],
+            stream=False,
+            tool_call_timeout=60,
+            llm_compress_instruction="",
+            llm_compress_keep_recent_ratio=0.15,
+            llm_compress_provider=None,
+            truncate_turns=1,
+            enforce_max_turns=-1,
+            tool_schema_mode="full",
+            max_context_tokens=128000,
+            session_id="session-1",
+            agent_hooks=None,
+        )
+        roles = [message.role for message in runner.run_context.messages]
+        assert roles == ["system", "user", "user"]
+        # 框架拿这个上下文去访问真实服务，守卫必须原样包在 AstrAgentContext 里。
+        assert runner.run_context.context.context is guarded
+        assert runner.run_context.context.context.conversation_manager is None
+
+    asyncio.run(run())

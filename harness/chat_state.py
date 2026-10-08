@@ -29,14 +29,31 @@ class ChatStateStore:
     def _path(self, umo: str) -> Path:
         return self.root / f"{self.key(umo)}.json"
 
-    def get(self, umo: str) -> dict | None:
-        path = self._path(umo)
-        if not path.exists():
-            return None
+    @staticmethod
+    def _read(path: Path) -> dict:
         data = json.loads(path.read_text(encoding="utf-8"))
         if data.get("version") != FORMAT_VERSION:
             raise ValueError("主对话状态格式不受支持。")
         return data
+
+    def get(self, umo: str) -> dict | None:
+        path = self._path(umo)
+        if not path.exists():
+            return None
+        return self._read(path)
+
+    def unbind_session(self, session_id: str) -> None:
+        """会话记录被删除时撤销其上下文绑定，任务身份本身保留。"""
+        for path in self.root.glob("*.json"):
+            state = self._read(path)
+            removed = [branch for branch, sid in state["branches"].items() if sid == session_id]
+            if not removed:
+                continue
+            for branch in removed:
+                del state["branches"][branch]
+            if state["defaultBranch"] in removed:
+                state["defaultBranch"] = None
+            self.save(state)
 
     def save(self, state: dict) -> None:
         write_json(self._path(state["umo"]), state)
@@ -97,20 +114,12 @@ class ChatStateStore:
     def recover(self) -> None:
         """保留已有空闲计时；恢复中断执行时使用最后持久化活动时间。"""
         for path in self.root.glob("*.json"):
-            state = json.loads(path.read_text(encoding="utf-8"))
+            state = self._read(path)
             if state["idleSince"] is None:
                 stamps = [state["lastToolAt"]]
                 stamps.extend(task.get("interruptedFromAt", task["updatedAt"]) for task in self.task_list(state))
                 state["idleSince"] = max(stamps)
                 self.save(state)
-
-    @staticmethod
-    def candidates(state: dict, tasks: list[dict]) -> list[dict]:
-        latest = {}
-        for task in tasks:
-            if task["branchId"] in state["branches"]:
-                latest[task["branchId"]] = task
-        return [TaskStore.card(task) for task in latest.values()]
 
     def target(self, state: dict, task_id: str) -> dict:
         task = self.tasks.get(task_id)

@@ -635,19 +635,16 @@ class MaidAgent(Star):
                 send_tool = ctx.get_llm_tool_manager().get_builtin_tool(SendMessageToUserTool)
                 if send_tool is not None:
                     req.func_tool.add_tool(send_tool)
-                from .toolset_adapter import load_execution_settings
+                from .toolset_adapter import _load_provider_settings, load_execution_settings
 
                 settings = load_execution_settings(ctx, umo)
-                raw_config = ctx.get_config(umo=umo)
                 # 只传长期存在的字段：压缩设置交给宿主按 provider_settings 组装，
                 # 避免依赖较新版本才有的框架内部模块。
                 config = MainAgentBuildConfig(
                     tool_call_timeout=settings["tool_call_timeout"],
                     tool_schema_mode=settings["tool_schema_mode"],
                     streaming_response=False,
-                    provider_settings=(raw_config.get("provider_settings") or {})
-                    if isinstance(raw_config, dict)
-                    else {},
+                    provider_settings=_load_provider_settings(ctx, umo),
                 )
                 result_build = await build_main_agent(event=cron_event, plugin_context=ctx, config=config, req=req)
                 if result_build is None:
@@ -823,13 +820,7 @@ class MaidAgent(Star):
     @filter.on_decorating_result()
     async def stash_raw_input(self, event) -> None:
         if event.get_extra("_clean_group_context_session"):
-            umo = event.unified_msg_origin
-            async with self.registry.chats.lock(umo):
-                previous = self.registry.chats.get(umo)
-                if previous is not None:
-                    self.chat_runtime.invalidate(previous)
-                    cid = await self.context.conversation_manager.get_curr_conversation_id(umo)
-                    self.registry.chats.reset(umo, cid or "")
+            await self.chat_runtime.restart(event.unified_msg_origin)
         raw_input = event.message_str
         if raw_input:
             event.set_extra(RAW_INPUT_EXTRA_KEY, raw_input[:2000])

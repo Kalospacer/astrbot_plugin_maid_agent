@@ -344,7 +344,7 @@ class SessionDriver:
                     block.get("text", "") for block in action.get("content") or [] if block.get("type") == "text"
                 )
                 self.inbox.pop(index)
-                self._steer_text(text)
+                self.steer(text)
                 return
             self._publish_queue()
             return
@@ -352,16 +352,11 @@ class SessionDriver:
 
         raise RpcError("queue-item-not-found", f"队列项不存在: {item_id}", {"itemId": item_id})
 
-    def _steer_text(self, text: str) -> None:
-        self.steer(text)
-
     def request_stop(self) -> None:
         self._stop_requested = True
         task_id = self.current_execution.get("task_id")
         if task_id:
-            task = self.registry.tasks.get(task_id)
-            ids = [item["id"] for item in task["followups"] if item["status"] in {"pending", "scheduled"}]
-            self.registry.tasks.set_followup_status(task_id, ids, "cancelled")
+            self.registry.tasks.cancel_followups(task_id)
         if self._stop_fn is not None:
             try:
                 self._stop_fn()
@@ -761,11 +756,7 @@ class SessionDriver:
     def delivery_allowed(self) -> bool:
         if self._framework_stopped or self._interrupted:
             return False
-        epoch = self.current_execution.get("epoch")
-        if epoch is None or epoch == "console":
-            return True
-        state = self.registry.chats.get(self.umo)
-        return state is not None and state["epoch"] == epoch and epoch not in self.registry.invalid_epochs
+        return self.registry.epoch_active(self.umo, self.current_execution.get("epoch"))
 
     def _sync_followup_consumption(self, context_state: ContextState) -> None:
         task_id = self.current_execution.get("task_id")
@@ -1075,22 +1066,28 @@ class DriverRegistry:
     def running_count_for_umo(self, umo: str) -> int:
         return sum(1 for d in self.drivers.values() if d.busy and d.umo == umo)
 
-    def capacity_available(self, umo: str) -> bool:
+    def capacity_available(self, umo: str, slots: int = 1) -> bool:
         per_umo = int(getattr(self.config, "max_active_per_umo", 5) or 5)
         global_cap = int(getattr(self.config, "max_active_global", 20) or 20)
-        return self.running_count_for_umo(umo) < per_umo and self.running_count() < global_cap
+        return (
+            self.running_count_for_umo(umo) + slots <= per_umo
+            and self.running_count() + slots <= global_cap
+        )
+
+    def epoch_active(self, umo: str, epoch: Any) -> bool:
+        """本轮所属的执行代次是否仍然有效。
+
+        投递守卫、终态回灌与自动补跑都据此判断同一件事，不能各写一份。
+        """
+        if epoch is None or epoch == "console":
+            return True
+        if epoch in self.invalid_epochs:
+            return False
+        state = self.chats.get(umo)
+        return state is not None and state["epoch"] == epoch
 
     def drop_context_binding(self, session_id: str) -> None:
-        for path in self.chats.root.glob("*.json"):
-            state = json.loads(path.read_text(encoding="utf-8"))
-            removed = [branch for branch, sid in state["branches"].items() if sid == session_id]
-            if not removed:
-                continue
-            for branch in removed:
-                del state["branches"][branch]
-            if state["defaultBranch"] in removed:
-                state["defaultBranch"] = None
-            self.chats.save(state)
+        self.chats.unbind_session(session_id)
 
     def manual_execution(self, driver: SessionDriver, message: dict) -> dict:
         """控制台手动选择 session 不经自动路由，但仍拥有独立 task。"""
@@ -1117,7 +1114,20 @@ class DriverRegistry:
             self.tasks.set_followup_status(task_id, [item["id"] for item in pending], "cancelled")
             pending = []
         finished = self.tasks.finish(task_id, execution["round_id"], result, pending=bool(pending))
-        notification = {**deepcopy(result), **execution, "round": finished, "description": task["description"], "delivery_cancelled": driver._framework_stopped}
+        # 只带通知需要的字段：execution 里的 main_context 可能很大，不能让它跟着
+        # 通知被回灌路径长期持有。
+        notification = {
+            "status": result["status"],
+            "result": result.get("result", ""),
+            "error": result.get("error", ""),
+            "task_id": task_id,
+            "round_id": execution["round_id"],
+            "epoch": execution.get("epoch"),
+            "conversation_id": execution.get("conversation_id", ""),
+            "delivery_cancelled": driver._framework_stopped,
+            "round": finished,
+            "description": task["description"],
+        }
         self.notify_turn_terminal(driver, notification)
         state = self.chats.get(driver.umo)
         if pending and (state is None or state["epoch"] == execution["epoch"]) and execution["epoch"] not in self.invalid_epochs:

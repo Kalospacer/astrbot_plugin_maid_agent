@@ -38,6 +38,16 @@ class ChatRuntime:
             self.plugin.store.touch(sid)
         return state
 
+    async def restart(self, umo: str) -> None:
+        """主对话被 new/reset：作废旧代次、取消未执行内容并换一份状态。"""
+        async with self.chats.lock(umo):
+            previous = self.chats.get(umo)
+            if previous is not None:
+                self.invalidate(previous)
+            cid = await self.plugin.context.conversation_manager.get_curr_conversation_id(umo)
+            if cid:
+                self.chats.reset(umo, cid)
+
     async def snapshot(self, event, state: dict) -> list[dict]:
         run_context = event.get_extra(MAIN_CONTEXT_KEY)
         if run_context is not None:
@@ -55,18 +65,16 @@ class ChatRuntime:
     def invalidate(self, state: dict) -> None:
         """成功 new/reset 后取消旧代次运行和未消费要求。"""
         for task in self.chats.task_list(state):
-            for item in task["followups"]:
-                if item["status"] in {"pending", "scheduled"}:
-                    item["status"] = "cancelled"
-            self.tasks.save(task)
+            self.tasks.cancel_followups(task["taskId"])
             driver = self.registry.drivers.get(task["sessionId"])
             if driver is not None and driver.busy:
                 driver.request_stop()
         self.registry.invalid_epochs.add(state["epoch"])
 
     def allowed(self, execution: dict, umo: str) -> bool:
-        state = self.chats.get(umo)
-        return not execution.get("delivery_cancelled", False) and state is not None and state["epoch"] == execution.get("epoch") and state["epoch"] not in self.registry.invalid_epochs
+        if execution.get("delivery_cancelled", False):
+            return False
+        return self.registry.epoch_active(umo, execution.get("epoch"))
 
     def error(self, state: dict, message: str) -> dict:
         return {"status": "error", "error": message, "tasks": [self.tasks.card(task) for task in self.chats.task_list(state)]}
@@ -124,7 +132,7 @@ class ChatRuntime:
                 return self.error(state, "主会话已停止或重置，取消本次派发。")
             # 所有 await 已完成后再统一预留，启动中的任务也占容量。
             cfg = self.plugin.maid_mode_config
-            if self.registry.running_count() + len(requests) > cfg.max_active_global or self.registry.running_count_for_umo(umo) + len(requests) > cfg.max_active_per_umo:
+            if not self.registry.capacity_available(umo, len(requests)):
                 return self.error(state, "并发上限不足，整批拒绝。")
             if batch or (force_new and active):
                 state["defaultBranch"] = None
@@ -158,7 +166,7 @@ class ChatRuntime:
                 driver.enqueue(c.user_message(content), run_context=run_context)
                 if not active and not batch:
                     state["defaultBranch"] = selected_branch
-                results.append({**self.tasks.card(self.tasks.get(current_task["taskId"])), "round_id": execution["roundId"], "status": "running"})
+                results.append({**self.tasks.card(current_task), "round_id": execution["roundId"], "status": "running"})
             self.chats.begin(state)
             outcome = {"status": "batch", "tasks": results} if batch else results[0]
             outcome["next"] = DISPATCHED_NEXT_STEP
@@ -222,8 +230,7 @@ class ChatRuntime:
                 task = self.chats.target(state, task_id)
             except ValueError as exc:
                 return self.error(state, str(exc))
-            pending = [item["id"] for item in task["followups"] if item["status"] in {"pending", "scheduled"}]
-            self.tasks.set_followup_status(task_id, pending, "cancelled")
+            self.tasks.cancel_followups(task_id)
             driver = self.registry.drivers.get(task["sessionId"])
             if task["status"] in ACTIVE_STATUSES and driver is not None:
                 driver.request_stop()

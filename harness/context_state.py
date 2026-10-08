@@ -75,20 +75,30 @@ def main_block(records: list[dict]) -> dict:
 class ContextState:
     def __init__(self, session_dir: Path):
         self.path = session_dir / "context.json"
+        # 一轮里每步都会读写这份快照，缓存避免重复读盘；实例之间仍以文件为准。
+        self._state: dict | None = None
 
     def load(self) -> dict:
+        if self._state is not None:
+            return self._state
         if not self.path.exists():
-            return {
+            self._state = {
                 "version": FORMAT_VERSION,
                 "messages": [],
                 "mainContext": [],
                 "backgroundHashes": [],
                 "systemPrompt": "",
             }
+            return self._state
         state = json.loads(self.path.read_text(encoding="utf-8"))
         if state.get("version") != FORMAT_VERSION:
             raise ValueError("上下文格式不受支持，不能从旧展示日志恢复。")
+        self._state = state
         return state
+
+    def _save(self, state: dict) -> None:
+        self._state = state
+        write_json(self.path, state)
 
     @staticmethod
     def _update(state: dict, main_context: list[dict]) -> tuple[list[dict], bool]:
@@ -119,13 +129,13 @@ class ContextState:
                 state["messages"] = [item for item in state["messages"] if fingerprint(item) not in hashes]
                 state["backgroundHashes"] = []
             state["mainContext"] = incoming
-            write_json(self.path, state)
+            self._save(state)
         return deepcopy(state["messages"])
 
     def followup_text(self, main_context: list[dict], request: str) -> str:
+        # 调用方传进来的主背景已经冻结过，这里再复制一遍只是浪费。
         state = self.load()
-        incoming = freeze_messages(main_context)
-        delta, rebase = self._update(state, incoming)
+        delta, rebase = self._update(state, main_context)
         label = "【当前主背景更新：旧背景已压缩或改写】" if rebase else "【主对话新增记录】"
         context_text = label + "\n" + json.dumps(delta, ensure_ascii=False) + "\n" if delta else ""
         return context_text + "【运行中补充要求】\n" + request
@@ -133,19 +143,22 @@ class ContextState:
     def mark_main_synced(self, main_context: list[dict]) -> None:
         state = self.load()
         state["mainContext"] = freeze_messages(main_context)
-        write_json(self.path, state)
+        self._save(state)
 
     def capture(self, messages: list, system_prompt: str) -> None:
-        state = self.load()
         actual = freeze_messages(messages)
         # runner 在头部加入子人格；每轮从配置读取，避免恢复时重复加入。
         if actual and actual[0].get("role") == "system":
             actual = actual[1:]
+        state = self.load()
+        if state["messages"] == actual and state["systemPrompt"] == system_prompt:
+            # 这一步没有新增内容，不必重写整份快照。
+            return
         state["messages"] = actual
         state["systemPrompt"] = system_prompt
         hashes = {fingerprint(item) for item in actual}
         state["backgroundHashes"] = [key for key in state["backgroundHashes"] if key in hashes]
-        write_json(self.path, state)
+        self._save(state)
 
     def checkpoint(self, turn: int) -> None:
         write_json(self.path.parent / "context_checkpoints" / f"{turn}.json", self.load())

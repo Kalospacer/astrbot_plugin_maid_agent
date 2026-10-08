@@ -29,6 +29,7 @@ if TYPE_CHECKING:
     from astrbot.api.star import Context
     from astrbot.core.agent.handoff import HandoffTool
 
+from .config import _safe_float, _safe_int
 from .constants import (
     MAID_AGENT_TOOL_NAME,
     MAID_DELIVER_FILE_TOOL_NAME,
@@ -252,20 +253,71 @@ def _load_provider_settings(context: Context, umo: str) -> dict[str, Any]:
     return settings if isinstance(settings, dict) else {}
 
 
-def load_execution_settings(context: Context, umo: str) -> dict[str, Any]:
-    """执行设置使用当前 AstrBot 配置结构，不读取迁移前的字段。"""
-    from astrbot.core.config.agent_runner import resolve_context_compression_config
-
-    config = context.get_config(umo=umo)
-    runner = config["agent_runner"]["config"]
-    misc = runner["misc"]
-    compression = resolve_context_compression_config(runner["compression"])
+def _compression_section_to_settings(section: dict[str, Any]) -> dict[str, Any]:
+    """把 agent_runner.config.compression 段映射为子代理 runner 的构建参数。"""
+    max_turns = _safe_int(section.get("max_turns", -1), -1)
+    trim_turns = _safe_int(section.get("trim_turns", 1), 1)
+    dequeue_turns = min(max(1, trim_turns), max_turns - 1 if max_turns > 0 else trim_turns)
     return {
-        **compression,
-        "streaming_response": config["provider_settings"].get("streaming_response", False),
-        "tool_call_timeout": misc["tool_call_timeout"],
-        "tool_schema_mode": misc["tool_schema_mode"],
+        "context_limit_reached_strategy": str(section.get("overflow_strategy") or "truncate_by_turns"),
+        "llm_compress_instruction": str(section.get("instruction") or ""),
+        "llm_compress_keep_recent_ratio": _safe_float(section.get("keep_recent_ratio"), 0.15),
+        "llm_compress_provider_id": str(section.get("provider_id") or ""),
+        "max_context_length": max_turns,
+        "dequeue_context_length": max(1, dequeue_turns),
+        "fallback_max_context_tokens": _safe_int(section.get("fallback_max_tokens", 128000), 128000),
     }
+
+
+def _provider_settings_to_settings(provider_settings: dict[str, Any]) -> dict[str, Any]:
+    """压缩设置仍在 provider_settings 里的旧键布局。"""
+    max_turns = _safe_int(provider_settings.get("max_context_length", -1), -1)
+    trim_turns = _safe_int(provider_settings.get("dequeue_context_length", 1), 1)
+    dequeue_turns = min(max(1, trim_turns), max_turns - 1 if max_turns > 0 else trim_turns)
+    return {
+        "context_limit_reached_strategy": str(
+            provider_settings.get("context_limit_reached_strategy") or "truncate_by_turns"
+        ),
+        "llm_compress_instruction": str(provider_settings.get("llm_compress_instruction") or ""),
+        "llm_compress_keep_recent_ratio": _safe_float(
+            provider_settings.get("llm_compress_keep_recent_ratio"), 0.15
+        ),
+        "llm_compress_provider_id": str(provider_settings.get("llm_compress_provider_id") or ""),
+        "max_context_length": max_turns,
+        "dequeue_context_length": max(1, dequeue_turns),
+        "fallback_max_context_tokens": _safe_int(
+            provider_settings.get("fallback_max_context_tokens", 128000), 128000
+        ),
+    }
+
+
+def load_execution_settings(context: Context, umo: str) -> dict[str, Any]:
+    """子代理执行设置，兼容框架迁移前后的两种配置布局。
+
+    框架把压缩设置从 ``provider_settings`` 迁进 ``agent_runner.config``，迁移会删掉
+    旧键；不同发行版本落在迁移前后，两套都要读。这里不调用框架内部模块，避免绑定
+    单一框架版本。
+    """
+    config = context.get_config(umo=umo)
+    if not isinstance(config, dict):
+        config = {}
+    provider_settings = config.get("provider_settings") or {}
+    runner = (config.get("agent_runner") or {}).get("config") or {}
+    misc = runner.get("misc") or {}
+    compression = runner.get("compression") or {}
+    settings = (
+        _compression_section_to_settings(compression)
+        if compression
+        else _provider_settings_to_settings(provider_settings)
+    )
+    settings["streaming_response"] = bool(provider_settings.get("streaming_response", False))
+    settings["tool_call_timeout"] = _safe_int(
+        misc.get("tool_call_timeout", provider_settings.get("tool_call_timeout", 60)), 60
+    )
+    settings["tool_schema_mode"] = str(
+        misc.get("tool_schema_mode") or provider_settings.get("tool_schema_mode") or "full"
+    )
+    return settings
 
 
 def _get_runtime_computer_tools(

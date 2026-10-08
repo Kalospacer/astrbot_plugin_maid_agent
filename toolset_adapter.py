@@ -29,7 +29,12 @@ if TYPE_CHECKING:
     from astrbot.api.star import Context
     from astrbot.core.agent.handoff import HandoffTool
 
-from .constants import MAID_AGENT_TOOL_NAME, MAID_DELIVER_FILE_TOOL_NAME, MAID_TOOL_NAMES, PLUGIN_DATA_DIR_NAME
+from .constants import (
+    MAID_AGENT_TOOL_NAME,
+    MAID_DELIVER_FILE_TOOL_NAME,
+    MAID_TOOL_NAMES,
+    PLUGIN_DATA_DIR_NAME,
+)
 
 MEMORY_SUBDIR = "memory"
 MEMORY_INDEX_FILENAME = "MEMORY.md"
@@ -245,6 +250,22 @@ def _load_provider_settings(context: Context, umo: str) -> dict[str, Any]:
         return {}
     settings = cfg.get("provider_settings", {})
     return settings if isinstance(settings, dict) else {}
+
+
+def load_execution_settings(context: Context, umo: str) -> dict[str, Any]:
+    """执行设置使用当前 AstrBot 配置结构，不读取迁移前的字段。"""
+    from astrbot.core.config.agent_runner import resolve_context_compression_config
+
+    config = context.get_config(umo=umo)
+    runner = config["agent_runner"]["config"]
+    misc = runner["misc"]
+    compression = resolve_context_compression_config(runner["compression"])
+    return {
+        **compression,
+        "streaming_response": config["provider_settings"].get("streaming_response", False),
+        "tool_call_timeout": misc["tool_call_timeout"],
+        "tool_schema_mode": misc["tool_schema_mode"],
+    }
 
 
 def _get_runtime_computer_tools(

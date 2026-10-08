@@ -9,7 +9,7 @@ from __future__ import annotations
 import time
 import uuid
 
-SESSION_FORMAT_VERSION = 0
+SESSION_FORMAT_VERSION = 3
 
 
 def new_id() -> str:

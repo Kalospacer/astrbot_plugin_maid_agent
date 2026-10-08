@@ -62,6 +62,22 @@ async def image_paths_from_event(event: Any) -> list[str]:
     return paths
 
 
+class ScopedContext:
+    """委托框架服务，仅在真正发送前检查当前执行是否仍可投递。"""
+
+    def __init__(self, context, allowed):
+        self._context = context
+        self._allowed = allowed
+
+    def __getattr__(self, name):
+        return getattr(self._context, name)
+
+    async def send_message(self, session, message_chain):
+        if not self._allowed():
+            return False
+        return await self._context.send_message(session, message_chain)
+
+
 class MaidAgentMessage(AstrBotMessage):
     def __init__(self, *, text: str, session: MessageSession, identity: dict) -> None:
         super().__init__()

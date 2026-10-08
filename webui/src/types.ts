@@ -68,6 +68,7 @@ export type StreamChunk =
 
 export type TurnEndReason =
   | { kind: "completed" | "blocked" | "max-tokens" | "interrupted" }
+  | { kind: "step-limit"; limit: number }
   | { kind: "aborted"; reason: { kind: string } }
   | { kind: "error"; error: { message: string; code?: string } };
 

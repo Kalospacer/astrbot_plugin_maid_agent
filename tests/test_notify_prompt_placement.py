@@ -10,6 +10,7 @@ from pathlib import Path
 
 import pytest
 from astrbot_plugin_maid_agent.config import DEFAULT_DISPATCH_PROMPT_TEMPLATE
+from astrbot_plugin_maid_agent.harness.chat_dispatch import ChatRuntime
 from astrbot_plugin_maid_agent.harness.drivers import DriverRegistry
 from astrbot_plugin_maid_agent.harness.store import SessionStore
 from astrbot_plugin_maid_agent.main import MaidAgent
@@ -30,6 +31,7 @@ class _Config:
     memory_agent_names = ()
     retention_days = 30
     max_turn_seconds = 1800
+    max_agent_steps = 128
     allowed_agent_names = ("butler",)
     default_agent_name = "butler"
     dispatch_prompt_template = DEFAULT_DISPATCH_PROMPT_TEMPLATE
@@ -86,7 +88,15 @@ class _Ctx:
 
     def get_config(self, umo=None):
         self.config_umo = umo
-        return {}
+        return {
+            "provider_settings": {"streaming_response": False},
+            "agent_runner": {
+                "config": {
+                    "misc": {"tool_call_timeout": 60, "tool_schema_mode": "full"},
+                    "compression": {},
+                }
+            },
+        }
 
     async def send_message(self, umo, chain):
         self.sent.append((umo, chain.get_plain_text()))
@@ -133,6 +143,7 @@ def test_notify_relay_instruction_lives_in_prompt_not_system_prompt(registry, st
     agent.store = store
     agent.registry = registry
     agent.maid_mode_config = registry.config
+    agent.chat_runtime = ChatRuntime(agent)
 
     log = store.create_session(
         agent_preset="butler",
@@ -140,15 +151,31 @@ def test_notify_relay_instruction_lives_in_prompt_not_system_prompt(registry, st
             "umo": UMO,
             "agentName": "butler",
             "sourceKind": "chat",
-            "activeTaskId": "t-1",
             "notify": True,
         },
     )
     driver = registry.attach(log.session_id)
     driver.umo = UMO
 
+    # 报告按 task 与执行轮次记账，通知必须携带这两个标识。
+    state = registry.chats.reset(UMO, "cid-1")
+    task = registry.tasks.create(
+        scope=registry.chats.key(UMO), epoch=state["epoch"], branch="branch", request="检查端口"
+    )
+    execution = registry.tasks.start_round(task["taskId"], log.session_id, "检查端口")
+    result = {
+        "status": "completed",
+        "result": "端口检查通过，无异常",
+        "error": "",
+        "task_id": task["taskId"],
+        "round_id": execution["roundId"],
+        "epoch": state["epoch"],
+        "conversation_id": "cid-1",
+        "description": task["description"],
+    }
+
     async def scenario():
-        return await agent._notify_main_agent(driver, {"status": "completed", "result": "端口检查通过，无异常"})
+        return await agent._notify_main_agent(driver, result)
 
     assert asyncio.run(scenario()) is True
 
@@ -158,14 +185,14 @@ def test_notify_relay_instruction_lives_in_prompt_not_system_prompt(registry, st
     # 2) 指令与通知正文都在 prompt 里，指令在前
     assert "转述" in req.prompt
     assert req.prompt.index("转述") < req.prompt.index("[管家任务通知]")
-    assert "t-1" in req.prompt
+    assert task["taskId"] in req.prompt
+    assert execution["roundId"] in req.prompt
     assert "completed" in req.prompt
     assert "端口检查通过，无异常" in req.prompt
     # 3) 事件消息保持纯通知，指令不外溢到 extras / 事件面
-    assert (
-        captured["event_message"]
-        == f"[管家任务通知]\n- agent_id={log.session_id} task_id=t-1 status=completed\n  端口检查通过，无异常"
-    )
+    assert captured["event_message"].startswith("[管家任务通知]")
+    assert task["taskId"] in captured["event_message"]
+    assert "端口检查通过，无异常" in captured["event_message"]
     # 4) 模型正文兜底投递不受影响
     assert agent.context.sent == [(UMO, "端口检查完成，一切正常。")]
     # 5) 落历史的只有通知与转述结果，指令不落历史

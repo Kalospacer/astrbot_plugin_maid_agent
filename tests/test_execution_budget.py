@@ -10,6 +10,7 @@ from astrbot_plugin_maid_agent.harness import contracts as c
 from astrbot_plugin_maid_agent.harness.context_state import ContextState
 from astrbot_plugin_maid_agent.harness.drivers import DriverRegistry
 from astrbot_plugin_maid_agent.harness.store import SessionStore
+from astrbot_plugin_maid_agent.toolset_adapter import load_execution_settings
 
 from astrbot.core.agent.message import Message
 from astrbot.core.agent.tool import ToolSet
@@ -255,5 +256,114 @@ def test_compression_does_not_hide_current_step_from_console(tmp_path, monkeypat
         texts = [event["data"]["message"]["content"][0]["text"] for event in log.read_events() if event["type"] == "assistant/message"]
         assert texts == ["第1步", "第2步", "第3步"]
         assert ContextState(log.dir).load()["messages"][0]["content"] == "压缩后的摘要"
+
+    asyncio.run(run())
+
+
+def test_execution_settings_support_both_config_layouts():
+    """框架把压缩设置从 provider_settings 迁进 agent_runner.config 并删除旧键，
+    插件必须在迁移前后两种布局下都取到执行设置。"""
+    legacy = SimpleNamespace(
+        get_config=lambda **_kw: {
+            "provider_settings": {
+                "streaming_response": True,
+                "tool_call_timeout": 45,
+                "tool_schema_mode": "skills_like",
+                "context_limit_reached_strategy": "llm_compress",
+                "llm_compress_instruction": "旧结构指令",
+                "llm_compress_keep_recent_ratio": 0.2,
+                "llm_compress_provider_id": "provider-legacy",
+                "max_context_length": 12,
+                "dequeue_context_length": 3,
+                "fallback_max_context_tokens": 64000,
+            }
+        }
+    )
+    settings = load_execution_settings(legacy, "umo")
+    assert settings["streaming_response"] is True
+    assert settings["tool_call_timeout"] == 45
+    assert settings["tool_schema_mode"] == "skills_like"
+    assert settings["context_limit_reached_strategy"] == "llm_compress"
+    assert settings["llm_compress_instruction"] == "旧结构指令"
+    assert settings["llm_compress_keep_recent_ratio"] == 0.2
+    assert settings["llm_compress_provider_id"] == "provider-legacy"
+    assert settings["max_context_length"] == 12
+    assert settings["dequeue_context_length"] == 3
+    assert settings["fallback_max_context_tokens"] == 64000
+
+    current = SimpleNamespace(
+        get_config=lambda **_kw: {
+            "provider_settings": {"streaming_response": False},
+            "agent_runner": {
+                "config": {
+                    "misc": {"tool_call_timeout": 90, "tool_schema_mode": "full"},
+                    "compression": {
+                        "max_turns": 20,
+                        "trim_turns": 5,
+                        "overflow_strategy": "llm_compress",
+                        "instruction": "新结构指令",
+                        "keep_recent_ratio": 0.3,
+                        "provider_id": "provider-current",
+                        "fallback_max_tokens": 200000,
+                    },
+                }
+            },
+        }
+    )
+    settings = load_execution_settings(current, "umo")
+    assert settings["streaming_response"] is False
+    assert settings["tool_call_timeout"] == 90
+    assert settings["tool_schema_mode"] == "full"
+    assert settings["llm_compress_instruction"] == "新结构指令"
+    assert settings["llm_compress_keep_recent_ratio"] == 0.3
+    assert settings["llm_compress_provider_id"] == "provider-current"
+    assert settings["max_context_length"] == 20
+    assert settings["dequeue_context_length"] == 5
+    assert settings["fallback_max_context_tokens"] == 200000
+
+
+def test_execution_settings_tolerate_missing_sections():
+    """配置结构缺段时回退默认值，不能因为读设置把子代理执行打挂。"""
+    bare = SimpleNamespace(get_config=lambda **_kw: {})
+    settings = load_execution_settings(bare, "umo")
+    assert settings["max_context_length"] == -1
+    assert settings["dequeue_context_length"] == 1
+    assert settings["tool_call_timeout"] == 60
+    assert settings["tool_schema_mode"] == "full"
+    assert settings["context_limit_reached_strategy"] == "truncate_by_turns"
+
+
+def test_turn_runs_on_legacy_provider_settings_layout(tmp_path, monkeypatch):
+    """线上框架仍是迁移前的按键布局时，一整轮子代理执行必须能跑完。"""
+    async def run():
+        registry = build_registry(tmp_path, MaidModeConfig(max_agent_steps=6))
+        # 只保留迁移前的键：没有 agent_runner.config，也没有框架的轮数配置。
+        registry.context.get_config = lambda **_kw: {
+            "provider_settings": {
+                "streaming_response": False,
+                "tool_call_timeout": 30,
+                "tool_schema_mode": "full",
+                "max_context_length": 5,
+                "dequeue_context_length": 2,
+            }
+        }
+
+        async def build(**kwargs):
+            assert kwargs["tool_call_timeout"] == 30
+            assert kwargs["tool_schema_mode"] == "full"
+            assert kwargs["llm_compress_keep_recent_ratio"] == 0.15
+            assert kwargs["enforce_max_turns"] == 5
+            assert kwargs["truncate_turns"] == 2
+            return FakeRunner(kwargs, 3)
+
+        monkeypatch.setattr("astrbot_plugin_maid_agent.maid_dispatcher._build_runner", build)
+        log = registry.store.create_session(
+            meta={"umo": "maid:FriendMessage:console", "agentName": "butler", "sourceKind": "dashboard"}
+        )
+        driver = registry.attach(log.session_id)
+        driver._kick = lambda: None
+        message = c.user_message([c.text_block("检查")])
+        driver._run_context = registry.manual_execution(driver, message)
+        assert (await driver.run_turn(message))["status"] == "completed"
 
     asyncio.run(run())

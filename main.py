@@ -637,18 +637,17 @@ class MaidAgent(Star):
                     req.func_tool.add_tool(send_tool)
                 from .toolset_adapter import load_execution_settings
 
-                provider_settings = load_execution_settings(ctx, umo)
-                from astrbot.core.config.agent_runner import resolve_context_compression_config
-
-                current_config = ctx.get_config(umo=umo)
-                runner_config = (current_config.get("agent_runner") or {}).get("config") or {}
-                compression = resolve_context_compression_config(runner_config.get("compression") or {})
+                settings = load_execution_settings(ctx, umo)
+                raw_config = ctx.get_config(umo=umo)
+                # 只传长期存在的字段：压缩设置交给宿主按 provider_settings 组装，
+                # 避免依赖较新版本才有的框架内部模块。
                 config = MainAgentBuildConfig(
-                    tool_call_timeout=provider_settings["tool_call_timeout"],
-                    tool_schema_mode=provider_settings["tool_schema_mode"],
+                    tool_call_timeout=settings["tool_call_timeout"],
+                    tool_schema_mode=settings["tool_schema_mode"],
                     streaming_response=False,
-                    provider_settings=current_config.get("provider_settings") or {},
-                    **compression,
+                    provider_settings=(raw_config.get("provider_settings") or {})
+                    if isinstance(raw_config, dict)
+                    else {},
                 )
                 result_build = await build_main_agent(event=cron_event, plugin_context=ctx, config=config, req=req)
                 if result_build is None:

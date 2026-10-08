@@ -68,6 +68,16 @@ def _safe_int(value: Any, default: int) -> int:
         return default
 
 
+def _safe_float(value: Any, default: float) -> float:
+    """AstrBot provider settings use loose values; plugin config never uses this helper."""
+    try:
+        if isinstance(value, bool):
+            return default
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
 def _validate_template(template: Any) -> str:
     if not isinstance(template, str) or not template.strip():
         raise ConfigValidationError({"dispatch_prompt_template": "必须是非空字符串。"})

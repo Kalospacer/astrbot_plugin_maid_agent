@@ -53,7 +53,7 @@ def _tool_result_text(event):
     return event["data"]["message"]["content"][0]["content"][0]["text"]
 
 
-def test_rebuild_context_preserves_completed_tool_output(store, registry):
+def test_runtime_snapshot_preserves_completed_tool_output(store, registry):
     """续聊必须将工具返回值送回 runner，否则后续回答会失去已查询的信息。"""
     log = store.create_session(meta={"umo": "qq:GroupMessage:1"})
     log.append("turn/start", {"turn": 1})
@@ -80,12 +80,18 @@ def test_rebuild_context_preserves_completed_tool_output(store, registry):
     )
     log.append("turn/end", {"turn": 1, "reason": c.reason_completed()})
 
-    contexts = registry.attach(log.session_id)._rebuild_contexts(before_seq=log.last_seq + 1)
+    from astrbot_plugin_maid_agent.harness.context_state import ContextState
 
+    messages = [
+        Message(role="user", content="查天气"),
+        Message(role="assistant", content=None, tool_calls=[{"type": "function", "id": "call-1", "function": {"name": "web_search", "arguments": '{"query":"weather"}'}}]),
+        Message(role="tool", content="晴，28°C", tool_call_id="call-1"),
+    ]
+    context = ContextState(log.dir)
+    context.capture(messages, "")
+    contexts = [Message.model_validate(item) for item in context.prepare(None)]
     assert [(message.role, message.content) for message in contexts] == [
-        ("user", "查天气"),
-        ("assistant", None),
-        ("tool", "晴，28°C"),
+        ("user", "查天气"), ("assistant", None), ("tool", "晴，28°C"),
     ]
     assert contexts[1].tool_calls[0].id == "call-1"
     assert contexts[2].tool_call_id == "call-1"
@@ -157,7 +163,7 @@ def test_build_runner_serializes_provider_config_mutation(monkeypatch):
             stream=False,
             tool_call_timeout=60,
             llm_compress_instruction="",
-            llm_compress_keep_recent=4,
+            llm_compress_keep_recent_ratio=0.15,
             llm_compress_provider=None,
             truncate_turns=1,
             enforce_max_turns=-1,
@@ -193,7 +199,7 @@ def test_build_runner_restores_missing_provider_limit_after_reset_failure(monkey
         await maid_dispatcher._build_runner(
             context=object(), event=object(), provider=provider, prompt="", image_urls=[], system_prompt="",
             tools=None, contexts=None, stream=False, tool_call_timeout=60, llm_compress_instruction="",
-            llm_compress_keep_recent=4, llm_compress_provider=None, truncate_turns=1,
+            llm_compress_keep_recent_ratio=0.15, llm_compress_provider=None, truncate_turns=1,
             enforce_max_turns=-1, tool_schema_mode="full", max_context_tokens=2048,
             session_id="session-1", agent_hooks=object(),
         )

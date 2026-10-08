@@ -18,6 +18,7 @@ import asyncio
 import json
 import mimetypes
 import time
+from copy import deepcopy
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -37,8 +38,11 @@ from ..constants import DASHBOARD_UMO
 from . import contracts as c
 from . import tools_view
 from ._log import dump_raw_llm_output, dump_raw_llm_request
+from .chat_state import ChatStateStore
+from .context_state import ContextState
 from .history import visible_events
 from .store import SessionStore
+from .tasks import TaskStore
 
 if TYPE_CHECKING:
     from astrbot.api.star import Context
@@ -254,6 +258,12 @@ class SessionDriver:
         self.turn_started_at: float | None = None
         self.last_turn: dict = {}
         self._voice_sink = None
+        self.current_execution: dict = {}
+        self._followup_tickets: list[tuple[str, object, list]] = []
+        self._run_context: dict = {}
+        self._child_event = None
+        self._framework_stopped = False
+        self._message_prefix: list = []
 
 
     @property
@@ -263,6 +273,10 @@ class SessionDriver:
     @property
     def running(self) -> bool:
         return self.state == "running"
+
+    @property
+    def busy(self) -> bool:
+        return self.running or any(item["placement"] == "queued" for item in self.inbox)
 
     def _meta_update(self, **fields) -> None:
         self.log.update_meta(**fields)
@@ -289,10 +303,17 @@ class SessionDriver:
         self._kick()
         return item["id"]
 
-    def steer(self, text: str) -> str | None:
-        """steer：注入下一步。运行中走 runner.follow_up；空闲视作 queue。"""
+    def steer(self, text: str, followup_id: str = "", main_context: list | None = None) -> str | None:
+        """运行中可靠保存补充；空闲时由控制台显式排下一轮。"""
+        task_id = self.current_execution.get("task_id")
+        if self.running and task_id and not followup_id:
+            pending = self.registry.tasks.add_followup(task_id, text, ContextState(self.log.dir).load()["mainContext"])
+            followup_id = pending["id"]
+            main_context = pending["mainContext"]
         if self.running and self._steer_fn is not None:
             ticket = self._steer_fn(text)
+            if ticket is not None and followup_id:
+                self._followup_tickets.append((followup_id, ticket, main_context or []))
             if ticket is None:
                 return None
             item = {
@@ -303,6 +324,8 @@ class SessionDriver:
             self.inbox.append(item)
             self._publish_queue()
             return item["id"]
+        if self.running:
+            return "pending"
         self.enqueue(c.user_message([c.text_block(text)]), placement="queued")
         return "queued"
 
@@ -330,17 +353,15 @@ class SessionDriver:
         raise RpcError("queue-item-not-found", f"队列项不存在: {item_id}", {"itemId": item_id})
 
     def _steer_text(self, text: str) -> None:
-        if self.running and self._steer_fn is not None:
-            self._steer_fn(text)
-            self.inbox.append(
-                {"id": c.new_id(), "placement": "steering", "message": c.user_message([c.text_block(text)])}
-            )
-            self._publish_queue()
-        else:
-            self.enqueue(c.user_message([c.text_block(text)]))
+        self.steer(text)
 
     def request_stop(self) -> None:
         self._stop_requested = True
+        task_id = self.current_execution.get("task_id")
+        if task_id:
+            task = self.registry.tasks.get(task_id)
+            ids = [item["id"] for item in task["followups"] if item["status"] in {"pending", "scheduled"}]
+            self.registry.tasks.set_followup_status(task_id, ids, "cancelled")
         if self._stop_fn is not None:
             try:
                 self._stop_fn()
@@ -350,23 +371,23 @@ class SessionDriver:
         if not self.running:
             if not self.inbox:
                 return
-            stopped_task_ids = [
-                str((item.get("run_context") or {}).get("task_id") or "")
-                for item in self.inbox
-            ]
+            queued = list(self.inbox)
             self.inbox.clear()
-            self._settle_turn({"status": "stopped", "result": "", "error": "task stopped before execution"})
-            # 队列任务被取消也要在事件流留痕：前端与 maid_task_output 靠它感知终态。
-            for task_id in stopped_task_ids:
-                if task_id:
-                    try:
-                        event = self.log.append("maid/task", {"taskId": task_id, "status": "stopped-before-run"}, ignorable=True)
-                        self.registry.publish_event_frame(self.session_id, event)
-                    except Exception:  # noqa: BLE001
-                        pass
+            stopped_result = {"status": "stopped", "result": "", "error": "任务在执行前被停止。"}
+            self._settle_turn(stopped_result)
+            for item in queued:
+                execution = item.get("run_context") or {}
+                if execution.get("task_id"):
+                    self.current_execution = execution
+                    self.registry.settle_execution(self, stopped_result)
+                    stopped_event = self.log.append("maid/task", {"taskId": execution["task_id"], "status": "stopped-before-run"}, ignorable=True)
+                    self.registry.publish_event_frame(self.session_id, stopped_event)
             self.log.update_meta(activeTaskId="", deliveryStatus="stopped")
-            self.registry.notify_turn_terminal(self, self.last_turn)
             self._publish_queue()
+
+    def framework_stop(self) -> None:
+        self._framework_stopped = True
+        self.request_stop()
 
     def interrupt(self) -> None:
         """插件停用：标记 interrupted 并停循环。"""
@@ -432,15 +453,18 @@ class SessionDriver:
             self.inbox.remove(item)
             self._publish_queue()
             try:
+                self._run_context = item["run_context"] or self.registry.manual_execution(self, item["message"])
                 await self.run_turn(item["message"])
             except asyncio.CancelledError:
                 if self._interrupted:
+                    if self.current_execution.get("task_id"):
+                        self.registry.settle_execution(self, {"status": "interrupted", "error": "插件停用或进程中断。", "result": ""})
                     raise
                 logger.warning("[maid] turn 被看门狗取消: session=%s", self.session_id[:8])
                 async with self.log.lock:
                     await self._emit("turn/end", {"turn": self._count_turns(), "reason": c.reason_interrupted()})
                 self._settle_turn({"status": "interrupted", "error": "turn watchdog timeout", "result": ""})
-                self.registry.notify_turn_terminal(self, self.last_turn)
+                self.registry.settle_execution(self, self.last_turn)
                 for waiter in list(self._turn_result_waiters):
                     if not waiter.done():
                         waiter.set_result(dict(self.last_turn))
@@ -449,7 +473,7 @@ class SessionDriver:
                 async with self.log.lock:
                     await self._emit("turn/end", {"turn": self._count_turns(), "reason": c.reason_error(str(exc))})
                 self._settle_turn({"status": "failed", "error": str(exc), "result": ""})
-                self.registry.notify_turn_terminal(self, self.last_turn)
+                self.registry.settle_execution(self, self.last_turn)
             for waiter in list(self._turn_result_waiters):
                 if not waiter.done():
                     waiter.set_result(dict(self.last_turn))
@@ -483,6 +507,11 @@ class SessionDriver:
         """执行一个 turn。返回 {status, result, error}。"""
         turn = self._count_turns() + 1
         self.state = "running"
+        self.current_execution = deepcopy(self._run_context)
+        self._followup_tickets = []
+        self._framework_stopped = False
+        if self.current_execution.get("task_id"):
+            self.registry.tasks.mark_running(self.current_execution["task_id"], self.current_execution["round_id"])
         self.turn_started_at = time.monotonic()
         self._stop_requested = False
         self.registry.publish_host_frame(
@@ -500,9 +529,15 @@ class SessionDriver:
 
             result = await self._execute_turn(turn)
             self._settle_turn(result)
-            self.registry.notify_turn_terminal(self, result)
+            self.registry.settle_execution(self, result)
             return result
         finally:
+            if self._child_event is not None:
+                from astrbot.core.utils.active_event_registry import active_event_registry
+
+                self._child_event.cleanup_temporary_local_files()
+                active_event_registry.unregister(self._child_event)
+                self._child_event = None
             self.turn_started_at = None
             self.state = "idle"
             self.registry.publish_host_frame(
@@ -516,9 +551,10 @@ class SessionDriver:
         from ..maid_dispatcher import _build_runner
 
         context = self.registry.context
+        agent_max_step = self.registry.config.max_agent_steps
         agent_name = self.agent_name
         if not agent_name:
-            raise ValueError("会话缺少 subagent_type。")
+            raise ValueError("会话缺少配置的管家名称。")
         umo = self.umo
 
         handoff, resolved_name = self.registry.resolve_handoff(agent_name)
@@ -529,6 +565,16 @@ class SessionDriver:
             identity=meta.get("identity"),
         )
         child_event._maid_session_id = self.session_id
+        # 子执行注册进框架的活跃表，new/reset 触发的停止才能真正传到本轮 runner。
+        from astrbot.core.utils.active_event_registry import active_event_registry
+
+        from .events_shim import ScopedContext
+
+        self._child_event = child_event
+        active_event_registry.register(child_event)
+        active_event_registry.register_agent_stop_callback(child_event, self.framework_stop)
+        guarded_context = ScopedContext(context, self.delivery_allowed)
+        child_event._maid_context = guarded_context
         # 只有聊天来源的女仆往聊天里说话；控制台会话说给控制台听就够了。
         self._voice_sink = child_event if meta.get("sourceKind") == "chat" else None
 
@@ -545,14 +591,9 @@ class SessionDriver:
 
         toolset = self.registry.build_toolset(handoff=handoff, umo=umo, agent_name=resolved_name)
 
-        turn_start_seq = next(
-            (e["seq"] for e in reversed(self.log.read_events()) if e.get("type") == "turn/start"),
-            -1,
-        )
-        contexts = self._rebuild_contexts(turn_start_seq)
-        if contexts:
-            initial_contexts = contexts
-        else:
+        context_state = ContextState(self.log.dir)
+        initial_contexts = context_state.prepare(self.current_execution.get("main_context"))
+        if not initial_contexts:
             from ..maid_dispatcher import _normalize_begin_dialogs
 
             initial_contexts = _normalize_begin_dialogs(getattr(handoff.agent, "begin_dialogs", None))
@@ -567,7 +608,7 @@ class SessionDriver:
         hooks = _TurnHooks(self, step_holder)
 
         runner = await _build_runner(
-            context=context,
+            context=guarded_context,
             event=child_event,
             provider=provider,
             prompt=prompt_text,
@@ -578,16 +619,19 @@ class SessionDriver:
             stream=bool(provider_settings.get("streaming_response", False)),
             tool_call_timeout=self.registry.safe_int(provider_settings.get("tool_call_timeout", 60), 60),
             llm_compress_instruction=str(provider_settings.get("llm_compress_instruction", "") or ""),
-            llm_compress_keep_recent=self.registry.safe_int(provider_settings.get("llm_compress_keep_recent", 4), 4),
+            llm_compress_keep_recent_ratio=float(provider_settings["llm_compress_keep_recent_ratio"]),
             llm_compress_provider=self.registry.compress_provider(provider_settings),
             truncate_turns=self.registry.safe_int(provider_settings.get("dequeue_context_length", 1), 1),
             enforce_max_turns=self.registry.safe_int(provider_settings.get("max_context_length", -1), -1),
             tool_schema_mode=str(provider_settings.get("tool_schema_mode", "full") or "full"),
-            max_context_tokens=self.registry.provider_max_context_tokens(provider),
+            max_context_tokens=self.registry.provider_max_context_tokens(provider) or provider_settings["fallback_max_context_tokens"],
             session_id=self.session_id,
             agent_hooks=hooks,
         )
 
+        scheduled = self.current_execution.get("followup_ids", [])
+        if scheduled:
+            self.registry.tasks.set_followup_status(self.current_execution["task_id"], scheduled, "consumed")
         if getattr(self.registry.config, "log_raw_llm_io", False):
             dump_raw_llm_request(getattr(runner, "req", None), source="maid")
 
@@ -597,22 +641,23 @@ class SessionDriver:
             runner_obj = runner_holder.get("runner")
             if runner_obj is None:
                 return None
-            ticket = runner_obj.follow_up(message_text=text)
-            return str(getattr(ticket, "seq", "")) if ticket is not None else None
+            return runner_obj.follow_up(message_text=text)
 
         def _stop_handler():
             runner.request_stop()
 
         self._steer_fn = _steer_handler
         self._stop_fn = _stop_handler
+        if self._stop_requested:
+            runner.request_stop()
 
-        agent_max_step = self.registry.safe_int(provider_settings.get("max_agent_step", 30), 30)
         status = "completed"
         error_text = ""
         final_text = ""
         max_step_hit = False
         try:
-            persisted = len(getattr(runner.run_context, "messages", []) or [])
+            self._message_prefix = list(runner.run_context.messages)
+            persisted = len(self._message_prefix)
             prev_usage = _usage_value(getattr(getattr(runner, "stats", None), "token_usage", None))
             step = 0
             chunk_index: dict[str, int] = {}
@@ -637,6 +682,8 @@ class SessionDriver:
                     await hooks.close_unfinished()
                     async with self.log.lock:
                         await self._emit("step/end", {"turn": turn, "step": step})
+                self._sync_followup_consumption(context_state)
+                context_state.capture(runner.run_context.messages, system_prompt)
                 self._clear_steering_items()
                 if stop_requested_flag():
                     break
@@ -681,9 +728,9 @@ class SessionDriver:
             elif stop_requested_flag():
                 reason = c.reason_aborted("user")
                 status = "stopped"
-            elif max_step_hit and not runner.done():
-                reason = c.reason_max_tokens()
-                status = "completed"
+            elif max_step_hit:
+                reason = {"kind": "step-limit", "limit": agent_max_step}
+                status = "step_limit"
             else:
                 reason = c.reason_completed()
         except Exception as exc:  # noqa: BLE001
@@ -693,6 +740,8 @@ class SessionDriver:
             error_text = str(exc)
             final_text = ""
         finally:
+            self._sync_followup_consumption(context_state)
+            context_state.capture(runner.run_context.messages, system_prompt)
             self._steer_fn = None
             self._stop_fn = None
             await hooks.close_unfinished()
@@ -702,11 +751,34 @@ class SessionDriver:
         async with self.log.lock:
             await self._emit("turn/end", {"turn": turn, "reason": reason})
 
+        context_state.checkpoint(turn)
         if turn == 1:
             self.registry.schedule_title_generation(self, prompt_text)
 
         return {"status": status, "result": final_text, "error": error_text}
 
+
+    def delivery_allowed(self) -> bool:
+        if self._framework_stopped or self._interrupted:
+            return False
+        epoch = self.current_execution.get("epoch")
+        if epoch is None or epoch == "console":
+            return True
+        state = self.registry.chats.get(self.umo)
+        return state is not None and state["epoch"] == epoch and epoch not in self.registry.invalid_epochs
+
+    def _sync_followup_consumption(self, context_state: ContextState) -> None:
+        task_id = self.current_execution.get("task_id")
+        if not task_id:
+            return
+        remaining = []
+        for followup_id, ticket, main_context in self._followup_tickets:
+            if getattr(ticket, "consumed", False):
+                self.registry.tasks.set_followup_status(task_id, [followup_id], "consumed")
+                context_state.mark_main_synced(main_context)
+            else:
+                remaining.append((followup_id, ticket, main_context))
+        self._followup_tickets = remaining
 
     async def _emit(self, event_type: str, data: dict, view: dict | None = None, **extra) -> dict:
         event = self.log.append(event_type, data, **extra)
@@ -749,10 +821,16 @@ class SessionDriver:
         使 call/result/assistant block 三方同 id 配对。
         """
         messages = getattr(getattr(runner, "run_context", None), "messages", []) or []
-        provider = getattr(runner, "_provider", None)
+        provider = getattr(runner, "provider", None)
         provider_meta = provider.meta() if callable(getattr(provider, "meta", None)) else None
         provider_name = str(getattr(provider_meta, "id", "") or self.registry.fallback_provider_name)
         model_name = str(getattr(provider_meta, "model", "") or "")
+        if self._message_prefix and messages[:len(self._message_prefix)] != self._message_prefix:
+            # 压缩后旧长度不再是新消息起点，定位本步追加的最后一条 assistant。
+            old_ids = {id(item) for item in self._message_prefix}
+            new_assistants = [index for index, item in enumerate(messages) if getattr(item, "role", "") == "assistant" and id(item) not in old_ids]
+            persisted = new_assistants[-1] if new_assistants else len(messages)
+        self._message_prefix = list(messages)
         for message in messages[persisted:]:
             role = getattr(message, "role", "")
             if role in ("tool", "system"):
@@ -893,24 +971,6 @@ class SessionDriver:
                 delivery = "failed"
         return {"attachment": ref, "delivery": delivery}
 
-    async def claim_delivery(self) -> bool:
-        """原子认领「这份汇报由我转达」。已被认领过则返回 False。
-
-        两个抢的人：turn 终态的通知回灌，和大小姐主动调 maid_task_output 读
-        终态。谁先拿到谁负责，另一个闭嘴，否则同一份结论会转述两遍。读改写
-        必须在 log.lock 里做——两边各自持有的外层锁不是同一把。
-        """
-        async with self.log.lock:
-            if self.log.load_meta().get("deliveryClaimed"):
-                return False
-            self.log.update_meta(deliveryClaimed=True)
-            return True
-
-    async def release_delivery_claim(self) -> None:
-        """投递失败时归还认领，留出重试机会。"""
-        async with self.log.lock:
-            self.log.update_meta(deliveryClaimed=False)
-
     async def _speak(self, text: str) -> None:
         """把女仆的一段正文即时投递到聊天。"""
         text = (text or "").strip()
@@ -935,70 +995,6 @@ class SessionDriver:
             self._publish_queue()
 
 
-    def _rebuild_contexts(self, before_seq: int) -> list:
-        """从事件日志重建 runner contexts（只取 seq < before_seq 的可见 surface）。"""
-        from astrbot.core.agent.message import Message
-        from astrbot.core.agent.message import ToolCall as CoreToolCall
-
-        contexts: list[Message] = []
-        for event in visible_events(self.log.read_events()):
-            if event["seq"] >= before_seq:
-                break
-            etype = event.get("type")
-            data = event.get("data", {})
-            if etype == "user/message":
-                text = "".join(
-                    block.get("text", "")
-                    for block in data.get("content", [])
-                    if block.get("type") == "text"
-                )
-                contexts.append(Message(role="user", content=text or "(空)"))
-            elif etype == "assistant/message":
-                message = data.get("message") or {}
-                text = ""
-                tool_calls: list[CoreToolCall] = []
-                for block in message.get("content", []):
-                    if block.get("type") == "text":
-                        text += block.get("text", "")
-                    elif block.get("type") == "tool-call":
-                        tool_calls.append(
-                            CoreToolCall(
-                                id=block.get("id") or c.new_id(),
-                                function=CoreToolCall.FunctionBody(
-                                    name=block.get("name") or "",
-                                    arguments=block.get("arguments") or "{}",
-                                ),
-                            )
-                        )
-                if tool_calls:
-                    contexts.append(
-                        Message(role="assistant", content=text or None, tool_calls=tool_calls)
-                    )
-                elif text:
-                    contexts.append(Message(role="assistant", content=text))
-            elif etype == "tool/result":
-                message = data.get("message") or {}
-                block = (message.get("content") or [{}])[0] if message.get("content") else {}
-                result_content = block.get("content", []) if isinstance(block, dict) else []
-                text = "".join(
-                    part.get("text", "")
-                    for part in result_content
-                    if isinstance(part, dict) and part.get("type") == "text"
-                )
-                contexts.append(
-                    Message(
-                        role="tool",
-                        content=text or "(空)",
-                        tool_call_id=block.get("toolCallId", "") if isinstance(block, dict) else "",
-                    )
-                )
-
-        while contexts and contexts[-1].role == "assistant" and contexts[-1].tool_calls:
-            contexts.pop()
-            while contexts and contexts[-1].role == "tool":
-                contexts.pop()
-        return contexts
-
     def _prompt_text_of_last_user_message(self) -> str:
         events = self.log.read_events()
         for event in reversed(events):
@@ -1010,7 +1006,7 @@ class SessionDriver:
                     if block.get("type") == "text"
                 )
                 files = [block.get("attachment") or {} for block in blocks if block.get("type") == "file"]
-                references = self.store.attachment_prompt_text(self.session_id, files)
+                references = self.registry.store.attachment_prompt_text(self.session_id, files)
                 return f"{text}\n\n[Attached files]\n{references}" if references else text
         return ""
 
@@ -1040,6 +1036,11 @@ class DriverRegistry:
         config: Any,
     ):
         self.context = context
+        self.invalid_epochs: set[str] = set()
+        self.tasks = TaskStore(store.root)
+        self.chats = ChatStateStore(store.root, self.tasks)
+        self.tasks.interrupt_active()
+        self.chats.recover()
         self.store = store
         self.mux_hub = mux_hub
         self.host_hub = host_hub
@@ -1055,6 +1056,8 @@ class DriverRegistry:
             return driver
         if not self.store.exists(session_id):
             return None
+        if self.store.log(session_id).load_header().get("version") != c.SESSION_FORMAT_VERSION:
+            raise ValueError("旧 session 格式不受支持，不从展示日志恢复上下文。")
         driver = SessionDriver(self, session_id)
         driver.heal_orphan_turn()
         self.drivers[session_id] = driver
@@ -1067,15 +1070,68 @@ class DriverRegistry:
         return driver
 
     def running_count(self) -> int:
-        return sum(1 for d in self.drivers.values() if d.running)
+        return sum(1 for d in self.drivers.values() if d.busy)
 
     def running_count_for_umo(self, umo: str) -> int:
-        return sum(1 for d in self.drivers.values() if d.running and d.umo == umo)
+        return sum(1 for d in self.drivers.values() if d.busy and d.umo == umo)
 
     def capacity_available(self, umo: str) -> bool:
         per_umo = int(getattr(self.config, "max_active_per_umo", 5) or 5)
         global_cap = int(getattr(self.config, "max_active_global", 20) or 20)
         return self.running_count_for_umo(umo) < per_umo and self.running_count() < global_cap
+
+    def drop_context_binding(self, session_id: str) -> None:
+        for path in self.chats.root.glob("*.json"):
+            state = json.loads(path.read_text(encoding="utf-8"))
+            removed = [branch for branch, sid in state["branches"].items() if sid == session_id]
+            if not removed:
+                continue
+            for branch in removed:
+                del state["branches"][branch]
+            if state["defaultBranch"] in removed:
+                state["defaultBranch"] = None
+            self.chats.save(state)
+
+    def manual_execution(self, driver: SessionDriver, message: dict) -> dict:
+        """控制台手动选择 session 不经自动路由，但仍拥有独立 task。"""
+        request = "".join(part.get("text", "") for part in message.get("content", []) if part.get("type") == "text")
+        state = self.chats.get(driver.umo)
+        epoch = state["epoch"] if state is not None else "console"
+        task = self.tasks.create(scope=self.chats.key(driver.umo), epoch=epoch, branch=driver.log.load_meta().get("branchId", driver.session_id), request=request)
+        execution = self.tasks.start_round(task["taskId"], driver.session_id, request)
+        driver.log.update_meta(activeTaskId=task["taskId"])
+        if state is not None:
+            self.chats.begin(state)
+        return {"task_id": task["taskId"], "round_id": execution["roundId"], "epoch": epoch, "conversation_id": state["conversationId"] if state is not None else "", "main_context": None}
+
+    def settle_execution(self, driver: SessionDriver, result: dict) -> None:
+        execution = deepcopy(driver.current_execution)
+        task_id = execution.get("task_id")
+        if not task_id:
+            self.notify_turn_terminal(driver, result)
+            return
+        task = self.tasks.get(task_id)
+        stopped = result["status"] in {"stopped", "interrupted"}
+        pending = self.tasks.pending(task_id)
+        if stopped:
+            self.tasks.set_followup_status(task_id, [item["id"] for item in pending], "cancelled")
+            pending = []
+        finished = self.tasks.finish(task_id, execution["round_id"], result, pending=bool(pending))
+        notification = {**deepcopy(result), **execution, "round": finished, "description": task["description"], "delivery_cancelled": driver._framework_stopped}
+        self.notify_turn_terminal(driver, notification)
+        state = self.chats.get(driver.umo)
+        if pending and (state is None or state["epoch"] == execution["epoch"]) and execution["epoch"] not in self.invalid_epochs:
+            self.tasks.set_followup_status(task_id, [item["id"] for item in pending], "scheduled")
+            request = "\n\n".join(item["content"] for item in pending)
+            # 先释放上一轮状态，再为同一 task 创建补跑轮次。
+            task = self.tasks.get(task_id)
+            task["status"] = result["status"]
+            self.tasks.save(task)
+            next_round = self.tasks.start_round(task_id, driver.session_id, request)
+            follow_context = {**execution, "round_id": next_round["roundId"], "main_context": pending[-1]["mainContext"] if state is not None else None, "followup_ids": [item["id"] for item in pending]}
+            driver.enqueue(c.user_message([c.text_block(request)]), run_context=follow_context)
+        elif state is not None and state["epoch"] == execution["epoch"]:
+            self.chats.settle(state)
 
     def notify_turn_terminal(self, driver: SessionDriver, result: dict) -> None:
         callback = self.on_turn_terminal
@@ -1086,6 +1142,8 @@ class DriverRegistry:
         task.add_done_callback(self._background_tasks.discard)
 
         def _log_terminal_failure(done: asyncio.Task) -> None:
+            if done.cancelled():
+                return
             exc = done.exception()
             if exc is not None:
                 logger.error("[maid] turn 终态回调失败: session=%s err=%s", driver.session_id[:8], exc)
@@ -1162,7 +1220,11 @@ class DriverRegistry:
         )
 
     def build_system_prompt(self, handoff, umo: str, agent_name: str) -> str:
-        from ..toolset_adapter import _agent_memory_enabled, get_memory_dir, load_memory_index_inline
+        from ..toolset_adapter import (
+            _agent_memory_enabled,
+            get_memory_dir,
+            load_memory_index_inline,
+        )
 
         system_prompt = getattr(handoff.agent, "instructions", "") or ""
         if _agent_memory_enabled(getattr(self.config, "memory_agent_names", None), agent_name):
@@ -1178,9 +1240,9 @@ class DriverRegistry:
         return system_prompt
 
     def load_provider_settings(self, umo: str) -> dict:
-        from ..toolset_adapter import _load_provider_settings
+        from ..toolset_adapter import load_execution_settings
 
-        return _load_provider_settings(self.context, umo)
+        return load_execution_settings(self.context, umo)
 
     def compress_provider(self, provider_settings: dict):
         from ..maid_dispatcher import _get_compress_provider

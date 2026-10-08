@@ -1,15 +1,15 @@
 {
   "allowed_agent_names": {
     "description": "允许调度的 Agent 白名单",
-    "hint": "maid_agent 和控制台创建任务只能使用这些 subagent 名称。每次任务必须显式选择一个名称；不能为空。",
+    "hint": "默认管家与控制台可选 subagent 的名单；模型工具不再要求显式选择名称。",
     "type": "list",
     "default": [
       "butler"
     ]
   },
   "default_agent_name": {
-    "description": "默认回退 Agent",
-    "hint": "maid_agent 指定的名称不在 allowed_agent_names 内时，任务回退到该 subagent。必须属于白名单。",
+    "description": "模型任务使用的默认管家",
+    "hint": "模型不需要填写子代理名称，统一使用此配置；控制台仍可手动选择。必须属于白名单。",
     "type": "string",
     "default": "butler"
   },
@@ -63,19 +63,19 @@
   },
   "max_active_per_umo": {
     "description": "每个会话最大并发活跃 run 数",
-    "hint": "同一会话同时处于 starting/running 的 foreground 与 background run 总上限。超过立即拒绝，不排队。",
+    "hint": "同一聊天来源活跃子任务上限，启动中和自动补跑也占容量。超限立即拒绝，不把普通派发暗中排队。",
     "type": "int",
     "default": 5
   },
   "max_active_global": {
     "description": "全局最大并发活跃 run 数",
-    "hint": "所有会话合计的 foreground 与 background 活跃 run 上限。超过立即拒绝。",
+    "hint": "所有聊天来源和控制台合计的活跃子任务上限，包含启动中状态。",
     "type": "int",
     "default": 20
   },
   "retention_days": {
     "description": "runtime 轨迹保留天数",
-    "hint": "超过该天数无活动的 agent（含 transcript/runs/outputs）会被清理。memory 目录不受影响。",
+    "hint": "工作 session 的历史保留天数；上下文删除不作废 task 身份，持久记忆目录不受影响。",
     "type": "int",
     "default": 30
   },
@@ -90,5 +90,17 @@
     "hint": "控制台上传和 Agent 交付文件共用此上限。文件以随机 ID 保存，并仅可由所属会话下载。",
     "type": "int",
     "default": 25
+  },
+  "max_agent_steps": {
+    "description": "子代理执行轮数上限",
+    "hint": "插件独立控制每个执行轮次的工具循环预算，不读取 AstrBot 轮数设置。达到上限返回限额收尾，不视为正常完成；下一轮生效。",
+    "type": "int",
+    "default": 128
+  },
+  "session_idle_timeout_hours": {
+    "description": "工作上下文空闲保留时长（小时）",
+    "hint": "默认五小时，可填写正数小时。全部任务结束后开始计时，任意插件工具调用刷新；运行期间不计时。到期刷新 session，不作废任务编号。",
+    "type": "float",
+    "default": 5.0
   }
 }

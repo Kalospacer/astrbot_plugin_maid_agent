@@ -9,15 +9,13 @@ from __future__ import annotations
 
 import base64
 import json
-from typing import Any
 
-from ._log import logger
-
+from ..config import ConfigValidationError
 from ..constants import DASHBOARD_UMO
 from . import contracts as c
-from . import tools_view
+from ._log import logger
+from .context_state import ContextState
 from .history import derive_surface, history_page, visible_events
-from ..config import ConfigValidationError
 from .rpc import RpcError, bad_request, session_not_found
 from .store import new_session_id
 
@@ -31,13 +29,14 @@ SETTINGS_KEYS = {
     "include_raw_user_input",
     "log_raw_llm_io",
     "dispatch_prompt_template",
-    "dispatch_session_mode",
     "memory_agent_names",
     "max_active_per_umo",
     "max_active_global",
     "retention_days",
     "max_turn_seconds",
     "max_upload_mb",
+    "max_agent_steps",
+    "session_idle_timeout_hours",
 }
 
 
@@ -285,12 +284,13 @@ class ApiProxy:
         session_id = str(payload.get("sessionId") or "")
         self._require_session(session_id)
         driver = self.registry.drivers.get(session_id)
-        if driver is not None and driver.running:
+        if driver is not None and driver.busy:
             raise RpcError(
                 "session-running",
                 "运行中的会话不能删除，请先停止任务。",
                 {"sessionId": session_id},
             )
+        self.registry.drop_context_binding(session_id)
         self.store.delete_session(session_id)
         self.registry.drivers.pop(session_id, None)
         self.registry.publish_host_frame(c.frame_host_session_removed(session_id))
@@ -305,7 +305,6 @@ class ApiProxy:
 
         if at_seq is not None:
             boundary = None
-            open_turn = False
             turn_open = False
             for event in events:
                 if event.get("type") == "turn/start":
@@ -326,6 +325,14 @@ class ApiProxy:
             if last_end is not None:
                 events = [e for e in events if e["seq"] <= last_end]
 
+        last_completed = next((e for e in reversed(events) if e.get("type") == "turn/end"), None)
+        if last_completed is None:
+            raise RpcError("fork-unavailable", "没有已完成的轮次可供分支。", {"sessionId": session_id})
+        try:
+            seed_context = ContextState(log.dir).fork_state(int(last_completed["data"]["turn"]))
+        except ValueError as exc:
+            raise RpcError("fork-unavailable", str(exc), {"sessionId": session_id}) from exc
+
         header = log.load_header() or {}
         meta = log.load_meta()
         child = self.store.create_session(
@@ -333,15 +340,25 @@ class ApiProxy:
             agent_preset=header.get("agentPreset"),
             seed_events=events,
             meta={
-                "umo": meta.get("umo", ""),
-                "senderId": meta.get("senderId", ""),
+                "umo": DASHBOARD_UMO,
+                "senderId": "dashboard",
+                "sourceKind": "dashboard",
+                "notify": False,
                 "agentName": meta.get("agentName", ""),
             },
         )
+        ContextState(child.dir).seed(seed_context)
+        child_context = ContextState(child.dir)
+        child_context.checkpoint(sum(1 for e in events if e.get("type") == "turn/start"))
+        from shutil import copytree
+
+        parent_attachments = self.store.attachments_dir / session_id
+        if parent_attachments.exists():
+            copytree(parent_attachments, self.store.attachments_dir / child.session_id)
         driver = self.registry.attach(child.session_id)
-        driver.umo = str(meta.get("umo") or "")
+        driver.umo = DASHBOARD_UMO
         driver.agent_name = str(meta.get("agentName") or "")
-        driver.sender_id = str(meta.get("senderId") or "")
+        driver.sender_id = "dashboard"
         self.registry.publish_host_frame(
             c.frame_host_session_added(child.session_id, True, parentSessionId=session_id, agentPreset=header.get("agentPreset"))
         )

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
+from math import isfinite
 from string import Formatter
 from typing import Any
 
@@ -17,6 +18,8 @@ DEFAULT_MAX_ACTIVE_GLOBAL = 20
 DEFAULT_RETENTION_DAYS = 30
 DEFAULT_MAX_TURN_SECONDS = 1800
 DEFAULT_MAX_UPLOAD_MB = 25
+DEFAULT_MAX_AGENT_STEPS = 128
+DEFAULT_SESSION_IDLE_TIMEOUT_HOURS = 5.0
 MAID_AGENT_PERSONA = (
     "你是MuiceMaid，大小姐的管家。你的任务是完成大小姐交给你的请求，"
     "并使用你拥有的工具达成目的；遇到不确定信息时直接说明，不编造结果。"
@@ -51,6 +54,8 @@ class MaidModeConfig:
     retention_days: int = DEFAULT_RETENTION_DAYS
     max_turn_seconds: int = DEFAULT_MAX_TURN_SECONDS
     max_upload_mb: int = DEFAULT_MAX_UPLOAD_MB
+    max_agent_steps: int = DEFAULT_MAX_AGENT_STEPS
+    session_idle_timeout_hours: float = DEFAULT_SESSION_IDLE_TIMEOUT_HOURS
 
 
 def _safe_int(value: Any, default: int) -> int:
@@ -146,6 +151,25 @@ def _tolerant_template(cfg: Mapping[str, Any]) -> str:
         return DEFAULT_DISPATCH_PROMPT_TEMPLATE
 
 
+def _tolerant_idle_timeout(cfg: Mapping[str, Any], default: float) -> float:
+    value = cfg.get("session_idle_timeout_hours", default)
+    try:
+        hours = _idle_timeout(value)
+    except ConfigValidationError:
+        logger.warning("[maid] 配置项 session_idle_timeout_hours 无效，已改用默认值: %r", value)
+        return default
+    return hours
+
+
+def _idle_timeout(value: Any) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ConfigValidationError({"session_idle_timeout_hours": "必须是正数小时。"})
+    hours = float(value)
+    if not isfinite(hours) or hours <= 0:
+        raise ConfigValidationError({"session_idle_timeout_hours": "必须是有限正数小时。"})
+    return hours
+
+
 def load_maid_mode_config(config: Mapping[str, Any] | None = None, *, strict: bool = True) -> MaidModeConfig:
     """加载插件配置。
 
@@ -186,6 +210,8 @@ def load_maid_mode_config(config: Mapping[str, Any] | None = None, *, strict: bo
             retention_days=_tolerant_int(cfg, "retention_days", DEFAULT_RETENTION_DAYS, minimum=1),
             max_turn_seconds=_tolerant_int(cfg, "max_turn_seconds", DEFAULT_MAX_TURN_SECONDS, minimum=0),
             max_upload_mb=_tolerant_int(cfg, "max_upload_mb", DEFAULT_MAX_UPLOAD_MB, minimum=1),
+            max_agent_steps=_tolerant_int(cfg, "max_agent_steps", DEFAULT_MAX_AGENT_STEPS, minimum=1),
+            session_idle_timeout_hours=_tolerant_idle_timeout(cfg, DEFAULT_SESSION_IDLE_TIMEOUT_HOURS),
         )
     allowed = _strict_names(cfg.get("allowed_agent_names", DEFAULT_ALLOWED_AGENT_NAMES), "allowed_agent_names", allow_empty=False)
     default_name = str(cfg.get("default_agent_name", DEFAULT_MAID_AGENT_NAME) or "").strip()
@@ -217,6 +243,8 @@ def load_maid_mode_config(config: Mapping[str, Any] | None = None, *, strict: bo
         retention_days=_strict_int(cfg, "retention_days", DEFAULT_RETENTION_DAYS, minimum=1),
         max_turn_seconds=_strict_int(cfg, "max_turn_seconds", DEFAULT_MAX_TURN_SECONDS, minimum=0),
         max_upload_mb=_strict_int(cfg, "max_upload_mb", DEFAULT_MAX_UPLOAD_MB, minimum=1),
+        max_agent_steps=_strict_int(cfg, "max_agent_steps", DEFAULT_MAX_AGENT_STEPS, minimum=1),
+        session_idle_timeout_hours=_idle_timeout(cfg.get("session_idle_timeout_hours", DEFAULT_SESSION_IDLE_TIMEOUT_HOURS)),
     )
 
 

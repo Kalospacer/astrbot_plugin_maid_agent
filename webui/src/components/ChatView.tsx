@@ -381,6 +381,17 @@ const ChatNodeView = memo(function ChatNodeView(props: {
           </div>
         </div>
       ) : null}
+      {reasonKind === "step-limit" ? (
+        <div className="turn-error-row" role="status">
+          <StateDot state="warning" className="state-dot" />
+          <div className="turn-error-copy">
+            <span className="turn-error-title">已达到子代理执行轮数上限</span>
+            <span className="turn-error-message">
+              本轮因插件配置的执行预算收尾，工作不一定完成；已有结果保留，可继续任务或调整轮数设置。
+            </span>
+          </div>
+        </div>
+      ) : null}
       {reasonKind === "max-tokens" ? (
         <div className="turn-error-row" role="status">
           <StateDot state="warning" className="state-dot" />

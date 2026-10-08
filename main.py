@@ -7,12 +7,11 @@ from __future__ import annotations
 
 import asyncio
 import json
-from urllib.parse import quote
 import time
-import uuid
 from dataclasses import asdict
 from inspect import isawaitable
 from pathlib import Path
+from urllib.parse import quote
 
 from quart import jsonify, make_response, request
 
@@ -21,18 +20,16 @@ from astrbot.api.event import filter
 from astrbot.api.star import Star, StarTools
 from astrbot.core.utils.history_saver import persist_agent_history
 
-from .config import _safe_int, load_maid_mode_config, render_dispatch_prompt
+from .config import _safe_int, load_maid_mode_config
 from .constants import (
-    DISPATCHED_NEXT_STEP,
-    RUNNING_NEXT_STEP,
     MAID_AGENT_TOOL_NAME,
+    MAID_DELIVER_FILE_TOOL_NAME,
     MAID_LIST_AGENTS_TOOL_NAME,
+    MAID_NOTIFICATION_ID_META_KEY,
+    MAID_NOTIFICATION_IDS_META_KEY,
     MAID_SEND_MESSAGE_TOOL_NAME,
     MAID_TASK_OUTPUT_TOOL_NAME,
     MAID_TASK_STOP_TOOL_NAME,
-    MAID_DELIVER_FILE_TOOL_NAME,
-    MAID_NOTIFICATION_ID_META_KEY,
-    MAID_NOTIFICATION_IDS_META_KEY,
     PLUGIN_DATA_DIR_NAME,
     RAW_INPUT_EXTRA_KEY,
     TRUE_USER_INPUT_EXTRA_KEY,
@@ -40,8 +37,8 @@ from .constants import (
 from .harness import contracts as c
 from .harness._log import dump_raw_llm_output, dump_raw_llm_request
 from .harness.api import ApiProxy
+from .harness.chat_dispatch import MAIN_CONTEXT_KEY, MAIN_REQUEST_KEY, ChatRuntime
 from .harness.drivers import DriverRegistry
-from .harness.events_shim import identity_from_event, image_paths_from_event
 from .harness.hub import StreamHub, sse_frame
 from .harness.rpc import (
     client_response_receipt,
@@ -57,7 +54,7 @@ from .katex_fonts import materialize_katex_fonts
 from .maid_dispatcher import ensure_default_subagent
 from .toolset_adapter import apply_main_tool_policy
 
-__version__ = "2.0.67"
+__version__ = "2.0.68"
 
 _SETTINGS_SCHEMA_CACHE: dict | None = None
 
@@ -115,13 +112,14 @@ class MaidAgent(Star):
         self._active_asyncio_tasks: set[asyncio.Task] = set()
 
         data_root = Path(StarTools.get_data_dir(PLUGIN_DATA_DIR_NAME))
-        self.store = SessionStore(data_root)
+        self.store = SessionStore(data_root / "runtime_v3")
         self.mux_hub = StreamHub("mux")
         self.host_hub = StreamHub("host")
         self.registry = DriverRegistry(
             self.context, self.store, self.mux_hub, self.host_hub, self.maid_mode_config
         )
         self.registry.on_turn_terminal = self._on_turn_terminal
+        self.chat_runtime = ChatRuntime(self)
         self.api = ApiProxy(store=self.store, registry=self.registry, config_holder=_ConfigHolder(self))
 
 
@@ -180,6 +178,7 @@ class MaidAgent(Star):
                 try:
                     removed = self.store.retention_prune(self.maid_mode_config.retention_days)
                     for sid in removed:
+                        self.registry.drop_context_binding(sid)
                         self.registry.drivers.pop(sid, None)
                     if removed:
                         logger.info("[maid] retention 清理 %d 个会话", len(removed))
@@ -402,28 +401,19 @@ class MaidAgent(Star):
                 "type": "object",
                 "additionalProperties": False,
                 "properties": {
-                    "prompt": {
-                        "type": "string",
-                        "description": "Self-contained task request for one agent.",
-                    },
-                    "subagent_type": {"type": "string", "description": "Configured subagent name."},
-                    "resume_agent_id": {"type": "string", "description": "Existing maid agent ID to continue."},
+                    "prompt": {"type": "string", "description": "Request for one task; idle work context is reused automatically."},
+                    "task_id": {"type": "string", "description": "Existing task to continue after it finishes; not a session ID."},
+                    "force_new": {"type": "boolean", "description": "Explicitly create an independent branch, including while another task runs."},
                     "tasks": {
-                        "type": "array",
-                        "minItems": 1,
-                        "maxItems": 5,
+                        "type": "array", "minItems": 2, "maxItems": 5,
+                        "description": "Explicit batch of independent new tasks; does not require force_new.",
                         "items": {
-                            "type": "object",
-                            "additionalProperties": False,
-                            "properties": {
-                                "prompt": {"type": "string", "minLength": 1},
-                                "subagent_type": {"type": "string", "minLength": 1},
-                            },
-                            "required": ["prompt", "subagent_type"],
+                            "type": "object", "additionalProperties": False,
+                            "properties": {"prompt": {"type": "string", "minLength": 1}},
+                            "required": ["prompt"],
                         },
                     },
                 },
-                "required": ["prompt", "subagent_type"],
             }
         send_tool = manager.get_func(MAID_SEND_MESSAGE_TOOL_NAME) if manager else None
         if send_tool is not None:
@@ -431,10 +421,10 @@ class MaidAgent(Star):
                 "type": "object",
                 "additionalProperties": False,
                 "properties": {
-                    "agent_id": {"type": "string"},
+                    "task_id": {"type": "string", "description": "Running task to supplement; required when multiple targets exist."},
                     "message": {"type": "string", "minLength": 1},
                 },
-                "required": ["agent_id", "message"],
+                "required": ["message"],
             }
         output_tool = manager.get_func(MAID_TASK_OUTPUT_TOOL_NAME) if manager else None
         if output_tool is not None:
@@ -474,6 +464,7 @@ class MaidAgent(Star):
         maid 自己的工具。dump 放在策略之后，日志里看到的就是过滤后的工具列表。
         配置实时读取：改配置后下一次请求立即生效，无需重启。
         """
+        _event.set_extra(MAIN_REQUEST_KEY, req)
         cfg = self.maid_mode_config
         if req.func_tool is not None and (cfg.hide_native_tools or cfg.hide_transfer_tools):
             apply_main_tool_policy(
@@ -483,6 +474,11 @@ class MaidAgent(Star):
             )
         if cfg.log_raw_llm_io:
             dump_raw_llm_request(req, source="main")
+
+    @filter.on_agent_begin()
+    async def _capture_main_context(self, event, run_context) -> None:
+        """在派发工具运行时读取同一 runner 的当前有效消息。"""
+        event.set_extra(MAIN_CONTEXT_KEY, run_context)
 
     @filter.on_llm_response()
     async def _log_main_llm_response(self, _event, resp) -> None:
@@ -494,26 +490,14 @@ class MaidAgent(Star):
     def _json_outcome(payload: dict) -> str:
         return json.dumps(payload, ensure_ascii=False)
 
-    def _find_agent_for_task(self, task_id: str) -> str:
-        if not task_id:
-            return ""
-        for sid in self.store.list_session_ids():
-            log = self.store.log(sid)
-            if any(
-                e.get("type") == "maid/task" and e.get("data", {}).get("taskId") == task_id
-                for e in log.read_events()
-            ):
-                return sid
-        return ""
-
-    def _create_chat_agent(self, umo: str, subagent_type: str, *, dispatch_id: str, identity: dict) -> str:
+    def _create_chat_agent(self, umo: str, agent_name: str, *, dispatch_id: str, identity: dict) -> str:
         sender_id = str(identity.get("senderId") or "chat")
         log = self.store.create_session(
-            agent_preset=subagent_type,
+            agent_preset=agent_name,
             meta={
                 "umo": umo,
                 "senderId": sender_id,
-                "agentName": subagent_type,
+                "agentName": agent_name,
                 "agentId": "",
                 "dispatchId": dispatch_id,
                 "sourceKind": "chat",
@@ -525,194 +509,44 @@ class MaidAgent(Star):
         )
         log.update_meta(agentId=log.session_id)
         driver = self.registry.attach(log.session_id)
-        driver.umo, driver.agent_name, driver.sender_id = umo, subagent_type, sender_id
+        driver.umo, driver.agent_name, driver.sender_id = umo, agent_name, sender_id
         self.registry.publish_host_frame(
             c.frame_host_session_added(
-                log.session_id, True, agentPreset=subagent_type,
+                log.session_id, True, agentPreset=agent_name,
                 sourceKind="chat", dispatchId=dispatch_id,
             )
         )
         return log.session_id
 
     @filter.llm_tool(name=MAID_AGENT_TOOL_NAME)
-    async def maid_agent(
-        self,
-        event,
-        prompt: str = "",
-        subagent_type: str = "",
-        resume_agent_id: str = "",
-        tasks: list | None = None,
-    ) -> str:
-        """Dispatch background maid agents. Returns a handle immediately, never waits.
+    async def maid_agent(self, event, prompt: str = "", task_id: str = "", force_new: bool = False, tasks: list | None = None) -> str:
+        """Dispatch a task or continue an ended task. Returns immediately.
 
-        This call only queues the work; it comes back in milliseconds. The maid
-        then runs on its own, narrates its progress directly to the user, and its
-        final report is delivered back to you automatically as a new turn.
-
-        After this returns you must stop calling tools and reply to the user in
-        this same turn. Do not call maid_task_output to wait for the result: your
-        turn stays open while you do, and everything the user says meanwhile gets
-        swallowed instead of answered.
+        The configured maid is selected automatically. With one idle/default
+        work context, a new task keeps that context. Running tasks must be
+        supplemented with maid_send_message, not this tool. Use force_new for
+        independent parallel work, or tasks for an explicit independent batch.
+        Ambiguous ended branches require task_id once to choose a default.
+        After dispatch, reply to the user; do not poll to keep the turn open.
         """
-        umo = event.unified_msg_origin
-        true_user_input = str(event.get_extra(TRUE_USER_INPUT_EXTRA_KEY) or "")
-        batch: list[dict] = []
-        if tasks:
-            if not isinstance(tasks, list) or not 1 <= len(tasks) <= 5:
-                return self._json_outcome({"status": "error", "error": "tasks 必须是包含 1 至 5 项的列表。"})
-            if resume_agent_id:
-                return self._json_outcome({"status": "error", "error": "批量任务不能使用 resume_agent_id。"})
-            for index, item in enumerate(tasks):
-                if not isinstance(item, dict):
-                    return self._json_outcome({"status": "error", "error": f"tasks[{index}] 必须是对象。"})
-                task_prompt = item.get("prompt")
-                task_agent = item.get("subagent_type")
-                if not isinstance(task_prompt, str) or not task_prompt.strip() or not isinstance(task_agent, str) or not task_agent.strip():
-                    return self._json_outcome({"status": "error", "error": f"tasks[{index}] 必须提供 prompt 和 subagent_type。"})
-                batch.append({"prompt": task_prompt, "subagent_type": task_agent})
-        if not batch:
-            if not isinstance(prompt, str) or not prompt.strip() or not isinstance(subagent_type, str) or not subagent_type.strip():
-                return self._json_outcome({"status": "error", "error": "必须提供 prompt 和 subagent_type。"})
-            batch.append({"prompt": prompt, "subagent_type": subagent_type, "resume_agent_id": resume_agent_id})
-
-        batch_size = len(batch)
-        for item in batch:
-            resume_agent_id = str(item.get("resume_agent_id") or "").strip()
-            if resume_agent_id:
-                if not self.store.exists(resume_agent_id):
-                    return self._json_outcome({"status": "error", "error": f"agent_id 不存在: {resume_agent_id}"})
-                meta = self.store.log(resume_agent_id).load_meta()
-                if meta.get("sourceKind") != "chat" or meta.get("umo") != umo:
-                    return self._json_outcome({"status": "error", "error": "agent_id 不属于当前聊天会话。"})
-        per_umo_cap = self.maid_mode_config.max_active_per_umo
-        global_cap = self.maid_mode_config.max_active_global
-        if (
-            self.registry.running_count_for_umo(umo) + batch_size > per_umo_cap
-            or self.registry.running_count() + batch_size > global_cap
-        ):
-            return self._json_outcome(
-                {"status": "error", "error": "批量并发上限不足，整批拒绝。"}
-            )
-        # 真实 event 归主 pipeline 所有，主流程一结束它的临时文件就被清理。
-        # 女仆需要的东西必须在这里快照下来，之后它只认快照。
-        identity = identity_from_event(event)
-        image_paths = await image_paths_from_event(event)
-        prepared = [{**item, "dispatch_id": uuid.uuid4().hex} for item in batch]
-        raw_results = await asyncio.gather(
-            *(
-                self._dispatch_chat_task(
-                    umo, true_user_input, identity, image_paths, item, skip_capacity_check=True
-                )
-                for item in prepared
-            ),
-            return_exceptions=True,
-        )
-        results: list[dict] = []
-        for result in raw_results:
-            if isinstance(result, Exception):
-                logger.error("[maid] 派发任务失败: %s", result, exc_info=result)
-                results.append({"status": "error", "error": str(result) or "派发任务失败。"})
-            else:
-                results.append(result)
-        payload = results[0] if len(results) == 1 else {"status": "batch", "results": results}
-        if any(item.get("status") == "running" for item in results):
-            payload["next"] = DISPATCHED_NEXT_STEP
-        return self._json_outcome(payload)
-
-    async def _dispatch_chat_task(
-        self,
-        umo: str,
-        true_user_input: str,
-        identity: dict,
-        image_paths: list[str],
-        item: dict,
-        *,
-        skip_capacity_check: bool = False,
-    ) -> dict:
-        """派活并立刻返回句柄。
-
-        绝不在这里等女仆：等待会把主 agent 的 run 一直挂在工具调用里，
-        AstrBot 就把用户后续的消息当成 follow-up 吞进 tool result，用户没法
-        在女仆干活的同时继续聊天。结果一律走 turn 终态的通知回灌。
-        """
-        await ensure_default_subagent(self.context, self.maid_mode_config)
-        agent_name = item["subagent_type"].strip()
-        allowed = self.maid_mode_config.allowed_agent_names
-        if agent_name not in allowed:
-            agent_name = self.maid_mode_config.default_agent_name
-        if agent_name not in allowed:
-            return {
-                "status": "error",
-                "error": f"subagent_type 不在允许列表: {item['subagent_type'].strip()}（可用 agents: {', '.join(allowed)}）",
-            }
-        if not skip_capacity_check and not self.registry.capacity_available(umo):
-            return {"status": "error", "error": "并发上限已满，稍后再试。"}
-
-        resume_agent_id = str(item.get("resume_agent_id") or "").strip()
-        if resume_agent_id:
-            if not self.store.exists(resume_agent_id):
-                return {"status": "error", "error": f"agent_id 不存在: {resume_agent_id}"}
-            session_id = resume_agent_id
-        else:
-            session_id = self._create_chat_agent(
-                umo, agent_name, dispatch_id=item["dispatch_id"], identity=identity
-            )
-        driver = self.registry.attach(session_id)
-
-        prompt = render_dispatch_prompt(
-            self.maid_mode_config.dispatch_prompt_template,
-            true_user_input=true_user_input,
-            request_text=item["prompt"],
-            include_raw_user_input=self.maid_mode_config.include_raw_user_input,
-        )
-        content = [c.text_block(prompt)]
-        for path in image_paths:
-            ref = self.store.save_attachment_from_path(session_id, path)
-            if ref is None:
-                logger.warning("[maid] 图片未能复制进会话附件区，女仆看不到它: %s", path)
-                continue
-            content.append(c.image_block(ref))
-
-        task_id = uuid.uuid4().hex
-        async with driver.log.lock:
-            driver.log.append("maid/task", {"taskId": task_id, "dispatchId": item["dispatch_id"]})
-        # 续派（resume_agent_id）会复用上一轮跑完的会话，投递相关的三个字段
-        # 必须一起归零：只清 notified 的话，claim_delivery 还会看到上一轮留下的
-        # deliveryClaimed=True，本轮的终态通知就被当成重复转述直接跳过了。
-        driver.log.update_meta(
-            activeTaskId=task_id,
-            activeDispatchId=item["dispatch_id"],
-            identity=identity,
-            notify=True,
-            notified=False,
-            deliveryClaimed=False,
-            deliveryStatus="pending",
-        )
-        driver.enqueue(c.user_message(content), run_context={"task_id": task_id})
-
-        return {
-            "status": "running",
-            "agent_id": session_id,
-            "task_id": task_id,
-            "dispatch_id": item["dispatch_id"],
-        }
+        result = await self.chat_runtime.dispatch(event, prompt=prompt, task_id=task_id, force_new=force_new, tasks=tasks)
+        return self._json_outcome(result)
 
     async def _on_turn_terminal(self, driver, result: dict) -> None:
-        meta = driver.log.load_meta()
-        if not meta.get("notify"):
+        if driver.log.load_meta().get("sourceKind") != "chat" or not result.get("task_id") or not self.chat_runtime.allowed(result, driver.umo):
             return
-        if meta.get("notified"):
-            return
-        driver.log.update_meta(notified=True)
+        task_id, round_id = result["task_id"], result["round_id"]
         try:
             await driver.emit_delivery("main-summary", "sending")
             delivered = await self._notify_main_agent(driver, result)
             await driver.emit_delivery("main-summary", "sent" if delivered else "skipped")
-        except Exception as exc:  # noqa: BLE001
-            driver.log.update_meta(notified=False)
-            await driver.release_delivery_claim()
+        except Exception as exc:
+            task = self.registry.tasks.get(task_id)
+            execution = self.registry.tasks.round(task, round_id)
+            if execution["delivery"] == "claimed":
+                self.registry.tasks.delivery(task_id, round_id, "pending")
             await driver.emit_delivery("main-summary", "failed", str(exc))
-            logger.error("[maid] notification 唤醒主 agent 失败: session=%s err=%s", driver.session_id[:8], exc, exc_info=True)
+            logger.error("[maid] 任务报告投递失败: task=%s round=%s err=%s", task_id[:8], round_id[:8], exc, exc_info=True)
 
     async def _notify_main_agent(self, driver, result: dict) -> bool:
         """唤醒大小姐转述一次女仆的汇报。返回是否真的唤醒了。
@@ -724,25 +558,30 @@ class MaidAgent(Star):
         umo = driver.umo
         if not umo:
             return False
+        from astrbot.core.agent.tool import ToolSet
         from astrbot.core.astr_main_agent import MainAgentBuildConfig, build_main_agent
         from astrbot.core.cron.events import CronMessageEvent
         from astrbot.core.platform.message_session import MessageSession as _MS
         from astrbot.core.provider.entities import ProviderRequest
         from astrbot.core.tools.message_tools import SendMessageToUserTool
-        from astrbot.core.agent.tool import ToolSet
+        from astrbot.core.utils.active_event_registry import active_event_registry
         from astrbot.core.utils.session_lock import session_lock_manager
 
-        ctx = self.context
+        from .harness.events_shim import ScopedContext
+
+        ctx = ScopedContext(self.context, lambda: self.chat_runtime.allowed(result, umo))
         session = _MS.from_str(umo)
         status = result.get("status", "")
         body = result.get("result") or result.get("error") or "(空)"
-        summary = f"[管家任务通知]\n- agent_id={driver.session_id} task_id={meta_task_id(driver)} status={status}\n  {body}"
-        notification_id = str(meta_task_id(driver) or driver.session_id)
+        summary = f"[管家任务通知]\n- task_id={result['task_id']} round_id={result['round_id']} status={status}\n- task={result['description']}\n  {body}"
+        notification_id = f"{result['task_id']}:{result['round_id']}"
         extras = {
             MAID_NOTIFICATION_IDS_META_KEY: [notification_id],
             "background_task_results": [
                 {
-                    "session_id": driver.session_id,
+                    "task_id": result["task_id"],
+                    "round_id": result["round_id"],
+                    "description": result["description"],
                     "status": status,
                     "result": result.get("result", ""),
                     "error": result.get("error", ""),
@@ -756,108 +595,114 @@ class MaidAgent(Star):
             extras=extras,
             message_type=session.message_type,
         )
-        async with session_lock_manager.acquire_lock(umo):
-            if not await driver.claim_delivery():
-                # 等锁期间大小姐用 maid_task_output 自己读到了终态，别再转述一遍。
-                return False
-            conversation_id = await ctx.conversation_manager.get_curr_conversation_id(umo)
-            if not conversation_id:
-                conversation_id = await ctx.conversation_manager.new_conversation(umo)
-            conv = await ctx.conversation_manager.get_conversation(umo, conversation_id)
-            if conv is None:
-                return False
-            req = ProviderRequest()
-            req.conversation = conv
-            req.contexts = json.loads(conv.history or "[]")
-            # 转述要求放正文而非 system_prompt：system_prompt 是人格区，一次性
-            # 任务指令混进去会污染人设；正文只随本轮请求生效，且不会落历史。
-            req.prompt = (
-                "女仆子代理的后台任务已结束，下面是它的终态报告。"
-                "请用你自己的口吻向用户简短转述报告内容，不要展开复述中间过程。"
-                "直接把转述写成正文回复即可，正文会自动送达用户；"
-                "仅在需要附带媒体文件时才调用 send_message_to_user。\n\n"
-                f"{summary}"
-            )
-            req.func_tool = ToolSet()
-            send_tool = ctx.get_llm_tool_manager().get_builtin_tool(SendMessageToUserTool)
-            if send_tool is not None:
-                req.func_tool.add_tool(send_tool)
-            from .toolset_adapter import _load_provider_settings
+        runner_holder = {}
 
-            provider_settings = _load_provider_settings(ctx, umo)
-            config = MainAgentBuildConfig(
-                tool_call_timeout=_safe_int(provider_settings.get("tool_call_timeout", 60), 60),
-                streaming_response=False,
-                provider_settings=provider_settings,
-            )
-            result_build = await build_main_agent(event=cron_event, plugin_context=ctx, config=config, req=req)
-            if result_build is None:
-                return False
-            runner = result_build.agent_runner
-            async for _ in runner.step_until_done(30):
-                pass
-            llm_resp = runner.get_final_llm_resp()
-            relay = (getattr(llm_resp, "completion_text", "") or "").strip() if llm_resp else ""
-            history_summary = f"{summary}\n\n主 Agent 处理结果：{relay}" if relay else summary
-            if relay and not getattr(cron_event, "_has_send_oper", False):
-                # 大小姐经常把转述直接写成正文而不是调 send_message_to_user。
-                # 这条路径自起 agent、不接 pipeline 的 RespondStage，不自己投递
-                # 这段话就石沉大海——任务跑完聊天里什么都不会出现。
-                from astrbot.api.event import MessageChain
+        def stop_report():
+            result["delivery_cancelled"] = True
+            runner = runner_holder.get("runner")
+            if runner is not None:
+                runner.request_stop()
 
-                await ctx.send_message(umo, MessageChain().message(relay))
-            await persist_agent_history(
-                ctx.conversation_manager,
-                event=cron_event,
-                req=result_build.provider_request,
-                summary_note=history_summary,
-            )
-            persisted = await ctx.conversation_manager.get_conversation(umo, conversation_id)
-            history = json.loads(persisted.history or "[]") if persisted else []
-            if history and isinstance(history[-1], dict):
-                history[-1][MAID_NOTIFICATION_IDS_META_KEY] = [notification_id]
-                history[-1][MAID_NOTIFICATION_ID_META_KEY] = notification_id
-                await ctx.conversation_manager.update_conversation(umo, conversation_id, history=history)
-        return True
+        active_event_registry.register(cron_event)
+        active_event_registry.register_agent_stop_callback(cron_event, stop_report)
+        try:
+            async with session_lock_manager.acquire_lock(umo):
+                if not self.chat_runtime.allowed(result, umo):
+                    return False
+                if not self.registry.tasks.claim_delivery(result["task_id"], result["round_id"]):
+                    # 等锁期间大小姐用 maid_task_output 自己读到了终态，别再转述一遍。
+                    return False
+                conversation_id = await ctx.conversation_manager.get_curr_conversation_id(umo)
+                if conversation_id != result["conversation_id"]:
+                    self.registry.tasks.delivery(result["task_id"], result["round_id"], "skipped")
+                    return False
+                conv = await ctx.conversation_manager.get_conversation(umo, conversation_id)
+                if conv is None:
+                    return False
+                req = ProviderRequest()
+                req.conversation = conv
+                req.contexts = json.loads(conv.history or "[]")
+                # 转述要求放正文而非 system_prompt：system_prompt 是人格区，一次性
+                # 任务指令混进去会污染人设；正文只随本轮请求生效，且不会落历史。
+                req.prompt = (
+                    "女仆子代理的后台任务已结束，下面是它的终态报告。"
+                    "请用你自己的口吻向用户简短转述报告内容，不要展开复述中间过程。"
+                    "直接把转述写成正文回复即可，正文会自动送达用户；"
+                    "仅在需要附带媒体文件时才调用 send_message_to_user。\n\n"
+                    f"{summary}"
+                )
+                req.func_tool = ToolSet()
+                send_tool = ctx.get_llm_tool_manager().get_builtin_tool(SendMessageToUserTool)
+                if send_tool is not None:
+                    req.func_tool.add_tool(send_tool)
+                from .toolset_adapter import load_execution_settings
+
+                provider_settings = load_execution_settings(ctx, umo)
+                from astrbot.core.config.agent_runner import resolve_context_compression_config
+
+                current_config = ctx.get_config(umo=umo)
+                runner_config = (current_config.get("agent_runner") or {}).get("config") or {}
+                compression = resolve_context_compression_config(runner_config.get("compression") or {})
+                config = MainAgentBuildConfig(
+                    tool_call_timeout=provider_settings["tool_call_timeout"],
+                    tool_schema_mode=provider_settings["tool_schema_mode"],
+                    streaming_response=False,
+                    provider_settings=current_config.get("provider_settings") or {},
+                    **compression,
+                )
+                result_build = await build_main_agent(event=cron_event, plugin_context=ctx, config=config, req=req)
+                if result_build is None:
+                    return False
+                runner = result_build.agent_runner
+                runner_holder["runner"] = runner
+                if result.get("delivery_cancelled"):
+                    runner.request_stop()
+                    return False
+                async for _ in runner.step_until_done(self.maid_mode_config.max_agent_steps):
+                    pass
+                llm_resp = runner.get_final_llm_resp()
+                relay = (getattr(llm_resp, "completion_text", "") or "").strip() if llm_resp else ""
+                history_summary = f"{summary}\n\n主 Agent 处理结果：{relay}" if relay else summary
+                if not self.chat_runtime.allowed(result, umo):
+                    self.registry.tasks.delivery(result["task_id"], result["round_id"], "skipped")
+                    return False
+                if relay and not getattr(cron_event, "_has_send_oper", False):
+                    # 大小姐经常把转述直接写成正文而不是调 send_message_to_user。
+                    # 这条路径自起 agent、不接 pipeline 的 RespondStage，不自己投递
+                    # 这段话就石沉大海——任务跑完聊天里什么都不会出现。
+                    from astrbot.api.event import MessageChain
+
+                    await ctx.send_message(umo, MessageChain().message(relay))
+                await persist_agent_history(
+                    ctx.conversation_manager,
+                    event=cron_event,
+                    req=result_build.provider_request,
+                    summary_note=history_summary,
+                )
+                persisted = await ctx.conversation_manager.get_conversation(umo, conversation_id)
+                history = json.loads(persisted.history or "[]") if persisted else []
+                if history and isinstance(history[-1], dict):
+                    history[-1][MAID_NOTIFICATION_IDS_META_KEY] = [notification_id]
+                    history[-1][MAID_NOTIFICATION_ID_META_KEY] = notification_id
+                    await ctx.conversation_manager.update_conversation(umo, conversation_id, history=history)
+                self.registry.tasks.delivery(result["task_id"], result["round_id"], "sent")
+            return True
+        finally:
+            active_event_registry.unregister(cron_event)
 
     @filter.llm_tool(name=MAID_SEND_MESSAGE_TOOL_NAME)
-    async def maid_send_message(self, event, agent_id: str, message: str) -> str:
-        """Send a follow-up message to a running maid agent."""
-        if not isinstance(agent_id, str) or not agent_id.strip() or not isinstance(message, str) or not message.strip():
-            return self._json_outcome({"status": "error", "error": "agent_id 和 message 必须是非空字符串。"})
-        if not self._is_current_chat_agent(event, agent_id):
-            return self._json_outcome({"status": "error", "error": f"agent_id 不属于当前聊天会话: {agent_id}"})
-        driver = self.registry.attach(agent_id)
-        if not driver.running:
-            return self._json_outcome({"status": "error", "error": "agent 当前没有运行中的任务。"})
-        ticket = driver.steer(message)
-        return self._json_outcome({"status": "sent", "agent_id": agent_id, "ticket": ticket or ""})
+    async def maid_send_message(self, event, message: str, task_id: str = "") -> str:
+        """Supplement a running task only. Ended tasks must use maid_agent.
 
-    def _is_current_chat_agent(self, event, agent_id: str) -> bool:
-        if not self.store.exists(agent_id):
-            return False
-        meta = self.store.log(agent_id).load_meta()
-        return meta.get("sourceKind") == "chat" and meta.get("umo") == event.unified_msg_origin
+        The result confirms acceptance, not immediate model consumption.
+        Unconsumed requirements are retained for a follow-up execution.
+        """
+        return self._json_outcome(await self.chat_runtime.send(event, task_id, message))
 
     @filter.llm_tool(name=MAID_LIST_AGENTS_TOOL_NAME)
     async def maid_list_agents(self, event) -> str:
-        """List agents created from the current chat origin."""
-        umo = event.unified_msg_origin
-        agents: list[dict] = []
-        for agent_id in self.store.list_session_ids():
-            meta = self.store.log(agent_id).load_meta()
-            if meta.get("sourceKind") != "chat" or meta.get("umo") != umo:
-                continue
-            # 仅查询运行态时才碰 driver；存量会话避免 attach 触发全事件流读（heal_orphan_turn）。
-            driver = self.registry.driver(agent_id)
-            agents.append({
-                "agent_id": agent_id,
-                "task_id": meta.get("activeTaskId", ""),
-                "subagent_type": meta.get("agentName", ""),
-                "status": "running" if driver is not None and driver.running else meta.get("lastStatus", "idle"),
-                "dispatch_id": meta.get("activeDispatchId", meta.get("dispatchId", "")),
-            })
-        return self._json_outcome({"agents": agents})
+        """List task descriptions, IDs, states and default context association."""
+        return self._json_outcome(await self.chat_runtime.list(event))
 
     @staticmethod
     def _agent_progress(driver) -> dict:
@@ -907,54 +752,13 @@ class MaidAgent(Star):
 
     @filter.llm_tool(name=MAID_TASK_OUTPUT_TOOL_NAME)
     async def maid_task_output(self, event, task_id: str) -> str:
-        """Take a one-shot progress snapshot of a maid task. Never blocks.
-
-        Use this only to answer a user who explicitly asked how a task is going.
-        It is not a wait primitive: calling it repeatedly does not make the maid
-        finish sooner, it only keeps your turn open, and anything the user says
-        meanwhile gets swallowed instead of answered. The final report always
-        arrives on its own — you never need to fetch it.
-        """
-        if not isinstance(task_id, str) or not task_id.strip():
-            return self._json_outcome({"status": "error", "error": "task_id 必须是非空字符串。"})
-        agent_id = self._find_agent_for_task(task_id)
-        if not agent_id or not self._is_current_chat_agent(event, agent_id):
-            return self._json_outcome({"status": "error", "error": f"task_id 不存在: {task_id}"})
-        driver = self.registry.attach(agent_id)
-        if driver.running:
-            return self._json_outcome({
-                "agent_id": agent_id,
-                "task_id": task_id,
-                "status": "running",
-                **self._agent_progress(driver),
-                "next": RUNNING_NEXT_STEP,
-            })
-        meta = driver.log.load_meta()
-        if await driver.claim_delivery():
-            # 模型已亲自读到终态，认领这次投递，避免完成通知再转述一遍。
-            driver.log.update_meta(notified=True)
-            await driver.emit_delivery("main-summary", "skipped")
-        return self._json_outcome({
-            "agent_id": agent_id,
-            "task_id": task_id,
-            "status": meta.get("lastStatus", "completed"),
-            "result": meta.get("lastResult", ""),
-            "error": meta.get("lastError", ""),
-        })
+        """Read one task's progress and execution results without waiting or polling."""
+        return self._json_outcome(await self.chat_runtime.output(event, task_id))
 
     @filter.llm_tool(name=MAID_TASK_STOP_TOOL_NAME)
     async def maid_task_stop(self, event, task_id: str) -> str:
-        """Request cancellation of a task by its task ID."""
-        if not isinstance(task_id, str) or not task_id.strip():
-            return self._json_outcome({"status": "error", "error": "task_id 必须是非空字符串。"})
-        agent_id = self._find_agent_for_task(task_id)
-        if not agent_id or not self._is_current_chat_agent(event, agent_id):
-            return self._json_outcome({"status": "error", "error": f"task_id 不存在: {task_id}"})
-        driver = self.registry.attach(agent_id)
-        if not driver.running:
-            return self._json_outcome({"status": "completed", "agent_id": agent_id, "task_id": task_id})
-        driver.request_stop()
-        return self._json_outcome({"status": "stopping", "agent_id": agent_id, "task_id": task_id})
+        """Stop the target task and cancel its pending supplementary requests."""
+        return self._json_outcome(await self.chat_runtime.stop(event, task_id))
 
     @filter.llm_tool(name=MAID_DELIVER_FILE_TOOL_NAME)
     async def maid_deliver_file(self, event, path: str, name: str = "", remark: str = "") -> str:
@@ -971,7 +775,6 @@ class MaidAgent(Star):
             return self._json_outcome({"status": status, **result})
         except (OSError, ValueError) as exc:
             return self._json_outcome({"status": "error", "error": str(exc)})
-
 
     @filter.command_group("maid")
     def maid(self):
@@ -1020,6 +823,14 @@ class MaidAgent(Star):
 
     @filter.on_decorating_result()
     async def stash_raw_input(self, event) -> None:
+        if event.get_extra("_clean_group_context_session"):
+            umo = event.unified_msg_origin
+            async with self.registry.chats.lock(umo):
+                previous = self.registry.chats.get(umo)
+                if previous is not None:
+                    self.chat_runtime.invalidate(previous)
+                    cid = await self.context.conversation_manager.get_curr_conversation_id(umo)
+                    self.registry.chats.reset(umo, cid or "")
         raw_input = event.message_str
         if raw_input:
             event.set_extra(RAW_INPUT_EXTRA_KEY, raw_input[:2000])

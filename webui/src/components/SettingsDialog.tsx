@@ -202,7 +202,7 @@ export function SettingsDialog(props: { open: boolean; onClose: () => void }) {
                             id={inputId}
                             type="number"
                             step={meta.type === "float" ? "any" : 1}
-                            min={key === "max_agent_steps" ? 1 : key === "session_idle_timeout_hours" ? 0 : undefined}
+                            min={key === "max_agent_steps" ? 1 : key === "session_idle_timeout_hours" ? 0.1 : undefined}
                             value={String(current)}
                             aria-describedby={meta.hint ? hintId : undefined}
                             onChange={(e) => setDraft({ ...value, [key]: Number(e.target.value) })}

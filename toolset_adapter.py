@@ -253,40 +253,45 @@ def _load_provider_settings(context: Context, umo: str) -> dict[str, Any]:
     return settings if isinstance(settings, dict) else {}
 
 
-def _compression_section_to_settings(section: dict[str, Any]) -> dict[str, Any]:
-    """把 agent_runner.config.compression 段映射为子代理 runner 的构建参数。"""
-    max_turns = _safe_int(section.get("max_turns", -1), -1)
-    trim_turns = _safe_int(section.get("trim_turns", 1), 1)
-    dequeue_turns = min(max(1, trim_turns), max_turns - 1 if max_turns > 0 else trim_turns)
-    return {
-        "context_limit_reached_strategy": str(section.get("overflow_strategy") or "truncate_by_turns"),
-        "llm_compress_instruction": str(section.get("instruction") or ""),
-        "llm_compress_keep_recent_ratio": _safe_float(section.get("keep_recent_ratio"), 0.15),
-        "llm_compress_provider_id": str(section.get("provider_id") or ""),
-        "max_context_length": max_turns,
-        "dequeue_context_length": max(1, dequeue_turns),
-        "fallback_max_context_tokens": _safe_int(section.get("fallback_max_tokens", 128000), 128000),
-    }
+_COMPRESSION_KEYS: dict[str, tuple[str, ...]] = {
+    "max_turns": ("max_turns", "max_context_length"),
+    "trim_turns": ("trim_turns", "dequeue_context_length"),
+    "overflow_strategy": ("overflow_strategy", "context_limit_reached_strategy"),
+    "instruction": ("instruction", "llm_compress_instruction"),
+    "keep_recent_ratio": ("keep_recent_ratio", "llm_compress_keep_recent_ratio"),
+    "provider_id": ("provider_id", "llm_compress_provider_id"),
+    "fallback_max_tokens": ("fallback_max_tokens", "fallback_max_context_tokens"),
+}
 
 
-def _provider_settings_to_settings(provider_settings: dict[str, Any]) -> dict[str, Any]:
-    """压缩设置仍在 provider_settings 里的旧键布局。"""
-    max_turns = _safe_int(provider_settings.get("max_context_length", -1), -1)
-    trim_turns = _safe_int(provider_settings.get("dequeue_context_length", 1), 1)
+def _pick(source: dict[str, Any], key: str, default: Any) -> Any:
+    for name in _COMPRESSION_KEYS[key]:
+        value = source.get(name)
+        if value is not None:
+            return value
+    return default
+
+
+def _compression_settings(source: dict[str, Any]) -> dict[str, Any]:
+    """把压缩设置映射为子代理 runner 的构建参数。
+
+    迁移后的 agent_runner.config.compression 与迁移前的 provider_settings 旧键
+    语义相同、键名不同，用同一张别名表读取，避免维护两份映射。
+    """
+    max_turns = _safe_int(_pick(source, "max_turns", -1), -1)
+    trim_turns = _safe_int(_pick(source, "trim_turns", 1), 1)
     dequeue_turns = min(max(1, trim_turns), max_turns - 1 if max_turns > 0 else trim_turns)
     return {
         "context_limit_reached_strategy": str(
-            provider_settings.get("context_limit_reached_strategy") or "truncate_by_turns"
+            _pick(source, "overflow_strategy", "") or "truncate_by_turns"
         ),
-        "llm_compress_instruction": str(provider_settings.get("llm_compress_instruction") or ""),
-        "llm_compress_keep_recent_ratio": _safe_float(
-            provider_settings.get("llm_compress_keep_recent_ratio"), 0.15
-        ),
-        "llm_compress_provider_id": str(provider_settings.get("llm_compress_provider_id") or ""),
+        "llm_compress_instruction": str(_pick(source, "instruction", "") or ""),
+        "llm_compress_keep_recent_ratio": _safe_float(_pick(source, "keep_recent_ratio", 0.15), 0.15),
+        "llm_compress_provider_id": str(_pick(source, "provider_id", "") or ""),
         "max_context_length": max_turns,
         "dequeue_context_length": max(1, dequeue_turns),
         "fallback_max_context_tokens": _safe_int(
-            provider_settings.get("fallback_max_context_tokens", 128000), 128000
+            _pick(source, "fallback_max_tokens", 128000), 128000
         ),
     }
 
@@ -305,11 +310,7 @@ def load_execution_settings(context: Context, umo: str) -> dict[str, Any]:
     runner = (config.get("agent_runner") or {}).get("config") or {}
     misc = runner.get("misc") or {}
     compression = runner.get("compression") or {}
-    settings = (
-        _compression_section_to_settings(compression)
-        if compression
-        else _provider_settings_to_settings(provider_settings)
-    )
+    settings = _compression_settings(compression or provider_settings)
     settings["streaming_response"] = bool(provider_settings.get("streaming_response", False))
     settings["tool_call_timeout"] = _safe_int(
         misc.get("tool_call_timeout", provider_settings.get("tool_call_timeout", 60)), 60

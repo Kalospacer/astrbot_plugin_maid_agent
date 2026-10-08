@@ -3,25 +3,20 @@
 from __future__ import annotations
 
 import json
-import os
-import time
 import uuid
 from copy import deepcopy
 from pathlib import Path
 
+from .contracts import now_ms, write_json_atomic
+
 FORMAT_VERSION = 3
 ACTIVE_STATUSES = frozenset({"starting", "running", "followup_pending"})
-
-
-def now_ms() -> int:
-    return int(time.time() * 1000)
+ACTIVE_FOLLOWUPS = frozenset({"pending", "scheduled"})
 
 
 def write_json(path: Path, data: dict) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_suffix(".tmp")
-    temporary.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
-    os.replace(temporary, path)
+    """任务记录保持紧凑，不需要缩进。"""
+    write_json_atomic(path, data)
 
 
 class TaskStore:
@@ -121,13 +116,13 @@ class TaskStore:
         item = {
             "id": uuid.uuid4().hex,
             "content": content,
-            "mainContext": deepcopy(main_context),
+            "mainContext": main_context,
             "status": "pending",
             "createdAt": now_ms(),
         }
         task["followups"].append(item)
         self.save(task)
-        return deepcopy(item)
+        return item
 
     def set_followup_status(self, task_id: str, ids: list[str], status: str) -> None:
         task = self.get(task_id)
@@ -138,6 +133,17 @@ class TaskStore:
 
     def pending(self, task_id: str) -> list[dict]:
         return [item for item in self.get(task_id)["followups"] if item["status"] == "pending"]
+
+    def followup_ids(self, task_id: str) -> list[str]:
+        """尚未执行、需要取消或改期的补充要求。"""
+        return [
+            item["id"]
+            for item in self.get(task_id)["followups"]
+            if item["status"] in ACTIVE_FOLLOWUPS
+        ]
+
+    def cancel_followups(self, task_id: str) -> None:
+        self.set_followup_status(task_id, self.followup_ids(task_id), "cancelled")
 
     def claim_delivery(self, task_id: str, round_id: str) -> bool:
         task = self.get(task_id)
@@ -165,7 +171,7 @@ class TaskStore:
                 if execution["status"] in ACTIVE_STATUSES:
                     execution.update(status="interrupted", error="进程中断，未自动重跑。", endedAt=task["interruptedFromAt"])
             for item in task["followups"]:
-                if item["status"] in {"pending", "scheduled"}:
+                if item["status"] in ACTIVE_FOLLOWUPS:
                     item["status"] = "interrupted"
             self.save(task)
 

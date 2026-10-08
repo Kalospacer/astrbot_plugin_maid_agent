@@ -13,10 +13,9 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 from pathlib import Path
 
-from .contracts import KNOWN_EVENT_TYPES, SESSION_FORMAT_VERSION, make_event
+from .contracts import KNOWN_EVENT_TYPES, SESSION_FORMAT_VERSION, make_event, write_json_atomic
 
 
 class SessionLogError(RuntimeError):
@@ -29,13 +28,6 @@ def _read_json(path: Path):
             return json.load(fh)
     except FileNotFoundError:
         return None
-
-
-def _write_json_atomic(path: Path, payload: dict) -> None:
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    with open(tmp, "w", encoding="utf-8") as fh:
-        json.dump(payload, fh, ensure_ascii=False, indent=2)
-    os.replace(tmp, path)
 
 
 class SessionLog:
@@ -59,7 +51,7 @@ class SessionLog:
             raise SessionLogError(f"session 已存在: {self.session_id}")
         payload = {"version": SESSION_FORMAT_VERSION, "id": self.session_id, **header}
         self.dir.mkdir(parents=True, exist_ok=True)
-        _write_json_atomic(self.header_path, payload)
+        write_json_atomic(self.header_path, payload, indent=2)
         self.events_path.touch()
 
 
@@ -70,7 +62,7 @@ class SessionLog:
         return _read_json(self.meta_path) or {}
 
     def save_meta(self, meta: dict) -> None:
-        _write_json_atomic(self.meta_path, meta)
+        write_json_atomic(self.meta_path, meta, indent=2)
 
     def update_meta(self, **fields) -> dict:
         meta = self.load_meta()

@@ -36,8 +36,4 @@ DISPATCHED_NEXT_STEP = (
     "The maid narrates its own progress to the user and its final report is "
     "delivered back to you automatically as a new turn — you never fetch it."
 )
-RUNNING_NEXT_STEP = (
-    "Relay this progress to the user and end your turn; calling this again only "
-    "keeps your turn open and swallows what the user says meanwhile."
-)
 

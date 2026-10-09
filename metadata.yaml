@@ -1,5 +1,5 @@
 name: astrbot_plugin_maid_agent
-version: "2.0.67"
+version: "2.0.68"
 description: "大小姐+管家双代理角色扮演：大小姐只负责聊天，工具调用全部交给管家 subagent 执行，主模型上下文保持纯净不被工具提示词污染。"
 author: "Kalo"
 repo: "https://github.com/Kalospacer/astrbot_plugin_maid_agent"
@@ -13,8 +13,8 @@ astrbot_version: ">=4.20.0"
 # 1. 无需手动配置 subagent：一个都没有时，插件会自动创建一个默认管家
 #    subagent（名称取插件配置的 `default_agent_name`，默认 `butler`，
 #    不限制工具、跟随当前聊天 provider）
-# 2. 插件实际调度目标由插件配置中的 `allowed_agent_names` 以及主模型对
-#    `maid_agent` 的调用参数一起决定；每次任务必须显式指定 agent
+# 2. 模型派发统一使用 `default_agent_name`，不填写子代理名称或 session ID；
+#    `allowed_agent_names` 限制默认配置与控制台的可选管家
 # 3. subagent 配置示例：
 #    subagent_orchestrator:
 #      agents:
@@ -33,4 +33,6 @@ astrbot_version: ">=4.20.0"
 # 3. 派发立即返回句柄，不阻塞主模型，用户可以在女仆干活时继续聊天
 # 4. 最终汇报由大小姐转述；打开 show_maid_speech / show_maid_tool_status 后，
 #    女仆干活途中的正文与函数调用状态也会以 `agent名: ...` 即时发到聊天（默认关）
-# 5. 可用 `maid_send_message`、`maid_task_output`、`maid_task_stop` 查询或控制任务
+# 5. 运行中补充使用 `maid_send_message`；完成后继续使用 `maid_agent`
+# 6. task 管任务、session 管上下文，空闲过期不作废任务编号
+# 7. 插件独立 `max_agent_steps` 默认 128，空闲窗口默认五小时且可配置

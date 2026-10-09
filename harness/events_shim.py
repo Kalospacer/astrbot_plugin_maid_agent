@@ -18,6 +18,7 @@ from astrbot.core.platform.astr_message_event import AstrMessageEvent as CoreAst
 from astrbot.core.platform.astrbot_message import AstrBotMessage, Group, MessageMember
 from astrbot.core.platform.message_session import MessageSession
 from astrbot.core.platform.platform_metadata import PlatformMetadata
+from astrbot.core.star.context import Context
 
 from ..constants import DASHBOARD_UMO
 
@@ -60,6 +61,37 @@ async def image_paths_from_event(event: Any) -> list[str]:
         if path:
             paths.append(str(path))
     return paths
+
+
+class ScopedContext(Context):
+    """按执行代次守卫投递的上下文代理。
+
+    子代理的正文播报、文件交付与 send_message_to_user 工具最终都会经过
+    ``Context.send_message``；重置之后旧执行代次的消息必须静默丢弃。框架在构造
+    ``AstrAgentContext`` 时会校验 context 的类型，所以这里必须继承真实的
+    ``Context``，其余属性全部委托给真实实例。
+    """
+
+    def __init__(self, context: Any, allowed: Any) -> None:
+        # 真实实例已经初始化完毕，这里只做代理，不重复执行 Context.__init__。
+        object.__setattr__(self, "_delegate_context", context)
+        object.__setattr__(self, "_delivery_allowed", allowed)
+
+    def __getattribute__(self, name: str) -> Any:
+        # 继承只为通过类型校验；除守卫点与自身字段外，一切仍从真实实例取，
+        # 否则 Context 自身的方法会遮住被代理对象的同名实现。
+        if name in ("_delegate_context", "_delivery_allowed", "send_message"):
+            return object.__getattribute__(self, name)
+        if name.startswith("__") and name.endswith("__"):
+            return object.__getattribute__(self, name)
+        return getattr(object.__getattribute__(self, "_delegate_context"), name)
+
+    async def send_message(self, session: Any, message_chain: MessageChain) -> bool:
+        if not object.__getattribute__(self, "_delivery_allowed")():
+            return False
+        return await object.__getattribute__(self, "_delegate_context").send_message(
+            session, message_chain
+        )
 
 
 class MaidAgentMessage(AstrBotMessage):

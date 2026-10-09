@@ -96,9 +96,11 @@ def test_request_stop_on_idle_queue_writes_terminal_task_event(registry, store):
         driver = registry.attach(log.session_id)
         driver.umo, driver.agent_name = "umo1", "butler"
 
+        task = registry.tasks.create(scope="scope", epoch="epoch", branch="branch", request="排队的任务")
+        execution = registry.tasks.start_round(task["taskId"], log.session_id, "排队的任务")
         driver.enqueue(
             c.user_message([c.text_block("排队的任务")]),
-            run_context={"task_id": "t-queued"},
+            run_context={"task_id": task["taskId"], "round_id": execution["roundId"], "epoch": "epoch"},
         )
         assert not driver.running
         assert len(driver.inbox) == 1
@@ -106,14 +108,16 @@ def test_request_stop_on_idle_queue_writes_terminal_task_event(registry, store):
         driver.request_stop()
 
         assert driver.inbox == []
+        assert registry.tasks.get(task["taskId"])["status"] == "stopped"
+        return task["taskId"]
 
-    asyncio.run(scenario())
+    task_id = asyncio.run(scenario())
 
     meta = store.log(log.session_id).load_meta()
     assert meta["activeTaskId"] == ""
     assert meta["deliveryStatus"] == "stopped"
     events = [e for e in store.log(log.session_id).read_events() if e["type"] == "maid/task"]
-    assert events and events[-1]["data"]["taskId"] == "t-queued"
+    assert events and events[-1]["data"]["taskId"] == task_id
     assert events[-1]["data"]["status"] == "stopped-before-run"
 
 
@@ -149,31 +153,31 @@ def test_turn_terminal_callback_failure_rolls_back_notified(registry, store):
 
 
 def test_delivery_claim_is_exclusive(registry, store):
-    """汇报投递只能被认领一次：通知回灌和 maid_task_output 抢同一份，谁先谁负责。"""
-    log = store.create_session(agent_preset="butler", meta={"umo": "umo1", "agentName": "butler"})
+    """通知和输出工具认领相同 task 轮次，只能有一个成功。"""
+    log = store.create_session(agent_preset="butler")
+    task = registry.tasks.create(scope="scope", epoch="epoch", branch="branch", request="调查")
+    execution = registry.tasks.start_round(task["taskId"], log.session_id, "调查")
+    registry.tasks.finish(task["taskId"], execution["roundId"], {"status": "completed", "result": "结果"})
+
+    async def claim():
+        return registry.tasks.claim_delivery(task["taskId"], execution["roundId"])
 
     async def scenario():
-        driver = registry.attach(log.session_id)
-        # 两边各自持有的外层锁不是同一把，所以并发发起认领。
-        return await asyncio.gather(*(driver.claim_delivery() for _ in range(4)))
+        return await asyncio.gather(*(claim() for _ in range(4)))
 
-    claims = asyncio.run(scenario())
-    assert claims.count(True) == 1
-    assert store.log(log.session_id).load_meta()["deliveryClaimed"] is True
+    assert asyncio.run(scenario()).count(True) == 1
 
 
 def test_failed_delivery_returns_the_claim(registry, store):
-    """投递失败要归还认领，否则这份汇报再也没人转达。"""
-    log = store.create_session(agent_preset="butler", meta={"umo": "umo1", "agentName": "butler"})
-
-    async def scenario():
-        driver = registry.attach(log.session_id)
-        assert await driver.claim_delivery() is True
-        assert await driver.claim_delivery() is False
-        await driver.release_delivery_claim()
-        return await driver.claim_delivery()
-
-    assert asyncio.run(scenario()) is True
+    """失败回滚只归还相应轮次的认领，不碰另一轮结果。"""
+    log = store.create_session(agent_preset="butler")
+    task = registry.tasks.create(scope="scope", epoch="epoch", branch="branch", request="调查")
+    execution = registry.tasks.start_round(task["taskId"], log.session_id, "调查")
+    registry.tasks.finish(task["taskId"], execution["roundId"], {"status": "completed", "result": "结果"})
+    assert registry.tasks.claim_delivery(task["taskId"], execution["roundId"])
+    assert not registry.tasks.claim_delivery(task["taskId"], execution["roundId"])
+    registry.tasks.delivery(task["taskId"], execution["roundId"], "pending")
+    assert registry.tasks.claim_delivery(task["taskId"], execution["roundId"])
 
 
 def test_progress_reads_tool_io_when_the_maid_has_not_spoken(registry, store):
@@ -276,37 +280,15 @@ def test_tool_status_switch_controls_chat_delivery(registry, store):
     assert spoken == ["butler: 🔨 调用工具: shell_exec"]
 
 
-def test_resume_dispatch_clears_the_previous_delivery_claim(registry, store):
-    """续派同一个女仆时必须清掉上一轮的认领，否则第二轮的汇报没人转达。"""
-    agent = object.__new__(MaidAgent)
-    agent.context = None
-    agent.store = store
-    agent.registry = registry
-    agent.maid_mode_config = registry.config
-    identity = {"senderId": "1", "groupId": "777", "platformName": "aiocqhttp"}
-    session_id = agent._create_chat_agent(
-        "umo1", "butler", dispatch_id="d-1", identity=identity
-    )
-
-    async def scenario():
-        driver = registry.attach(session_id)
-        # 第一轮：终态通知已经认领并转述过。
-        assert await driver.claim_delivery() is True
-        driver.log.update_meta(notified=True)
-
-        driver._kick = lambda: None  # 别真起 turn 循环，这里只看派发写下的 meta
-        await agent._dispatch_chat_task(
-            "umo1",
-            "",
-            identity,
-            [],
-            {"prompt": "再查一遍", "subagent_type": "butler", "resume_agent_id": session_id, "dispatch_id": "d-2"},
-        )
-        # 第二轮的终态通知得能重新认领，_on_turn_terminal 才不会把它当重复转述跳过。
-        return driver.log.load_meta(), await driver.claim_delivery()
-
-    meta, reclaimed = asyncio.run(scenario())
-
-    assert meta["notified"] is False
-    assert meta["deliveryStatus"] == "pending"
-    assert reclaimed is True
+def test_continued_task_round_has_independent_delivery_claim(registry, store):
+    """同一个 session/task 的不同执行轮次分别认领，不能继承上一轮已发送状态。"""
+    log = store.create_session(agent_preset="butler")
+    task = registry.tasks.create(scope="scope", epoch="epoch", branch="branch", request="调查")
+    first = registry.tasks.start_round(task["taskId"], log.session_id, "调查")
+    registry.tasks.finish(task["taskId"], first["roundId"], {"status": "completed", "result": "第一次结果"})
+    assert registry.tasks.claim_delivery(task["taskId"], first["roundId"])
+    registry.tasks.delivery(task["taskId"], first["roundId"], "sent")
+    second = registry.tasks.start_round(task["taskId"], log.session_id, "继续调查")
+    registry.tasks.finish(task["taskId"], second["roundId"], {"status": "completed", "result": "第二次结果"})
+    assert registry.tasks.claim_delivery(task["taskId"], second["roundId"])
+    assert not registry.tasks.claim_delivery(task["taskId"], first["roundId"])

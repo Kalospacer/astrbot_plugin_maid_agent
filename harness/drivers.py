@@ -22,7 +22,6 @@ from copy import deepcopy
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from astrbot.api import logger
 from astrbot.api.event import MessageChain
 from astrbot.core.agent.hooks import BaseAgentRunHooks
 from astrbot.core.message.components import File, Image
@@ -30,7 +29,7 @@ from astrbot.core.message.components import File, Image
 from ..constants import DASHBOARD_UMO
 from . import contracts as c
 from . import tools_view
-from ._log import dump_raw_llm_output, dump_raw_llm_request
+from ._log import dump_raw_llm_output, dump_raw_llm_request, logger
 from .chat_state import ChatStateStore
 from .context_state import ContextState
 from .history import visible_events

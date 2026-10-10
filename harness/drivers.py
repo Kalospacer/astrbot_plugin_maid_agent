@@ -130,24 +130,6 @@ def _message_content_think(content: Any) -> str:
     return "".join(parts)
 
 
-def _usage_to_dict(usage: Any) -> dict | None:
-    """AstrBot TokenUsage → 会话 TokenUsage（不相交桶）。"""
-    if usage is None:
-        return None
-    try:
-        input_other = int(getattr(usage, "input_other", 0) or 0)
-        input_cached = int(getattr(usage, "input_cached", 0) or 0)
-        output = int(getattr(usage, "output", 0) or 0)
-    except (TypeError, ValueError):
-        return None
-    if not (input_other or input_cached or output):
-        return None
-    result: dict = {"inputTokens": input_other, "outputTokens": output}
-    if input_cached:
-        result["cacheReadTokens"] = input_cached
-    return result
-
-
 def _usage_value(usage: Any) -> tuple[int, int, int]:
     if usage is None:
         return (0, 0, 0)

@@ -123,11 +123,5 @@ def server_request(rpc_id: str, method: str, payload) -> dict:
     return {"type": "server-request", "rpcId": rpc_id, "method": method, "payload": payload}
 
 
-def client_response_receipt(accepted: bool, reason: str | None = None) -> dict:
-    if accepted:
-        return {"accepted": True}
-    return {"accepted": False, "reason": reason or "bad-response"}
-
-
 def new_rpc_id() -> str:
     return str(uuid.uuid4())

@@ -113,18 +113,3 @@ def history_page(
             partial_from = sum(len(b) for b in chosen[:-1]) + k
 
     return {"events": page_events, "has_more": has_more, "partial_from": partial_from}
-
-
-def in_flight_partial(events: list[dict]) -> list[dict]:
-    """未定稿事件：最后一条 surface 消息之后、跳过紧随收尾标记的部分。"""
-    events = visible_events(events)
-    idx = -1
-    for i, e in enumerate(events):
-        if e.get("type") in SURFACE_EVENT_TYPES:
-            idx = i
-    if idx < 0:
-        return list(events)
-    k = idx + 1
-    while k < len(events) and events[k].get("type") in _CLOSERS:
-        k += 1
-    return events[k:]

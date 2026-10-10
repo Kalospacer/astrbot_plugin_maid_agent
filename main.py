@@ -41,7 +41,6 @@ from .harness.chat_dispatch import MAIN_CONTEXT_KEY, MAIN_REQUEST_KEY, ChatRunti
 from .harness.drivers import DriverRegistry
 from .harness.hub import StreamHub, sse_frame
 from .harness.rpc import (
-    client_response_receipt,
     internal_error,
     new_rpc_id,
     parse_client_request,
@@ -221,7 +220,6 @@ class MaidAgent(Star):
             (f"{prefix}/api/file", self.web_file, ["GET"], "attachment download"),
             (f"{prefix}/api/events.mux", self.web_events_mux, ["GET"], "events.mux SSE"),
             (f"{prefix}/api/events.host", self.web_events_host, ["GET"], "events.host SSE"),
-            (f"{prefix}/api/respond", self.web_respond, ["POST"], "RPC respond"),
             (f"{prefix}/api/<path:method>", self.web_rpc, ["POST"], "unary RPC"),
         ]
         for route, handler, methods, desc in routes:
@@ -314,16 +312,6 @@ class MaidAgent(Star):
                 return jsonify(server_response_error(rpc_id, exc))
             logger.error("[maid] RPC %s 失败: %s", method_name, exc, exc_info=True)
             return jsonify(server_response_error(rpc_id, internal_error(str(exc))))
-
-    async def web_respond(self):
-        try:
-            body_result = request.get_json()
-            body = await body_result if isawaitable(body_result) else body_result
-        except Exception:  # noqa: BLE001
-            body = None
-        if not isinstance(body, dict) or body.get("type") != "client-response":
-            return jsonify(client_response_receipt(False, "bad-response"))
-        return jsonify(client_response_receipt(False, "not-pending"))
 
     async def web_events_mux(self):
         return await self._sse_response(self.mux_hub, self._mux_baselines())

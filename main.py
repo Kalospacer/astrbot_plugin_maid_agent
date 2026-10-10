@@ -539,10 +539,6 @@ class MaidAgent(Star):
             delivered = await self._notify_main_agent(driver, result)
             await driver.emit_delivery("main-summary", "sent" if delivered else "skipped")
         except Exception as exc:
-            task = self.registry.tasks.get(task_id)
-            execution = self.registry.tasks.round(task, round_id)
-            if execution["delivery"] == "claimed":
-                self.registry.tasks.delivery(task_id, round_id, "pending")
             await driver.emit_delivery("main-summary", "failed", str(exc))
             logger.error("[maid] 任务报告投递失败: task=%s round=%s err=%s", task_id[:8], round_id[:8], exc, exc_info=True)
 
@@ -685,11 +681,8 @@ class MaidAgent(Star):
             return True
         finally:
             if claimed:
-                task = self.registry.tasks.get(result["task_id"])
-                execution = self.registry.tasks.round(task, result["round_id"])
-                if execution["delivery"] == "claimed":
-                    status = "pending" if self.chat_runtime.allowed(result, umo) else "skipped"
-                    self.registry.tasks.delivery(result["task_id"], result["round_id"], status)
+                status = "pending" if self.chat_runtime.allowed(result, umo) else "skipped"
+                self.registry.tasks.release_delivery_claim(result["task_id"], result["round_id"], status)
             active_event_registry.unregister(cron_event)
 
     @filter.llm_tool(name=MAID_SEND_MESSAGE_TOOL_NAME)

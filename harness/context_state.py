@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 import base64
-import hashlib
 import json
 import mimetypes
 from copy import deepcopy
 from pathlib import Path
 
+from .contracts import fingerprint
 from .tasks import FORMAT_VERSION, write_json
 
 BACKGROUND_HEADER = (
@@ -22,10 +22,10 @@ def freeze_messages(messages: list, *, exclude_system: bool = False) -> list[dic
     """复制运行消息，不改动主 runner；本地媒体转为稳定 data URI。"""
     copied = []
     for message in messages:
-        item = deepcopy(message if isinstance(message, dict) else message.model_dump())
-        if item.get("role") == "_checkpoint" or (exclude_system and item.get("role") == "system"):
+        role = message.get("role") if isinstance(message, dict) else getattr(message, "role", None)
+        if role == "_checkpoint" or (exclude_system and role == "system"):
             continue
-        copied.append(item)
+        copied.append(deepcopy(message if isinstance(message, dict) else message.model_dump()))
     _freeze_media(copied)
     return copied
 
@@ -43,11 +43,6 @@ def _freeze_media(value) -> None:
                 value["url"] = f"data:{media_type};base64," + base64.b64encode(local.read_bytes()).decode()
         for item in value.values():
             _freeze_media(item)
-
-
-def fingerprint(message: dict) -> str:
-    encoded = json.dumps(message, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-    return hashlib.sha256(encoded.encode()).hexdigest()
 
 
 def main_block(records: list[dict]) -> dict:
@@ -159,11 +154,12 @@ class ContextState:
             return
         state["messages"] = actual
         state["systemPrompt"] = system_prompt
-        hashes = {fingerprint(item) for item in actual}
         previous_hashes = state["backgroundHashes"]
-        if any(key not in hashes for key in previous_hashes):
-            state["backgroundNeedsRebase"] = True
-        state["backgroundHashes"] = [key for key in previous_hashes if key in hashes]
+        if previous_hashes:
+            hashes = {fingerprint(item) for item in actual}
+            if any(key not in hashes for key in previous_hashes):
+                state["backgroundNeedsRebase"] = True
+            state["backgroundHashes"] = [key for key in previous_hashes if key in hashes]
         self._save(state)
 
     def checkpoint(self, turn: int) -> None:

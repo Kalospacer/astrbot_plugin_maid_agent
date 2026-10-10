@@ -285,13 +285,6 @@ class ApiProxy:
     async def session_delete(self, payload: dict) -> dict:
         session_id = str(payload.get("sessionId") or "")
         self._require_session(session_id)
-        driver = self.registry.drivers.get(session_id)
-        if driver is not None and driver.busy:
-            raise RpcError(
-                "session-running",
-                "运行中的会话不能删除，请先停止任务。",
-                {"sessionId": session_id},
-            )
         await self.registry.delete_session(session_id)
         self.registry.publish_host_frame(c.frame_host_session_removed(session_id))
         return {"deleted": True}
@@ -356,8 +349,8 @@ class ApiProxy:
                 "agentName": meta.get("agentName", ""),
             },
         )
-        ContextState(child.dir).seed(seed_context)
         child_context = ContextState(child.dir)
+        child_context.seed(seed_context)
         child_context.checkpoint(sum(1 for e in events if e.get("type") == "turn/start"))
         from shutil import copytree
 
@@ -365,9 +358,6 @@ class ApiProxy:
         if parent_attachments.exists():
             copytree(parent_attachments, self.store.attachments_dir / child.session_id)
         driver = self.registry.attach(child.session_id)
-        driver.umo = str(meta.get("umo") or DASHBOARD_UMO)
-        driver.agent_name = str(meta.get("agentName") or "")
-        driver.sender_id = str(meta.get("senderId") or "dashboard")
         self.registry.publish_host_frame(
             c.frame_host_session_added(child.session_id, True, parentSessionId=session_id, agentPreset=header.get("agentPreset"))
         )

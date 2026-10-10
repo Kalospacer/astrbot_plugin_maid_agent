@@ -2,13 +2,12 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import uuid
 from copy import deepcopy
 from pathlib import Path
 
-from .contracts import now_ms, write_json_atomic
+from .contracts import fingerprint, now_ms, write_json_atomic
 
 FORMAT_VERSION = 3
 ACTIVE_STATUSES = frozenset({"starting", "running", "followup_pending"})
@@ -127,8 +126,7 @@ class TaskStore:
 
     def add_followup(self, task_id: str, content: str, main_context: list[dict]) -> dict:
         task = self.get(task_id)
-        encoded = json.dumps(main_context, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-        context_ref = hashlib.sha256(encoded.encode()).hexdigest()
+        context_ref = fingerprint(main_context)
         context_path = self.contexts_dir / f"{context_ref}.json"
         if not context_path.exists():
             write_json(context_path, {"mainContext": main_context})
@@ -182,6 +180,16 @@ class TaskStore:
         execution["delivery"] = "claimed"
         self.save(task)
         return True
+
+    def release_delivery_claim(self, task_id: str, round_id: str, fallback_status: str = "pending") -> bool:
+        """投递取消或异常时安全归还认领。"""
+        task = self.get(task_id)
+        execution = self.round(task, round_id)
+        if execution["delivery"] == "claimed":
+            execution["delivery"] = fallback_status
+            self.save(task)
+            return True
+        return False
 
     def delivery(self, task_id: str, round_id: str, status: str) -> None:
         task = self.get(task_id)

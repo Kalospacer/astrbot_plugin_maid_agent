@@ -324,7 +324,8 @@ class MaidAgent(Star):
         for session_id, driver in list(self.registry.drivers.items()):
             try:
                 last_seq = self.store.log(session_id).last_seq
-            except Exception:  # noqa: BLE001
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("[maid] 基线帧 last_seq 读取失败: session=%s err=%s", session_id[:8], exc)
                 continue
             yield server_request(
                 new_rpc_id(), "session/subscribed", c.frame_session_subscribed(session_id, last_seq)

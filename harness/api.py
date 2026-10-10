@@ -221,8 +221,8 @@ class ApiProxy:
                 agent_name
             )
             handoff_provider = str(getattr(handoff, "provider_id", None) or "")
-        except Exception:  # noqa: BLE001
-            pass
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[maid] 解析会话 agent 失败: session=%s agent=%s err=%s", session_id[:8], agent_name, exc)
 
         umo = str(meta.get("umo") or DASHBOARD_UMO)
         effective = (

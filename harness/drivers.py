@@ -276,7 +276,7 @@ class SessionDriver:
 
     @property
     def busy(self) -> bool:
-        return self.running or any(item["placement"] == "queued" for item in self.inbox)
+        return self.running or bool(self.inbox)
 
     def _meta_update(self, **fields) -> None:
         self.log.update_meta(**fields)
@@ -309,7 +309,7 @@ class SessionDriver:
         if self.running and task_id and not followup_id:
             pending = self.registry.tasks.add_followup(task_id, text, ContextState(self.log.dir).load()["mainContext"])
             followup_id = pending["id"]
-            main_context = pending["mainContext"]
+            main_context = self.registry.tasks.followup_context(pending)
         if self.running and self._steer_fn is not None:
             ticket = self._steer_fn(text)
             if ticket is not None and followup_id:
@@ -417,6 +417,7 @@ class SessionDriver:
                 closed = True
         if last_start_seq < 0 or closed:
             return False
+        ContextState(self.log.dir).checkpoint(start_count)
         event = self.log.append(
             "turn/end",
             {"turn": start_count, "reason": c.reason_interrupted()},
@@ -527,6 +528,8 @@ class SessionDriver:
             self.registry.settle_execution(self, result)
             return result
         finally:
+            ContextState(self.log.dir).checkpoint(turn)
+            self._clear_steering_items()
             if self._child_event is not None:
                 from astrbot.core.utils.active_event_registry import active_event_registry
 
@@ -664,15 +667,18 @@ class SessionDriver:
                 hooks.begin_step()
                 async with self.log.lock:
                     await self._emit("step/start", {"turn": turn, "step": step})
-                    chunk_index = {}
+                chunk_index = {}
+                has_response = False
                 try:
                     async for resp in runner.step():
+                        has_response = has_response or getattr(resp, "type", "") == "llm_result"
                         await self._consume_response(resp, turn, step, chunk_index)
                         if stop_requested_flag():
                             runner.request_stop()
                 finally:
                     persisted, prev_usage = await self._diff_messages(
-                        runner, persisted, prev_usage, turn, step, hooks
+                        runner, persisted, prev_usage, turn, step, hooks,
+                        has_response=has_response or bool(hooks.emitted),
                     )
                     await hooks.close_unfinished()
                     async with self.log.lock:
@@ -700,12 +706,15 @@ class SessionDriver:
                 hooks.begin_step()
                 async with self.log.lock:
                     await self._emit("step/start", {"turn": turn, "step": step})
+                has_response = False
                 try:
                     async for resp in runner.step():
+                        has_response = has_response or getattr(resp, "type", "") == "llm_result"
                         await self._consume_response(resp, turn, step, chunk_index)
                 finally:
                     persisted, prev_usage = await self._diff_messages(
-                        runner, persisted, prev_usage, turn, step, hooks
+                        runner, persisted, prev_usage, turn, step, hooks,
+                        has_response=has_response or bool(hooks.emitted),
                     )
                     await hooks.close_unfinished()
                     async with self.log.lock:
@@ -746,7 +755,6 @@ class SessionDriver:
         async with self.log.lock:
             await self._emit("turn/end", {"turn": turn, "reason": reason})
 
-        context_state.checkpoint(turn)
         if turn == 1:
             self.registry.schedule_title_generation(self, prompt_text)
 
@@ -804,7 +812,8 @@ class SessionDriver:
             await self._emit("assistant/chunk", {"turn": turn, "step": step, "chunk": chunk})
 
     async def _diff_messages(
-        self, runner: Any, persisted: int, prev_usage: tuple[int, int, int], turn: int, step: int, hooks: _TurnHooks
+        self, runner: Any, persisted: int, prev_usage: tuple[int, int, int], turn: int, step: int, hooks: _TurnHooks,
+        *, has_response: bool = True,
     ) -> tuple[int, tuple[int, int, int]]:
         """步末消息 diff → assistant/message / user/message 事件。
 
@@ -817,10 +826,10 @@ class SessionDriver:
         provider_name = str(getattr(provider_meta, "id", "") or self.registry.fallback_provider_name)
         model_name = str(getattr(provider_meta, "model", "") or "")
         if self._message_prefix and messages[:len(self._message_prefix)] != self._message_prefix:
-            # 压缩后旧长度不再是新消息起点，定位本步追加的最后一条 assistant。
+            # 没有实际答复时，压缩器新增的摘要与确认消息不是本步输出。
             old_ids = {id(item) for item in self._message_prefix}
             new_assistants = [index for index, item in enumerate(messages) if getattr(item, "role", "") == "assistant" and id(item) not in old_ids]
-            persisted = new_assistants[-1] if new_assistants else len(messages)
+            persisted = new_assistants[-1] if has_response and new_assistants else len(messages)
         self._message_prefix = list(messages)
         for message in messages[persisted:]:
             role = getattr(message, "role", "")
@@ -1086,8 +1095,43 @@ class DriverRegistry:
         state = self.chats.get(umo)
         return state is not None and state["epoch"] == epoch
 
-    def drop_context_binding(self, session_id: str) -> None:
-        self.chats.unbind_session(session_id)
+    async def drop_context_binding(self, session_id: str) -> None:
+        await self.chats.unbind_session(session_id)
+
+    async def delete_session(self, session_id: str) -> None:
+        from .rpc import RpcError
+
+        def check_idle():
+            driver = self.drivers.get(session_id)
+            if driver is not None and driver.busy:
+                raise RpcError("session-running", "运行中的会话不能删除，请先停止任务。", {"sessionId": session_id})
+
+        await self.chats.unbind_session(session_id, before_remove=check_idle)
+        check_idle()
+        self.store.delete_session(session_id)
+        driver = self.drivers.pop(session_id, None)
+        if driver is not None:
+            driver.interrupt()
+
+    async def retention_prune(self, retention_days: int) -> list[str]:
+        from .rpc import RpcError
+
+        cutoff = c.now_ms() - max(1, retention_days) * 86_400_000
+        removed = []
+        for sid in self.store.list_session_ids():
+            if self.store.log(sid).load_meta().get("updatedAt", 0) >= cutoff:
+                continue
+            try:
+                await self.delete_session(sid)
+            except RpcError as exc:
+                if exc.code != "session-running":
+                    raise
+            else:
+                removed.append(sid)
+        await self.chats.retention_prune(retention_days)
+        epochs = {self.chats._read(path)["epoch"] for path in self.chats.root.glob("*.json")}
+        self.tasks.retention_prune(retention_days, epochs)
+        return removed
 
     def manual_execution(self, driver: SessionDriver, message: dict) -> dict:
         """控制台手动选择 session 不经自动路由，但仍拥有独立 task。"""
@@ -1108,6 +1152,10 @@ class DriverRegistry:
             self.notify_turn_terminal(driver, result)
             return
         task = self.tasks.get(task_id)
+        scheduled = [item["id"] for item in task["followups"] if item["status"] == "scheduled" and item["id"] in execution.get("followup_ids", [])]
+        if scheduled and result["status"] in {"failed", "stopped", "interrupted"}:
+            followup_status = "failed" if result["status"] == "failed" else "cancelled"
+            self.tasks.set_followup_status(task_id, scheduled, followup_status)
         stopped = result["status"] in {"stopped", "interrupted"}
         pending = self.tasks.pending(task_id)
         if stopped:
@@ -1138,10 +1186,34 @@ class DriverRegistry:
             task["status"] = result["status"]
             self.tasks.save(task)
             next_round = self.tasks.start_round(task_id, driver.session_id, request)
-            follow_context = {**execution, "round_id": next_round["roundId"], "main_context": pending[-1]["mainContext"] if state is not None else None, "followup_ids": [item["id"] for item in pending]}
+            follow_context = {**execution, "round_id": next_round["roundId"], "main_context": self.tasks.followup_context(pending[-1]) if state is not None else None, "followup_ids": [item["id"] for item in pending]}
             driver.enqueue(c.user_message([c.text_block(request)]), run_context=follow_context)
         elif state is not None and state["epoch"] == execution["epoch"]:
             self.chats.settle(state)
+
+    def resume_pending_reports(self) -> None:
+        for task, execution in self.tasks.pending_reports():
+            sid = execution["sessionId"]
+            if not self.store.exists(sid):
+                continue
+            meta = self.store.log(sid).load_meta()
+            if meta.get("sourceKind") != "chat":
+                continue
+            umo = meta["umo"]
+            state = self.chats.get(umo)
+            if state is None or state["epoch"] != task["epoch"]:
+                self.tasks.delivery(task["taskId"], execution["roundId"], "skipped")
+                continue
+            self.notify_turn_terminal(self.attach(sid), {
+                "status": execution["status"],
+                "result": execution.get("result", ""),
+                "error": execution.get("error", ""),
+                "task_id": task["taskId"],
+                "round_id": execution["roundId"],
+                "epoch": task["epoch"],
+                "conversation_id": state["conversationId"],
+                "description": task["description"],
+            })
 
     def notify_turn_terminal(self, driver: SessionDriver, result: dict) -> None:
         callback = self.on_turn_terminal

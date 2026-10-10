@@ -42,18 +42,24 @@ class ChatStateStore:
             return None
         return self._read(path)
 
-    def unbind_session(self, session_id: str) -> None:
-        """会话记录被删除时撤销其上下文绑定，任务身份本身保留。"""
+    async def unbind_session(self, session_id: str, before_remove=None) -> None:
+        """与派发共用聊天锁，锁内重新读取绑定并检查是否可删除。"""
         for path in self.root.glob("*.json"):
-            state = self._read(path)
-            removed = [branch for branch, sid in state["branches"].items() if sid == session_id]
-            if not removed:
+            previous = self._read(path)
+            if session_id not in previous["branches"].values():
                 continue
-            for branch in removed:
-                del state["branches"][branch]
-            if state["defaultBranch"] in removed:
-                state["defaultBranch"] = None
-            self.save(state)
+            async with self.lock(previous["umo"]):
+                state = self.get(previous["umo"])
+                if state is None:
+                    continue
+                if before_remove is not None:
+                    before_remove()
+                removed = [branch for branch, sid in state["branches"].items() if sid == session_id]
+                for branch in removed:
+                    del state["branches"][branch]
+                if state["defaultBranch"] in removed:
+                    state["defaultBranch"] = None
+                self.save(state)
 
     def save(self, state: dict) -> None:
         write_json(self._path(state["umo"]), state)
@@ -83,9 +89,16 @@ class ChatStateStore:
         return self.tasks.list(scope=self.key(state["umo"]), epoch=state["epoch"])
 
     def active(self, state: dict) -> list[dict]:
-        from .tasks import ACTIVE_STATUSES
+        return self.tasks.active(scope=self.key(state["umo"]), epoch=state["epoch"])
 
-        return [task for task in self.task_list(state) if task["status"] in ACTIVE_STATUSES]
+    async def retention_prune(self, retention_days: int) -> None:
+        cutoff = self.clock() - max(1, retention_days) * 86_400_000
+        for path in self.root.glob("*.json"):
+            previous = self._read(path)
+            async with self.lock(previous["umo"]):
+                state = self.get(previous["umo"])
+                if state is not None and not state["branches"] and state["lastToolAt"] < cutoff and not self.task_list(state):
+                    path.unlink()
 
     def touch_tool(self, state: dict, timeout_hours: float) -> bool:
         """先失效过期 session，再刷新活跃时间；task 身份不受影响。"""

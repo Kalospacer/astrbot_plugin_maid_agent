@@ -54,7 +54,7 @@ from .katex_fonts import materialize_katex_fonts
 from .maid_dispatcher import ensure_default_subagent
 from .toolset_adapter import apply_main_tool_policy
 
-__version__ = "2.0.68"
+__version__ = "2.0.69"
 
 _SETTINGS_SCHEMA_CACHE: dict | None = None
 
@@ -128,6 +128,7 @@ class MaidAgent(Star):
         self._register_web_apis()
         self._materialize_katex_fonts()
         await ensure_default_subagent(self.context, self.maid_mode_config)
+        self.registry.resume_pending_reports()
         self._schedule_retention_cleanup()
         self._schedule_turn_watchdog()
         logger.info(
@@ -176,10 +177,7 @@ class MaidAgent(Star):
             while True:
                 await asyncio.sleep(3600)
                 try:
-                    removed = self.store.retention_prune(self.maid_mode_config.retention_days)
-                    for sid in removed:
-                        self.registry.drop_context_binding(sid)
-                        self.registry.drivers.pop(sid, None)
+                    removed = await self.registry.retention_prune(self.maid_mode_config.retention_days)
                     if removed:
                         logger.info("[maid] retention 清理 %d 个会话", len(removed))
                 except asyncio.CancelledError:
@@ -605,6 +603,7 @@ class MaidAgent(Star):
 
         active_event_registry.register(cron_event)
         active_event_registry.register_agent_stop_callback(cron_event, stop_report)
+        claimed = False
         try:
             async with session_lock_manager.acquire_lock(umo):
                 if not self.chat_runtime.allowed(result, umo):
@@ -612,6 +611,7 @@ class MaidAgent(Star):
                 if not self.registry.tasks.claim_delivery(result["task_id"], result["round_id"]):
                     # 等锁期间大小姐用 maid_task_output 自己读到了终态，别再转述一遍。
                     return False
+                claimed = True
                 conversation_id = await ctx.conversation_manager.get_curr_conversation_id(umo)
                 if conversation_id != result["conversation_id"]:
                     self.registry.tasks.delivery(result["task_id"], result["round_id"], "skipped")
@@ -684,6 +684,12 @@ class MaidAgent(Star):
                 self.registry.tasks.delivery(result["task_id"], result["round_id"], "sent")
             return True
         finally:
+            if claimed:
+                task = self.registry.tasks.get(result["task_id"])
+                execution = self.registry.tasks.round(task, result["round_id"])
+                if execution["delivery"] == "claimed":
+                    status = "pending" if self.chat_runtime.allowed(result, umo) else "skipped"
+                    self.registry.tasks.delivery(result["task_id"], result["round_id"], status)
             active_event_registry.unregister(cron_event)
 
     @filter.llm_tool(name=MAID_SEND_MESSAGE_TOOL_NAME)

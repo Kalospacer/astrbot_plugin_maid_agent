@@ -27,6 +27,8 @@ SETTINGS_KEYS = {
     "hide_native_tools",
     "hide_transfer_tools",
     "include_raw_user_input",
+    "show_maid_speech",
+    "show_maid_tool_status",
     "log_raw_llm_io",
     "dispatch_prompt_template",
     "memory_agent_names",
@@ -290,15 +292,14 @@ class ApiProxy:
                 "运行中的会话不能删除，请先停止任务。",
                 {"sessionId": session_id},
             )
-        self.registry.drop_context_binding(session_id)
-        self.store.delete_session(session_id)
-        self.registry.drivers.pop(session_id, None)
+        await self.registry.delete_session(session_id)
         self.registry.publish_host_frame(c.frame_host_session_removed(session_id))
         return {"deleted": True}
 
     async def session_fork(self, payload: dict) -> dict:
         session_id = str(payload.get("sessionId") or "")
         log = self._require_session(session_id)
+        driver = self.registry.driver(session_id)
         events = visible_events(log.read_events())
         at_seq = payload.get("atSeq")
         at_seq = int(at_seq) if isinstance(at_seq, int) else None
@@ -328,8 +329,14 @@ class ApiProxy:
         last_completed = next((e for e in reversed(events) if e.get("type") == "turn/end"), None)
         if last_completed is None:
             raise RpcError("fork-unavailable", "没有已完成的轮次可供分支。", {"sessionId": session_id})
+        context_state = ContextState(log.dir)
+        turn = int(last_completed["data"]["turn"])
+        checkpoint = log.dir / "context_checkpoints" / f"{turn}.json"
+        if not checkpoint.exists() and driver is not None and not driver.busy and turn == driver._count_turns():
+            # 仅最新终态能使用当前持久化消息，不能把后续轮次混入历史 Fork。
+            context_state.checkpoint(turn)
         try:
-            seed_context = ContextState(log.dir).fork_state(int(last_completed["data"]["turn"]))
+            seed_context = context_state.fork_state(turn)
         except ValueError as exc:
             raise RpcError("fork-unavailable", str(exc), {"sessionId": session_id}) from exc
 
@@ -340,8 +347,10 @@ class ApiProxy:
             agent_preset=header.get("agentPreset"),
             seed_events=events,
             meta={
-                "umo": DASHBOARD_UMO,
-                "senderId": "dashboard",
+                "umo": meta.get("umo") or DASHBOARD_UMO,
+                "senderId": meta.get("senderId") or "dashboard",
+                "identity": meta.get("identity", {}),
+                "providerId": meta.get("providerId", ""),
                 "sourceKind": "dashboard",
                 "notify": False,
                 "agentName": meta.get("agentName", ""),
@@ -356,9 +365,9 @@ class ApiProxy:
         if parent_attachments.exists():
             copytree(parent_attachments, self.store.attachments_dir / child.session_id)
         driver = self.registry.attach(child.session_id)
-        driver.umo = DASHBOARD_UMO
+        driver.umo = str(meta.get("umo") or DASHBOARD_UMO)
         driver.agent_name = str(meta.get("agentName") or "")
-        driver.sender_id = "dashboard"
+        driver.sender_id = str(meta.get("senderId") or "dashboard")
         self.registry.publish_host_frame(
             c.frame_host_session_added(child.session_id, True, parentSessionId=session_id, agentPreset=header.get("agentPreset"))
         )

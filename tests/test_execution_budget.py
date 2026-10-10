@@ -238,8 +238,7 @@ def test_compression_does_not_hide_current_step_from_console(tmp_path, monkeypat
             if self.calls == 2:
                 self.run_context.messages = [self.run_context.messages[0], Message(role="user", content="压缩后的摘要")]
             self.run_context.messages.append(Message(role="assistant", content=f"第{self.calls}步"))
-            if False:
-                yield None
+            yield SimpleNamespace(type="llm_result")
 
     async def run():
         registry = build_registry(tmp_path, MaidModeConfig())
@@ -256,6 +255,100 @@ def test_compression_does_not_hide_current_step_from_console(tmp_path, monkeypat
         texts = [event["data"]["message"]["content"][0]["text"] for event in log.read_events() if event["type"] == "assistant/message"]
         assert texts == ["第1步", "第2步", "第3步"]
         assert ContextState(log.dir).load()["messages"][0]["content"] == "压缩后的摘要"
+
+    asyncio.run(run())
+
+
+def test_compaction_without_model_response_does_not_reemit_history(tmp_path, monkeypatch):
+    class CompactErrorRunner(FakeRunner):
+        async def step(self):
+            self.calls += 1
+            if self.calls == 1:
+                self.run_context.messages.append(Message(role="assistant", content="真实答复"))
+                yield SimpleNamespace(type="llm_result")
+            else:
+                self.run_context.messages = [
+                    self.run_context.messages[0],
+                    Message(role="user", content="Our previous history conversation summary: 摘要"),
+                    Message(role="assistant", content="Acknowledged the summary of our previous conversation history."),
+                    *self.run_context.messages[1:],
+                ]
+                yield SimpleNamespace(type="err")
+
+    async def run():
+        registry = build_registry(tmp_path, MaidModeConfig())
+
+        async def build(**kwargs):
+            return CompactErrorRunner(kwargs, 2)
+
+        monkeypatch.setattr("astrbot_plugin_maid_agent.maid_dispatcher._build_runner", build)
+        log = registry.store.create_session(meta={"umo": "maid:FriendMessage:console", "agentName": "butler"})
+        driver = registry.attach(log.session_id)
+        driver._kick = lambda: None
+        message = c.user_message([c.text_block("派发要求")])
+        driver._run_context = registry.manual_execution(driver, message)
+        await driver.run_turn(message)
+        texts = [event["data"]["message"]["content"][0]["text"] for event in log.read_events() if event["type"] == "assistant/message"]
+        assert texts == ["真实答复"]
+        users = [event for event in log.read_events() if event["type"] == "user/message"]
+        assert len(users) == 1
+
+    asyncio.run(run())
+
+
+def test_scheduled_followup_failure_is_terminal_and_checkpointed(tmp_path):
+    async def run():
+        registry = build_registry(tmp_path, MaidModeConfig())
+        log = registry.store.create_session(meta={"umo": "maid:FriendMessage:console", "agentName": "butler"})
+        driver = registry.attach(log.session_id)
+        driver._kick = lambda: None
+        message = c.user_message([c.text_block("任务")])
+        driver.current_execution = registry.manual_execution(driver, message)
+        task_id = driver.current_execution["task_id"]
+        followup = registry.tasks.add_followup(task_id, "补充", [])
+        registry.settle_execution(driver, {"status": "completed", "result": "首轮完成", "error": ""})
+        queued = driver.inbox.pop(0)
+        driver._run_context = queued["run_context"]
+        registry.context.get_provider_by_id = lambda _pid: None
+        result = await driver.run_turn(queued["message"])
+        assert result["status"] == "failed"
+        task = registry.tasks.get(task_id)
+        assert task["followups"][0]["id"] == followup["id"]
+        assert task["followups"][0]["status"] == "failed"
+        assert not registry.tasks.pending(task_id)
+        assert not driver.inbox
+        assert ContextState(log.dir).fork_state(1)["version"] == 3
+
+    asyncio.run(run())
+
+
+def test_budget_terminal_clears_steering_queue(tmp_path, monkeypatch):
+    async def run():
+        registry = build_registry(tmp_path, MaidModeConfig(max_agent_steps=1))
+        log = registry.store.create_session(meta={"umo": "maid:FriendMessage:console", "agentName": "butler"})
+        driver = registry.attach(log.session_id)
+        driver._kick = lambda: None
+
+        class BudgetRunner(FakeRunner):
+            async def step(self):
+                self.calls += 1
+                if self.calls == 2:
+                    driver.steer("收尾时补充")
+                    driver._followup_tickets[-1][1].consumed = True
+                self.run_context.messages.append(Message(role="assistant", content="答复"))
+                yield SimpleNamespace(type="llm_result")
+
+        async def build(**kwargs):
+            return BudgetRunner(kwargs, 50)
+
+        monkeypatch.setattr("astrbot_plugin_maid_agent.maid_dispatcher._build_runner", build)
+        message = c.user_message([c.text_block("任务")])
+        driver._run_context = registry.manual_execution(driver, message)
+        result = await driver.run_turn(message)
+        assert result["status"] == "step_limit"
+        assert not driver.inbox
+        assert not driver.busy
+        assert registry.running_count() == 0
 
     asyncio.run(run())
 

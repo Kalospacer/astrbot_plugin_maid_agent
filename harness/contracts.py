@@ -6,11 +6,13 @@ Python 侧用构造器保证写入形状，读取侧按 type 判别）。
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import time
 import uuid
 from pathlib import Path
+from typing import Any
 
 SESSION_FORMAT_VERSION = 3
 
@@ -30,6 +32,12 @@ def write_json_atomic(path: Path, payload: dict, *, indent: int | None = None) -
     with open(temporary, "w", encoding="utf-8") as handle:
         json.dump(payload, handle, ensure_ascii=False, indent=indent)
     os.replace(temporary, path)
+
+
+def fingerprint(payload: Any) -> str:
+    """计算结构的规范化 JSON sha256 摘要。"""
+    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(encoded.encode()).hexdigest()
 
 
 def text_block(text: str) -> dict:
@@ -95,35 +103,12 @@ def tool_result_message(call_id: str, content: list[dict], is_error: bool) -> di
     }
 
 
-def block_start_chunk(index: int, block_type: str) -> dict:
-    return {"type": "block-start", "index": index, "blockType": block_type}
-
-
 def text_delta_chunk(index: int, text: str) -> dict:
     return {"type": "text-delta", "index": index, "text": text}
 
 
 def reasoning_delta_chunk(index: int, text: str) -> dict:
     return {"type": "reasoning-delta", "index": index, "text": text}
-
-
-def tool_call_delta_chunk(index: int, call_id: str, name: str | None, arguments_delta: str) -> dict:
-    chunk: dict = {"type": "tool-call-delta", "index": index, "id": call_id, "argumentsDelta": arguments_delta}
-    if name is not None:
-        chunk["name"] = name
-    return chunk
-
-
-def block_end_chunk(index: int, block: dict) -> dict:
-    return {"type": "block-end", "index": index, "block": block}
-
-
-def usage_chunk(usage: dict) -> dict:
-    return {"type": "usage", "usage": usage}
-
-
-def finish_chunk(reason: dict) -> dict:
-    return {"type": "finish", "reason": reason}
 
 
 SURFACE_EVENT_TYPES = {"user/message", "assistant/message", "tool/result"}
@@ -187,16 +172,8 @@ def reason_error(message: str, code: str = "UNKNOWN") -> dict:
     return {"kind": "error", "error": {"message": message, "code": code}}
 
 
-def reason_max_tokens() -> dict:
-    return {"kind": "max-tokens"}
-
-
 def reason_interrupted() -> dict:
     return {"kind": "interrupted"}
-
-
-def reason_blocked() -> dict:
-    return {"kind": "blocked"}
 
 
 def generic_call_view(title: str, kind: str = "other", raw_input=None, locations=None) -> dict:
@@ -221,15 +198,6 @@ def diff_call_view(title: str, diffs: list[dict], locations=None) -> dict:
     view: dict = {"card": "diff", "title": title, "diffs": diffs}
     if locations is not None:
         view["locations"] = locations
-    return view
-
-
-def generic_result_view(title: str | None = None, content: list[dict] | None = None) -> dict:
-    view: dict = {"card": "generic"}
-    if title is not None:
-        view["title"] = title
-    if content is not None:
-        view["content"] = content
     return view
 
 
@@ -291,10 +259,6 @@ def frame_session_projection(session_id: str, key: str, value, seq: int) -> dict
     return {"type": "session/projection", "sessionId": session_id, "key": key, "value": value, "seq": seq}
 
 
-def frame_stream_error(message: str, code: str = "internal") -> dict:
-    return {"type": "stream/error", "error": {"code": code, "message": message, "details": {}}}
-
-
 def frame_host_session_added(session_id: str, blank: bool, **extra) -> dict:
     payload: dict = {"type": "host/session-added", "sessionId": session_id, "blank": blank}
     payload.update({k: v for k, v in extra.items() if v is not None})
@@ -307,10 +271,6 @@ def frame_host_session_removed(session_id: str) -> dict:
 
 def frame_host_session_status(session_id: str, running: bool) -> dict:
     return {"type": "host/session-status", "sessionId": session_id, "running": running}
-
-
-def frame_host_agent_error(session_id: str, message: str) -> dict:
-    return {"type": "host/agent-error", "sessionId": session_id, "message": message}
 
 
 def is_token_delta(chunk: dict) -> bool:

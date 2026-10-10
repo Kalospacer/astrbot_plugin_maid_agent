@@ -1,15 +1,8 @@
-"""日志门面：AstrBot 运行时用 astrbot logger，离线测试回落 std logging。"""
+"""日志门面与原始 LLM I/O DEBUG dump。"""
 
 from __future__ import annotations
 
-import logging
-
-try:  # pragma: no cover - AstrBot 运行时
-    from astrbot.api import logger as _logger
-except ImportError:
-    _logger = logging.getLogger("astrbot_plugin_maid_agent.harness")
-
-logger = _logger
+from astrbot.api import logger
 
 
 def dump_raw_llm_request(req, *, source: str) -> None:

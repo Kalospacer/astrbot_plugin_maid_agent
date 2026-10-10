@@ -27,7 +27,7 @@
 
 ## 运行前提
 
-- 使用包含 `agent_runner.config` 配置结构及 ToolLoopAgentRunner 的当前 AstrBot 版本。
+- AstrBot `>= 4.27.3`，需要主代理运行钩子与停止回调；同时支持新旧两种执行配置布局。
 - 一个 subagent 都没配置也没关系：插件启动时会自动创建一个默认管家（名称取 `default_agent_name`，默认 `butler`，可以使用全部工具），已有任何 subagent 配置时绝不会覆盖。
 - 想用自己配置的管家，参考文末「SubAgent 配置示例」。
 
@@ -143,13 +143,13 @@
 
 同一主对话共用 `session_idle_timeout_hours`，默认五小时，可配置正数小时。任一任务正在运行、启动或自动补跑时不计空闲；最后一个任务结束后开始计时。空闲时使用任一模型工具都会刷新活跃时间。超过窗口只刷新 session 上下文，不作废任务编号：继续旧 `task_id` 仍定位原工作，但使用重新继承当前主对话的新上下文。
 
-重启保留有效上下文、默认选择与计时，中断任务不自动重跑。修改管家人格或模型保留工作记录，下一轮应用新配置。
+重启保留有效上下文、默认选择与计时，中断任务不自动重跑；已结束但未送达的报告会重新投递，失效代次的报告仍会被拦截。修改管家人格或模型保留工作记录，下一轮应用新配置。
 
 **重置联动**
 
 AstrBot 的 `/new`、`/reset` 停止旧执行，取消未处理补充和自动补跑，旧进度和报告不能再进入新对话。`/reset` 不换对话 ID，因此另有重置代次隔离。
 
-**数据存储**：新运行数据位于 `data/plugin_data/astrbot_plugin_maid_agent/runtime_v3/`。任务及执行结果存 `tasks/`，主对话路由与窗口状态存 `chat_states/`；session 的完整消息存 `sessions/<session_id>/context.json`，展示事件存 `events.jsonl`，已完成轮次的分支快照存 `context_checkpoints/`。图片附件存 `attachments/`。不迁移旧格式、不从旧日志兼容恢复，也不自动删除旧目录。持久记忆仍独立，不随空闲窗口清除。
+**数据存储**：新运行数据位于 `data/plugin_data/astrbot_plugin_maid_agent/runtime_v3/`。任务及执行结果存 `tasks/`，主对话路由与窗口状态存 `chat_states/`；session 的完整消息存 `sessions/<session_id>/context.json`，展示事件存 `events.jsonl`，已完成轮次的分支快照存 `context_checkpoints/`。图片附件存 `attachments/`。不迁移旧格式、不从旧日志兼容恢复，也不自动删除旧目录。持久记忆仍独立，不随空闲窗口清除。补充要求的主背景快照存于 `tasks/contexts/`，任务记录只保存引用；运行状态查询使用作用域索引。保留期清理失效代次的旧任务、无用快照与空路由状态，当前主对话的任务编号不随 session 清理而失效。
 
 ---
 

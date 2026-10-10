@@ -22,17 +22,10 @@ from copy import deepcopy
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-try:  # pragma: no cover - AstrBot 运行时
-    from astrbot.api import logger
-except ImportError:
-    from ._log import logger
-try:  # pragma: no cover - AstrBot 运行时
-    from astrbot.core.agent.hooks import BaseAgentRunHooks
-except ImportError:
-
-    class BaseAgentRunHooks:  # type: ignore[no-redef]
-        def __init__(self, *args, **kwargs):
-            pass
+from astrbot.api import logger
+from astrbot.api.event import MessageChain
+from astrbot.core.agent.hooks import BaseAgentRunHooks
+from astrbot.core.message.components import File, Image
 
 from ..constants import DASHBOARD_UMO
 from . import contracts as c
@@ -925,9 +918,6 @@ class SessionDriver:
         sink = self._voice_sink
         if sink is not None:
             try:
-                from astrbot.api.event import MessageChain
-                from astrbot.core.message.components import File, Image
-
                 stored = self.registry.store.attachment_path(self.session_id, ref["attachmentId"])
                 component = Image.fromFileSystem(str(stored)) if ref["mediaType"].startswith("image/") else File(name=ref["name"], file=str(stored))
                 await sink.send(MessageChain(chain=[component]))

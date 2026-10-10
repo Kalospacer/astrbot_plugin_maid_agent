@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+import json
 import mimetypes
 import os
 import re
@@ -316,8 +317,6 @@ class SessionStore:
             }
             meta_path = target_dir / f".{attachment_id}.json"
             try:
-                import json
-
                 saved = json.loads(meta_path.read_text(encoding="utf-8"))
                 if isinstance(saved, dict):
                     ref.update({key: saved[key] for key in ("name", "mediaType") if key in saved})

@@ -51,16 +51,16 @@ class ChatRuntime:
     async def snapshot(self, event, state: dict) -> list[dict]:
         run_context = event.get_extra(MAIN_CONTEXT_KEY)
         if run_context is not None:
-            return freeze_messages(run_context.messages)
+            return freeze_messages(run_context.messages, exclude_system=True)
         req = event.get_extra(MAIN_REQUEST_KEY)
         if req is not None:
-            records = freeze_messages(req.contexts or [])
+            records = freeze_messages(req.contexts or [], exclude_system=True)
             current = await req.assemble_context()
             return [*records, *freeze_messages([current])]
         conv = await self.plugin.context.conversation_manager.get_conversation(event.unified_msg_origin, state["conversationId"])
         import json
 
-        return freeze_messages(json.loads(conv.history or "[]")) if conv is not None else []
+        return freeze_messages(json.loads(conv.history or "[]"), exclude_system=True) if conv is not None else []
 
     def invalidate(self, state: dict) -> None:
         """成功 new/reset 后取消旧代次运行和未消费要求。"""
@@ -124,7 +124,10 @@ class ChatRuntime:
                 return self.error(state, "目标工作上下文正被运行任务使用，不排队。补充运行任务请使用 maid_send_message，独立新建请设置 force_new=true。")
             await ensure_default_subagent(self.plugin.context, self.plugin.maid_mode_config)
             agent_name = self.plugin.maid_mode_config.default_agent_name
-            self.registry.resolve_handoff(agent_name)
+            try:
+                self.registry.resolve_handoff(agent_name)
+            except ValueError as exc:
+                return self.error(state, str(exc))
             main_context = await self.snapshot(event, state)
             identity = identity_from_event(event)
             images = await image_paths_from_event(event)

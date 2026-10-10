@@ -18,12 +18,12 @@ BACKGROUND_HEADER = (
 )
 
 
-def freeze_messages(messages: list) -> list[dict]:
+def freeze_messages(messages: list, *, exclude_system: bool = False) -> list[dict]:
     """复制运行消息，不改动主 runner；本地媒体转为稳定 data URI。"""
     copied = []
     for message in messages:
         item = deepcopy(message if isinstance(message, dict) else message.model_dump())
-        if item.get("role") == "_checkpoint":
+        if item.get("role") == "_checkpoint" or (exclude_system and item.get("role") == "system"):
             continue
         copied.append(item)
     _freeze_media(copied)
@@ -103,6 +103,8 @@ class ContextState:
     @staticmethod
     def _update(state: dict, main_context: list[dict]) -> tuple[list[dict], bool]:
         previous = state["mainContext"]
+        if state.get("backgroundNeedsRebase", False):
+            return main_context, True
         if main_context == previous:
             return [], False
         if main_context[:len(previous)] == previous:
@@ -112,7 +114,7 @@ class ContextState:
     def prepare(self, main_context: list[dict] | None) -> list[dict]:
         state = self.load()
         if main_context is not None:
-            incoming = freeze_messages(main_context)
+            incoming = freeze_messages(main_context, exclude_system=True)
             delta, rebase = self._update(state, incoming)
             if delta:
                 block = main_block(delta)
@@ -129,6 +131,7 @@ class ContextState:
                 state["messages"] = [item for item in state["messages"] if fingerprint(item) not in hashes]
                 state["backgroundHashes"] = []
             state["mainContext"] = incoming
+            state["backgroundNeedsRebase"] = False
             self._save(state)
         return deepcopy(state["messages"])
 
@@ -142,7 +145,7 @@ class ContextState:
 
     def mark_main_synced(self, main_context: list[dict]) -> None:
         state = self.load()
-        state["mainContext"] = freeze_messages(main_context)
+        state["mainContext"] = freeze_messages(main_context, exclude_system=True)
         self._save(state)
 
     def capture(self, messages: list, system_prompt: str) -> None:
@@ -157,7 +160,10 @@ class ContextState:
         state["messages"] = actual
         state["systemPrompt"] = system_prompt
         hashes = {fingerprint(item) for item in actual}
-        state["backgroundHashes"] = [key for key in state["backgroundHashes"] if key in hashes]
+        previous_hashes = state["backgroundHashes"]
+        if any(key not in hashes for key in previous_hashes):
+            state["backgroundNeedsRebase"] = True
+        state["backgroundHashes"] = [key for key in previous_hashes if key in hashes]
         self._save(state)
 
     def checkpoint(self, turn: int) -> None:

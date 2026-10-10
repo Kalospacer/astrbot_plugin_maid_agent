@@ -1,10 +1,10 @@
 name: astrbot_plugin_maid_agent
-version: "2.0.68"
+version: "2.0.69"
 description: "大小姐+管家双代理角色扮演：大小姐只负责聊天，工具调用全部交给管家 subagent 执行，主模型上下文保持纯净不被工具提示词污染。"
 author: "Kalo"
 repo: "https://github.com/Kalospacer/astrbot_plugin_maid_agent"
 display_name: "代理女仆"
-astrbot_version: ">=4.20.0"
+astrbot_version: ">=4.27.3"
 # ============================================================
 # 依赖说明
 # ============================================================

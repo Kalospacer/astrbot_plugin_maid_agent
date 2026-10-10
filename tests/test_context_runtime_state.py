@@ -154,6 +154,36 @@ def test_rebase_keeps_multimedia_background_identification(tmp_path):
     assert "data:image" not in str(next_context)
 
 
+def test_background_is_reanchored_after_child_context_compression(tmp_path):
+    context = ContextState(tmp_path)
+    main = [{"role": "system", "content": "主代理人格"}, {"role": "user", "content": "原始背景"}]
+    initial = context.prepare(main)
+    work = {"role": "assistant", "content": "子代理工作记录"}
+    context.capture([*initial, work], "子代理人格")
+    context.capture([work], "子代理人格")
+    assert context.load()["backgroundNeedsRebase"]
+    restarted = ContextState(tmp_path)
+    restored = restarted.prepare(main)
+    assert restored == [main_block(main[1:]), work]
+    assert not restarted.load()["backgroundNeedsRebase"]
+    assert "主代理人格" not in str(restored)
+    delta = {"role": "user", "content": "新增任务背景"}
+    assert restarted.prepare([*main, delta]) == [*restored, main_block([delta])]
+
+
+def test_reanchor_replaces_remaining_partial_background_once(tmp_path):
+    context = ContextState(tmp_path)
+    main = [{"role": "user", "content": "背景一"}]
+    first = context.prepare(main)
+    main.append({"role": "user", "content": "背景二"})
+    second = context.prepare(main)
+    work = {"role": "assistant", "content": "工作摘要"}
+    context.capture([second[-1], work], "")
+    assert context.prepare(main) == [main_block(main), work]
+    assert context.prepare(main) == [main_block(main), work]
+    assert first[0] != second[-1]
+
+
 def test_restart_keeps_idle_clock_and_default_choice(tmp_path):
     tasks = TaskStore(tmp_path)
     chats = ChatStateStore(tmp_path, tasks, clock=lambda: 1000)

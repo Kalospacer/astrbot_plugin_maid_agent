@@ -267,7 +267,7 @@ def test_context_deletion_does_not_delete_task_identity(runtime):
         task_id = created["task_id"]
         sid = rt.tasks.get(task_id)["sessionId"]
         finish(rt, task_id)
-        rt.registry.drop_context_binding(sid)
+        await rt.registry.drop_context_binding(sid)
         resumed = await rt.dispatch(event, prompt="继续", task_id=task_id)
         assert resumed["task_id"] == task_id
         assert rt.tasks.get(task_id)["sessionId"] != sid
@@ -310,6 +310,130 @@ def test_model_schema_uses_tasks_not_session_or_agent_names():
     assert set(schema["properties"]) == {"prompt", "task_id", "force_new", "tasks"}
     assert set(schema["properties"]["tasks"]["items"]["properties"]) == {"prompt"}
     assert set(tools["maid_send_message"].parameters["properties"]) == {"task_id", "message"}
+
+
+def test_missing_default_agent_returns_structured_error(runtime):
+    async def run():
+        rt, event, _clock = runtime
+
+        def missing(_name):
+            raise ValueError("未找到可用的子 agent: butler")
+
+        rt.registry.resolve_handoff = missing
+        result = await rt.dispatch(event, prompt="检查配置")
+        assert result["status"] == "error"
+        assert "未找到" in result["error"]
+        assert result["tasks"] == []
+        assert not rt.registry.drivers
+
+    asyncio.run(run())
+
+
+def test_main_snapshot_excludes_system_but_preserves_dialogue(runtime):
+    async def run():
+        rt, event, _clock = runtime
+        event.extras[MAIN_CONTEXT_KEY].messages = [
+            {"role": "system", "content": "主代理人格"},
+            {"role": "user", "content": "工作背景"},
+            {"role": "assistant", "content": "主代理答复"},
+        ]
+        result = await rt.dispatch(event, prompt="检查")
+        task = rt.tasks.get(result["task_id"])
+        main = rt.registry.drivers[task["sessionId"]].inbox[0]["run_context"]["main_context"]
+        assert [item["role"] for item in main] == ["user", "assistant"]
+        assert "主代理人格" not in str(main)
+
+    asyncio.run(run())
+
+
+def test_session_delete_waits_for_dispatch_and_preserves_other_branches(runtime, monkeypatch):
+    from astrbot_plugin_maid_agent.harness.api import ApiProxy
+
+    async def run():
+        rt, event, _clock = runtime
+        first = await rt.dispatch(event, prompt="A")
+        sid = rt.tasks.get(first["task_id"])["sessionId"]
+        finish(rt, first["task_id"])
+        entered, release = asyncio.Event(), asyncio.Event()
+
+        async def pause(*_args):
+            entered.set()
+            await release.wait()
+
+        monkeypatch.setattr("astrbot_plugin_maid_agent.harness.chat_dispatch.ensure_default_subagent", pause)
+        proxy = ApiProxy(store=rt.plugin.store, registry=rt.registry, config_holder=None)
+        dispatch = asyncio.create_task(rt.dispatch(event, prompt="B", force_new=True))
+        await entered.wait()
+        delete = asyncio.create_task(proxy.session_delete({"sessionId": sid}))
+        await asyncio.sleep(0)
+        assert not delete.done()
+        release.set()
+        second = await dispatch
+        assert (await delete)["deleted"]
+        branches = rt.chats.get(UMO)["branches"]
+        second_sid = rt.tasks.get(second["task_id"])["sessionId"]
+        assert sid not in branches.values()
+        assert second_sid in branches.values()
+        assert not rt.plugin.store.exists(sid)
+
+    asyncio.run(run())
+
+
+def test_delete_rechecks_busy_after_waiting_for_chat_lock(runtime, monkeypatch):
+    from astrbot_plugin_maid_agent.harness.api import ApiProxy
+    from astrbot_plugin_maid_agent.harness.rpc import RpcError
+
+    async def run():
+        rt, event, _clock = runtime
+        first = await rt.dispatch(event, prompt="A")
+        sid = rt.tasks.get(first["task_id"])["sessionId"]
+        finish(rt, first["task_id"])
+        entered, release = asyncio.Event(), asyncio.Event()
+
+        async def pause(*_args):
+            entered.set()
+            await release.wait()
+
+        monkeypatch.setattr("astrbot_plugin_maid_agent.harness.chat_dispatch.ensure_default_subagent", pause)
+        proxy = ApiProxy(store=rt.plugin.store, registry=rt.registry, config_holder=None)
+        dispatch = asyncio.create_task(rt.dispatch(event, prompt="B"))
+        await entered.wait()
+        delete = asyncio.create_task(proxy.session_delete({"sessionId": sid}))
+        await asyncio.sleep(0)
+        release.set()
+        await dispatch
+        with pytest.raises(RpcError, match="运行中"):
+            await delete
+        assert sid in rt.chats.get(UMO)["branches"].values()
+        assert rt.plugin.store.exists(sid)
+
+    asyncio.run(run())
+
+
+def test_synchronous_settlement_cannot_interleave_its_read_and_save(runtime, monkeypatch):
+    async def run():
+        rt, event, _clock = runtime
+        first = await rt.dispatch(event, prompt="A")
+        entered, release = asyncio.Event(), asyncio.Event()
+
+        async def pause(*_args):
+            entered.set()
+            await release.wait()
+
+        monkeypatch.setattr("astrbot_plugin_maid_agent.harness.chat_dispatch.ensure_default_subagent", pause)
+        dispatch = asyncio.create_task(rt.dispatch(event, prompt="B", force_new=True))
+        await entered.wait()
+        finish(rt, first["task_id"])
+        # 收尾没有 await，持锁派发只会在收尾完成之后继续。
+        assert not dispatch.done()
+        release.set()
+        second = await dispatch
+        branches = rt.chats.get(UMO)["branches"]
+        assert rt.tasks.get(first["task_id"])["sessionId"] in branches.values()
+        assert rt.tasks.get(second["task_id"])["sessionId"] in branches.values()
+        assert rt.chats.get(UMO)["idleSince"] is None
+
+    asyncio.run(run())
 
 
 def test_stopped_main_request_does_not_create_late_task(runtime):

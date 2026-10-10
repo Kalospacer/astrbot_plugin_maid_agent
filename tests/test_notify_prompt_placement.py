@@ -201,3 +201,119 @@ def test_notify_relay_instruction_lives_in_prompt_not_system_prompt(registry, st
     assert "[管家任务通知]" in assistant_turn["content"]
     assert "端口检查完成，一切正常。" in assistant_turn["content"]
     assert "转述" not in assistant_turn["content"]
+
+
+@pytest.fixture()
+def notification(registry, store, monkeypatch):
+    agent = object.__new__(MaidAgent)
+    agent.context = _Ctx()
+    agent.store = store
+    agent.registry = registry
+    agent.maid_mode_config = registry.config
+    agent.chat_runtime = ChatRuntime(agent)
+    log = store.create_session(agent_preset="butler", meta={"umo": UMO, "agentName": "butler", "sourceKind": "chat"})
+    driver = registry.attach(log.session_id)
+    state = registry.chats.reset(UMO, "cid-1")
+    task = registry.tasks.create(scope=registry.chats.key(UMO), epoch=state["epoch"], branch="branch", request="任务")
+    execution = registry.tasks.start_round(task["taskId"], log.session_id, "任务")
+    registry.tasks.finish(task["taskId"], execution["roundId"], {"status": "completed", "result": "任务报告", "error": ""})
+    result = {
+        "status": "completed", "result": "任务报告", "error": "",
+        "task_id": task["taskId"], "round_id": execution["roundId"],
+        "epoch": state["epoch"], "conversation_id": "cid-1", "description": "任务",
+    }
+    fake_ama = types.ModuleType("astrbot.core.astr_main_agent")
+    fake_ama.MainAgentBuildConfig = lambda **kwargs: types.SimpleNamespace(**kwargs)
+
+    async def build(**kwargs):
+        return types.SimpleNamespace(provider_request=kwargs["req"], agent_runner=_Runner("已完成"))
+
+    fake_ama.build_main_agent = build
+    fake_message_tools = types.ModuleType("astrbot.core.tools.message_tools")
+    fake_message_tools.SendMessageToUserTool = type("SendMessageToUserTool", (), {})
+    monkeypatch.setitem(sys.modules, "astrbot.core.astr_main_agent", fake_ama)
+    monkeypatch.setitem(sys.modules, "astrbot.core.tools.message_tools", fake_message_tools)
+    return agent, driver, result, fake_ama
+
+
+def delivery_of(agent, result):
+    task = agent.registry.tasks.get(result["task_id"])
+    return agent.registry.tasks.round(task, result["round_id"])["delivery"]
+
+
+@pytest.mark.parametrize("failure", ["conversation", "build"])
+def test_notify_early_return_releases_owned_claim(notification, failure):
+    agent, driver, result, fake_ama = notification
+
+    async def unavailable(*_args, **_kwargs):
+        return None
+
+    if failure == "conversation":
+        agent.context.conversation_manager.get_conversation = unavailable
+    else:
+        fake_ama.build_main_agent = unavailable
+    assert asyncio.run(agent._notify_main_agent(driver, result)) is False
+    assert delivery_of(agent, result) == "pending"
+
+
+def test_notify_cancellation_releases_claim(notification):
+    agent, driver, result, fake_ama = notification
+
+    async def run():
+        entered = asyncio.Event()
+
+        async def build(**_kwargs):
+            entered.set()
+            await asyncio.Event().wait()
+
+        fake_ama.build_main_agent = build
+        report = asyncio.create_task(agent._notify_main_agent(driver, result))
+        await entered.wait()
+        assert delivery_of(agent, result) == "claimed"
+        report.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await report
+        assert delivery_of(agent, result) == "pending"
+
+    asyncio.run(run())
+
+
+def test_unowned_delivery_claim_is_not_released(notification):
+    agent, driver, result, _fake_ama = notification
+    assert agent.registry.tasks.claim_delivery(result["task_id"], result["round_id"])
+    assert asyncio.run(agent._notify_main_agent(driver, result)) is False
+    assert delivery_of(agent, result) == "claimed"
+
+
+def test_restart_recovers_only_pending_report_not_execution(notification):
+    agent, _driver, result, _fake_ama = notification
+    agent.registry.tasks.claim_delivery(result["task_id"], result["round_id"])
+
+    async def run():
+        resumed = DriverRegistry(agent.context, agent.store, _Hub(), _Hub(), agent.maid_mode_config)
+        reports = []
+
+        async def terminal(driver, report):
+            reports.append(report)
+            assert not driver.busy
+
+        resumed.on_turn_terminal = terminal
+        resumed.resume_pending_reports()
+        await asyncio.gather(*list(resumed._background_tasks))
+        assert len(reports) == 1
+        assert reports[0]["task_id"] == result["task_id"]
+        assert reports[0]["round_id"] == result["round_id"]
+        assert reports[0]["result"] == "任务报告"
+        task = resumed.tasks.get(result["task_id"])
+        assert len(task["rounds"]) == 1
+        assert task["rounds"][0]["delivery"] == "pending"
+        await resumed.shutdown()
+
+    asyncio.run(run())
+
+
+def test_restart_skips_report_from_reset_epoch(notification):
+    agent, _driver, result, _fake_ama = notification
+    agent.registry.chats.reset(UMO, "cid-1")
+    agent.registry.resume_pending_reports()
+    assert delivery_of(agent, result) == "skipped"

@@ -41,7 +41,6 @@ from .harness.chat_dispatch import MAIN_CONTEXT_KEY, MAIN_REQUEST_KEY, ChatRunti
 from .harness.drivers import DriverRegistry
 from .harness.hub import StreamHub, sse_frame
 from .harness.rpc import (
-    client_response_receipt,
     internal_error,
     new_rpc_id,
     parse_client_request,
@@ -54,7 +53,7 @@ from .katex_fonts import materialize_katex_fonts
 from .maid_dispatcher import ensure_default_subagent
 from .toolset_adapter import apply_main_tool_policy
 
-__version__ = "2.0.68"
+__version__ = "2.0.69"
 
 _SETTINGS_SCHEMA_CACHE: dict | None = None
 
@@ -128,6 +127,7 @@ class MaidAgent(Star):
         self._register_web_apis()
         self._materialize_katex_fonts()
         await ensure_default_subagent(self.context, self.maid_mode_config)
+        self.registry.resume_pending_reports()
         self._schedule_retention_cleanup()
         self._schedule_turn_watchdog()
         logger.info(
@@ -176,10 +176,7 @@ class MaidAgent(Star):
             while True:
                 await asyncio.sleep(3600)
                 try:
-                    removed = self.store.retention_prune(self.maid_mode_config.retention_days)
-                    for sid in removed:
-                        self.registry.drop_context_binding(sid)
-                        self.registry.drivers.pop(sid, None)
+                    removed = await self.registry.retention_prune(self.maid_mode_config.retention_days)
                     if removed:
                         logger.info("[maid] retention 清理 %d 个会话", len(removed))
                 except asyncio.CancelledError:
@@ -223,7 +220,6 @@ class MaidAgent(Star):
             (f"{prefix}/api/file", self.web_file, ["GET"], "attachment download"),
             (f"{prefix}/api/events.mux", self.web_events_mux, ["GET"], "events.mux SSE"),
             (f"{prefix}/api/events.host", self.web_events_host, ["GET"], "events.host SSE"),
-            (f"{prefix}/api/respond", self.web_respond, ["POST"], "RPC respond"),
             (f"{prefix}/api/<path:method>", self.web_rpc, ["POST"], "unary RPC"),
         ]
         for route, handler, methods, desc in routes:
@@ -317,16 +313,6 @@ class MaidAgent(Star):
             logger.error("[maid] RPC %s 失败: %s", method_name, exc, exc_info=True)
             return jsonify(server_response_error(rpc_id, internal_error(str(exc))))
 
-    async def web_respond(self):
-        try:
-            body_result = request.get_json()
-            body = await body_result if isawaitable(body_result) else body_result
-        except Exception:  # noqa: BLE001
-            body = None
-        if not isinstance(body, dict) or body.get("type") != "client-response":
-            return jsonify(client_response_receipt(False, "bad-response"))
-        return jsonify(client_response_receipt(False, "not-pending"))
-
     async def web_events_mux(self):
         return await self._sse_response(self.mux_hub, self._mux_baselines())
 
@@ -338,7 +324,8 @@ class MaidAgent(Star):
         for session_id, driver in list(self.registry.drivers.items()):
             try:
                 last_seq = self.store.log(session_id).last_seq
-            except Exception:  # noqa: BLE001
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("[maid] 基线帧 last_seq 读取失败: session=%s err=%s", session_id[:8], exc)
                 continue
             yield server_request(
                 new_rpc_id(), "session/subscribed", c.frame_session_subscribed(session_id, last_seq)
@@ -541,10 +528,6 @@ class MaidAgent(Star):
             delivered = await self._notify_main_agent(driver, result)
             await driver.emit_delivery("main-summary", "sent" if delivered else "skipped")
         except Exception as exc:
-            task = self.registry.tasks.get(task_id)
-            execution = self.registry.tasks.round(task, round_id)
-            if execution["delivery"] == "claimed":
-                self.registry.tasks.delivery(task_id, round_id, "pending")
             await driver.emit_delivery("main-summary", "failed", str(exc))
             logger.error("[maid] 任务报告投递失败: task=%s round=%s err=%s", task_id[:8], round_id[:8], exc, exc_info=True)
 
@@ -605,6 +588,7 @@ class MaidAgent(Star):
 
         active_event_registry.register(cron_event)
         active_event_registry.register_agent_stop_callback(cron_event, stop_report)
+        claimed = False
         try:
             async with session_lock_manager.acquire_lock(umo):
                 if not self.chat_runtime.allowed(result, umo):
@@ -612,6 +596,7 @@ class MaidAgent(Star):
                 if not self.registry.tasks.claim_delivery(result["task_id"], result["round_id"]):
                     # 等锁期间大小姐用 maid_task_output 自己读到了终态，别再转述一遍。
                     return False
+                claimed = True
                 conversation_id = await ctx.conversation_manager.get_curr_conversation_id(umo)
                 if conversation_id != result["conversation_id"]:
                     self.registry.tasks.delivery(result["task_id"], result["round_id"], "skipped")
@@ -684,6 +669,9 @@ class MaidAgent(Star):
                 self.registry.tasks.delivery(result["task_id"], result["round_id"], "sent")
             return True
         finally:
+            if claimed:
+                status = "pending" if self.chat_runtime.allowed(result, umo) else "skipped"
+                self.registry.tasks.release_delivery_claim(result["task_id"], result["round_id"], status)
             active_event_registry.unregister(cron_event)
 
     @filter.llm_tool(name=MAID_SEND_MESSAGE_TOOL_NAME)

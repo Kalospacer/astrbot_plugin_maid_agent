@@ -342,8 +342,8 @@ class SessionDriver:
         if self._stop_fn is not None:
             try:
                 self._stop_fn()
-            except Exception:  # noqa: BLE001
-                pass
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("[maid] 停止钩子执行失败: session=%s err=%s", self.session_id[:8], exc)
             return
         if not self.running:
             if not self.inbox:

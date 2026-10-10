@@ -307,9 +307,9 @@ class SessionDriver:
         """运行中可靠保存补充；空闲时由控制台显式排下一轮。"""
         task_id = self.current_execution.get("task_id")
         if self.running and task_id and not followup_id:
-            pending = self.registry.tasks.add_followup(task_id, text, ContextState(self.log.dir).load()["mainContext"])
+            main_context = ContextState(self.log.dir).load()["mainContext"]
+            pending = self.registry.tasks.add_followup(task_id, text, main_context)
             followup_id = pending["id"]
-            main_context = self.registry.tasks.followup_context(pending)
         if self.running and self._steer_fn is not None:
             ticket = self._steer_fn(text)
             if ticket is not None and followup_id:
@@ -627,9 +627,6 @@ class SessionDriver:
             agent_hooks=hooks,
         )
 
-        scheduled = self.current_execution.get("followup_ids", [])
-        if scheduled:
-            self.registry.tasks.set_followup_status(self.current_execution["task_id"], scheduled, "consumed")
         if getattr(self.registry.config, "log_raw_llm_io", False):
             dump_raw_llm_request(getattr(runner, "req", None), source="maid")
 
@@ -658,31 +655,34 @@ class SessionDriver:
             persisted = len(self._message_prefix)
             prev_usage = _usage_value(getattr(getattr(runner, "stats", None), "token_usage", None))
             step = 0
-            chunk_index: dict[str, int] = {}
             stop_requested_flag = lambda: self._stop_requested  # noqa: E731
 
-            while not runner.done() and step < agent_max_step and not self._interrupted:
-                step += 1
-                step_holder["step"] = step
+            async def _execute_step(step_idx: int) -> None:
+                nonlocal persisted, prev_usage
+                step_holder["step"] = step_idx
                 hooks.begin_step()
                 async with self.log.lock:
-                    await self._emit("step/start", {"turn": turn, "step": step})
-                chunk_index = {}
+                    await self._emit("step/start", {"turn": turn, "step": step_idx})
+                chunk_index: dict[str, int] = {}
                 has_response = False
                 try:
                     async for resp in runner.step():
                         has_response = has_response or getattr(resp, "type", "") == "llm_result"
-                        await self._consume_response(resp, turn, step, chunk_index)
+                        await self._consume_response(resp, turn, step_idx, chunk_index)
                         if stop_requested_flag():
                             runner.request_stop()
                 finally:
                     persisted, prev_usage = await self._diff_messages(
-                        runner, persisted, prev_usage, turn, step, hooks,
+                        runner, persisted, prev_usage, turn, step_idx, hooks,
                         has_response=has_response or bool(hooks.emitted),
                     )
                     await hooks.close_unfinished()
                     async with self.log.lock:
-                        await self._emit("step/end", {"turn": turn, "step": step})
+                        await self._emit("step/end", {"turn": turn, "step": step_idx})
+
+            while not runner.done() and step < agent_max_step and not self._interrupted:
+                step += 1
+                await _execute_step(step)
                 self._sync_followup_consumption(context_state)
                 context_state.capture(runner.run_context.messages, system_prompt)
                 self._clear_steering_items()
@@ -702,23 +702,7 @@ class SessionDriver:
                     ),
                 )
                 step += 1
-                step_holder["step"] = step
-                hooks.begin_step()
-                async with self.log.lock:
-                    await self._emit("step/start", {"turn": turn, "step": step})
-                has_response = False
-                try:
-                    async for resp in runner.step():
-                        has_response = has_response or getattr(resp, "type", "") == "llm_result"
-                        await self._consume_response(resp, turn, step, chunk_index)
-                finally:
-                    persisted, prev_usage = await self._diff_messages(
-                        runner, persisted, prev_usage, turn, step, hooks,
-                        has_response=has_response or bool(hooks.emitted),
-                    )
-                    await hooks.close_unfinished()
-                    async with self.log.lock:
-                        await self._emit("step/end", {"turn": turn, "step": step})
+                await _execute_step(step)
 
             llm_resp = runner.get_final_llm_resp()
             final_text = (getattr(llm_resp, "completion_text", "") or "") if llm_resp is not None else ""
@@ -1128,9 +1112,8 @@ class DriverRegistry:
                     raise
             else:
                 removed.append(sid)
-        await self.chats.retention_prune(retention_days)
-        epochs = {self.chats._read(path)["epoch"] for path in self.chats.root.glob("*.json")}
-        self.tasks.retention_prune(retention_days, epochs)
+        live_epochs = await self.chats.retention_prune(retention_days)
+        self.tasks.retention_prune(retention_days, live_epochs)
         return removed
 
     def manual_execution(self, driver: SessionDriver, message: dict) -> dict:
@@ -1153,9 +1136,12 @@ class DriverRegistry:
             return
         task = self.tasks.get(task_id)
         scheduled = [item["id"] for item in task["followups"] if item["status"] == "scheduled" and item["id"] in execution.get("followup_ids", [])]
-        if scheduled and result["status"] in {"failed", "stopped", "interrupted"}:
-            followup_status = "failed" if result["status"] == "failed" else "cancelled"
-            self.tasks.set_followup_status(task_id, scheduled, followup_status)
+        if scheduled:
+            if result["status"] in {"failed", "stopped", "interrupted"}:
+                followup_status = "failed" if result["status"] == "failed" else "cancelled"
+                self.tasks.set_followup_status(task_id, scheduled, followup_status)
+            else:
+                self.tasks.set_followup_status(task_id, scheduled, "consumed")
         stopped = result["status"] in {"stopped", "interrupted"}
         pending = self.tasks.pending(task_id)
         if stopped:
@@ -1178,7 +1164,7 @@ class DriverRegistry:
         }
         self.notify_turn_terminal(driver, notification)
         state = self.chats.get(driver.umo)
-        if pending and (state is None or state["epoch"] == execution["epoch"]) and execution["epoch"] not in self.invalid_epochs:
+        if pending and self.epoch_active(driver.umo, execution.get("epoch")):
             self.tasks.set_followup_status(task_id, [item["id"] for item in pending], "scheduled")
             request = "\n\n".join(item["content"] for item in pending)
             # 先释放上一轮状态，再为同一 task 创建补跑轮次。
@@ -1188,7 +1174,7 @@ class DriverRegistry:
             next_round = self.tasks.start_round(task_id, driver.session_id, request)
             follow_context = {**execution, "round_id": next_round["roundId"], "main_context": self.tasks.followup_context(pending[-1]) if state is not None else None, "followup_ids": [item["id"] for item in pending]}
             driver.enqueue(c.user_message([c.text_block(request)]), run_context=follow_context)
-        elif state is not None and state["epoch"] == execution["epoch"]:
+        elif state is not None and state["epoch"] == execution.get("epoch"):
             self.chats.settle(state)
 
     def resume_pending_reports(self) -> None:
@@ -1200,10 +1186,10 @@ class DriverRegistry:
             if meta.get("sourceKind") != "chat":
                 continue
             umo = meta["umo"]
-            state = self.chats.get(umo)
-            if state is None or state["epoch"] != task["epoch"]:
+            if not self.epoch_active(umo, task["epoch"]):
                 self.tasks.delivery(task["taskId"], execution["roundId"], "skipped")
                 continue
+            state = self.chats.get(umo)
             self.notify_turn_terminal(self.attach(sid), {
                 "status": execution["status"],
                 "result": execution.get("result", ""),
@@ -1211,7 +1197,7 @@ class DriverRegistry:
                 "task_id": task["taskId"],
                 "round_id": execution["roundId"],
                 "epoch": task["epoch"],
-                "conversation_id": state["conversationId"],
+                "conversation_id": state["conversationId"] if state is not None else "",
                 "description": task["description"],
             })
 

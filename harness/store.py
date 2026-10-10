@@ -12,7 +12,6 @@ import binascii
 import mimetypes
 import os
 import re
-import time
 import uuid
 from pathlib import Path
 
@@ -382,18 +381,3 @@ class SessionStore:
         if attach_dir.is_dir():
             shutil.rmtree(attach_dir, ignore_errors=True)
         self._logs.pop(session_id, None)
-
-    def retention_prune(self, retention_days: int) -> list[str]:
-        """清理超过保留期且未运行的会话（由宿主周期调用，运行表由调用方注入）。"""
-        cutoff = time.time() - max(1, retention_days) * 86400
-        removed: list[str] = []
-        for sid in self.list_session_ids():
-            log = self.log(sid)
-            meta = log.load_meta()
-            updated = float(meta.get("updatedAt") or 0) or 0
-            if not updated:
-                continue
-            if updated / 1000 < cutoff:
-                self.delete_session(sid)
-                removed.append(sid)
-        return removed

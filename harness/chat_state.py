@@ -54,12 +54,11 @@ class ChatStateStore:
                     continue
                 if before_remove is not None:
                     before_remove()
-                removed = [branch for branch, sid in state["branches"].items() if sid == session_id]
-                for branch in removed:
-                    del state["branches"][branch]
-                if state["defaultBranch"] in removed:
-                    state["defaultBranch"] = None
-                self.save(state)
+                if session_id in state["branches"].values():
+                    state["branches"] = {b: sid for b, sid in state["branches"].items() if sid != session_id}
+                    if state["defaultBranch"] not in state["branches"]:
+                        state["defaultBranch"] = None
+                    self.save(state)
 
     def save(self, state: dict) -> None:
         write_json(self._path(state["umo"]), state)
@@ -91,14 +90,20 @@ class ChatStateStore:
     def active(self, state: dict) -> list[dict]:
         return self.tasks.active(scope=self.key(state["umo"]), epoch=state["epoch"])
 
-    async def retention_prune(self, retention_days: int) -> None:
+    async def retention_prune(self, retention_days: int) -> set[str]:
         cutoff = self.clock() - max(1, retention_days) * 86_400_000
+        live_epochs: set[str] = set()
         for path in self.root.glob("*.json"):
             previous = self._read(path)
             async with self.lock(previous["umo"]):
                 state = self.get(previous["umo"])
-                if state is not None and not state["branches"] and state["lastToolAt"] < cutoff and not self.task_list(state):
+                if state is None:
+                    continue
+                if not state["branches"] and state["lastToolAt"] < cutoff and not self.active(state):
                     path.unlink()
+                else:
+                    live_epochs.add(state["epoch"])
+        return live_epochs
 
     def touch_tool(self, state: dict, timeout_hours: float) -> bool:
         """先失效过期 session，再刷新活跃时间；task 身份不受影响。"""

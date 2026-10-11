@@ -1,4 +1,5 @@
 <div align="center">
+  <img width="100%" src="https://erika.snowy.moe/v1/banner/kalospacer/astrbot_plugin_maid_agent/grokbot.webp?theme=light&accent=auto&title=Maid%20Agent&description=%E4%B8%BAAstrBot%E6%8F%90%E4%BE%9B%E2%80%9C%E5%A4%A7%E5%B0%8F%E5%A7%90%2B%E7%AE%A1%E5%AE%B6%E5%BC%8F%E2%80%9D%E5%AD%90%E6%99%BA%E8%83%BD%E4%BD%93%E7%B3%BB%E7%BB%9F" alt="Maid Agent Banner" />
   <h1>AstrBot Plugin Maid Agent</h1>
   <i>—— 代理女仆 ——</i>
 </div>

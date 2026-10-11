@@ -42,6 +42,7 @@ class MaidModeConfig:
     allowed_agent_names: tuple[str, ...] = DEFAULT_ALLOWED_AGENT_NAMES
     default_agent_name: str = DEFAULT_MAID_AGENT_NAME
     hide_native_tools: bool = True
+    native_tool_whitelist: tuple[str, ...] = ()
     hide_transfer_tools: bool = True
     include_raw_user_input: bool = True
     show_maid_speech: bool = False
@@ -208,6 +209,9 @@ def load_maid_mode_config(config: Mapping[str, Any] | None = None, *, strict: bo
             allowed_agent_names=allowed,
             default_agent_name=default_name,
             hide_native_tools=_tolerant_bool(cfg, "hide_native_tools", True),
+            native_tool_whitelist=_tolerant_names(
+                cfg, "native_tool_whitelist", (), allow_empty=True
+            ),
             hide_transfer_tools=_tolerant_bool(cfg, "hide_transfer_tools", True),
             include_raw_user_input=_tolerant_bool(cfg, "include_raw_user_input", True),
             show_maid_speech=_tolerant_bool(cfg, "show_maid_speech", False),
@@ -241,6 +245,11 @@ def load_maid_mode_config(config: Mapping[str, Any] | None = None, *, strict: bo
         allowed_agent_names=allowed,
         default_agent_name=default_name,
         hide_native_tools=_strict_bool(cfg, "hide_native_tools", True),
+        native_tool_whitelist=_strict_names(
+            cfg.get("native_tool_whitelist", ()),
+            "native_tool_whitelist",
+            allow_empty=True,
+        ),
         hide_transfer_tools=_strict_bool(cfg, "hide_transfer_tools", True),
         include_raw_user_input=_strict_bool(cfg, "include_raw_user_input", True),
         show_maid_speech=_strict_bool(cfg, "show_maid_speech", False),

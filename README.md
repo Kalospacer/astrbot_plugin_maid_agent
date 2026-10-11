@@ -170,7 +170,8 @@ AstrBot 的 `/new`、`/reset` 停止旧执行，取消未处理补充和自动�
 | --- | --- | --- |
 | `allowed_agent_names` | `[butler]` | 可调度的 SubAgent 白名单，不能为空。 |
 | `default_agent_name` | `butler` | 模型派发统一使用的管家；没有任何 subagent 时自动创建。 |
-| `hide_native_tools` | `true` | 隐藏主模型可见的 AstrBot 原生工具，只保留五个 maid 工具（改配置即时生效、无需重启）。 |
+| `hide_native_tools` | `true` | 隐藏主模型可见的 AstrBot 原生工具，默认只保留五个 maid 工具（及 `native_tool_whitelist` 中的白名单工具，改配置即时生效、无需重启）。 |
+| `native_tool_whitelist` | `[]` | 仅在 `hide_native_tools=true` 时显示并生效。白名单中的工具（如 `read_channel`、`send_message_to_user` 等）仍直接暴露给主模型，支持自动下拉选择当前已有工具。 |
 | `hide_transfer_tools` | `true` | `hide_native_tools=false` 时，额外隐藏主模型可见的全部 `transfer_to_*` 工具，maid 工具仍可用。 |
 | `show_maid_speech` | `false` | 是否把管家干活途中的正文（没有正文时用推理）即时发到聊天。终答始终留给大小姐转述，不受此项影响。 |
 | `show_maid_tool_status` | `false` | 是否把管家的函数调用状态发到聊天（`管家名: 🔨 调用工具: xxx`），对齐 AstrBot 的「输出函数调用状态」。模型不输出正文时这是唯一的实时进度信号；长任务会一步一条。 |

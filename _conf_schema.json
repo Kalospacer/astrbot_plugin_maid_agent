@@ -15,15 +15,28 @@
   },
   "hide_native_tools": {
     "description": "隐藏主模型原生工具",
-    "hint": "开启后，主模型只保留 maid_agent、maid_send_message、maid_list_agents、maid_task_output、maid_task_stop。关闭后维持 AstrBot 原有工具暴露策略。",
+    "hint": "开启后，主模型默认只保留 maid_agent、maid_send_message、maid_list_agents、maid_task_output、maid_task_stop（以及下方白名单中指定的工具）。关闭后维持 AstrBot 原有工具暴露策略。",
     "type": "bool",
     "default": true
+  },
+  "native_tool_whitelist": {
+    "description": "保留的主模型工具白名单",
+    "hint": "仅在「隐藏主模型原生工具」开启时生效。在白名单中的工具不会被隐藏，仍暴露给主模型直接调用（如 read_channel、send_message_to_user 等）。",
+    "type": "list",
+    "default": [],
+    "options": [],
+    "condition": {
+      "hide_native_tools": true
+    }
   },
   "hide_transfer_tools": {
     "description": "隐藏 transfer_to_* 工具",
     "hint": "仅在 hide_native_tools 关闭时生效。开启后，AstrBot 原生 transfer_to_* 工具会被隐藏；五个 maid 工具仍按原有策略暴露。",
     "type": "bool",
-    "default": true
+    "default": true,
+    "condition": {
+      "hide_native_tools": false
+    }
   },
   "include_raw_user_input": {
     "description": "附带用户原话",

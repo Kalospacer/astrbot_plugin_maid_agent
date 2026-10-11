@@ -54,7 +54,7 @@ from .katex_fonts import materialize_katex_fonts
 from .maid_dispatcher import ensure_default_subagent
 from .toolset_adapter import apply_main_tool_policy
 
-__version__ = "2.0.69"
+__version__ = "2.0.70"
 
 _SETTINGS_SCHEMA_CACHE: dict | None = None
 

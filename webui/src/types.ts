@@ -161,6 +161,7 @@ export interface SettingsFieldSchema {
   hint?: string;
   type?: string;
   options?: string[];
+  condition?: Record<string, unknown>;
 }
 
 export interface SettingsNamespaceView {

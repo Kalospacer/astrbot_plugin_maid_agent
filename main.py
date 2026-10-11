@@ -30,6 +30,7 @@ from .constants import (
     MAID_SEND_MESSAGE_TOOL_NAME,
     MAID_TASK_OUTPUT_TOOL_NAME,
     MAID_TASK_STOP_TOOL_NAME,
+    MAID_TOOL_NAMES,
     PLUGIN_DATA_DIR_NAME,
     RAW_INPUT_EXTRA_KEY,
     TRUE_USER_INPUT_EXTRA_KEY,
@@ -77,12 +78,15 @@ class _ConfigHolder:
         self.plugin = plugin
 
     def get_config(self) -> dict:
+        self.plugin._sync_config_from_store()
         return asdict(self.plugin.maid_mode_config)
 
     def settings_schema(self) -> dict:
+        self.plugin._refresh_tool_whitelist_schema_options()
         return {"type": "object", "properties": _load_settings_schema()}
 
     def save_config(self, patch: dict) -> dict:
+        self.plugin._sync_config_from_store()
         effective = load_maid_mode_config(self.plugin.config, strict=False)
         candidate = asdict(effective)
         candidate.update(patch)
@@ -95,6 +99,7 @@ class _ConfigHolder:
             logger.warning("[maid] 配置持久化失败: %s", exc)
         self.plugin.maid_mode_config = validated
         self.plugin.registry.config = self.plugin.maid_mode_config
+        self.plugin._refresh_tool_whitelist_schema_options()
         return self.get_config()
 
     def version(self) -> str:
@@ -124,6 +129,8 @@ class MaidAgent(Star):
 
     async def initialize(self) -> None:
         self._patch_llm_tool_schemas()
+        self._refresh_tool_whitelist_schema_options()
+        self._schedule_delayed_tool_options_refresh()
         self._register_web_apis()
         self._materialize_katex_fonts()
         await ensure_default_subagent(self.context, self.maid_mode_config)
@@ -442,6 +449,81 @@ class MaidAgent(Star):
                 "required": ["path"],
             }
 
+    def _sync_config_from_store(self) -> None:
+        """从 self.config 同步最新配置到 maid_mode_config（兼容用户在 AstrBot 原生插件配置弹窗直接保存）。"""
+        if not isinstance(self.config, dict) or not self.config:
+            return
+        try:
+            latest = load_maid_mode_config(self.config, strict=False)
+            if latest != self.maid_mode_config:
+                self.maid_mode_config = latest
+                self.registry.config = latest
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("[maid] 同步配置跳过: %s", exc)
+
+    def _collect_available_tool_names(self) -> list[str]:
+        """枚举当前 AstrBot 已注册的所有工具名（含插件/MCP 工具、内置工具及已选白名单项，排除 5 个 maid 控制工具）。"""
+        names: set[str] = set()
+        for existing in self.maid_mode_config.native_tool_whitelist:
+            if existing and existing.strip():
+                names.add(existing.strip())
+        try:
+            tool_mgr = (
+                self.context.get_llm_tool_manager()
+                if hasattr(self.context, "get_llm_tool_manager")
+                else None
+            )
+            if tool_mgr is not None:
+                for tool in getattr(tool_mgr, "func_list", None) or ():
+                    tname = str(getattr(tool, "name", "") or "").strip()
+                    if tname and tname not in MAID_TOOL_NAMES:
+                        names.add(tname)
+                iter_builtin = getattr(tool_mgr, "iter_builtin_tools", None)
+                if callable(iter_builtin):
+                    for tool in iter_builtin() or ():
+                        tname = str(getattr(tool, "name", "") or "").strip()
+                        if tname and tname not in MAID_TOOL_NAMES:
+                            names.add(tname)
+                else:
+                    for tool in (getattr(tool_mgr, "builtin_func_list", None) or {}).values():
+                        tname = str(getattr(tool, "name", "") or "").strip()
+                        if tname and tname not in MAID_TOOL_NAMES:
+                            names.add(tname)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("[maid] 收集可用工具名失败: %s", exc)
+        return sorted(names)
+
+    def _refresh_tool_whitelist_schema_options(self) -> list[str]:
+        """将当前可用工具名列表实时写入本地 schema 缓存与 AstrBot 插件配置 schema.options。"""
+        options = self._collect_available_tool_names()
+        schema_cache = _load_settings_schema()
+        if isinstance(schema_cache, dict) and isinstance(
+            schema_cache.get("native_tool_whitelist"), dict
+        ):
+            schema_cache["native_tool_whitelist"]["options"] = options
+
+        cfg_schema = getattr(self.config, "schema", None)
+        if isinstance(cfg_schema, dict) and isinstance(
+            cfg_schema.get("native_tool_whitelist"), dict
+        ):
+            cfg_schema["native_tool_whitelist"]["options"] = options
+        return options
+
+    def _schedule_delayed_tool_options_refresh(self) -> None:
+        """延迟刷新一次工具下拉选项，确保排在本插件之后初始化的插件工具也被收录进配置面板。"""
+
+        async def _delayed() -> None:
+            for delay in (2.0, 8.0):
+                await asyncio.sleep(delay)
+                try:
+                    self._refresh_tool_whitelist_schema_options()
+                except Exception:  # noqa: BLE001
+                    pass
+
+        self._track_background_task(
+            asyncio.create_task(_delayed(), name="maid-refresh-tool-options")
+        )
+
     @filter.on_llm_request()
     async def _on_main_llm_request(self, _event, req) -> None:
         """主模型（大小姐）请求的 maid 模式处理：工具可见性策略 + 原始请求 dump。
@@ -452,12 +534,15 @@ class MaidAgent(Star):
         配置实时读取：改配置后下一次请求立即生效，无需重启。
         """
         _event.set_extra(MAIN_REQUEST_KEY, req)
+        self._sync_config_from_store()
+        self._refresh_tool_whitelist_schema_options()
         cfg = self.maid_mode_config
         if req.func_tool is not None and (cfg.hide_native_tools or cfg.hide_transfer_tools):
             apply_main_tool_policy(
                 req.func_tool,
                 hide_native_tools=cfg.hide_native_tools,
                 hide_transfer_tools=cfg.hide_transfer_tools,
+                native_tool_whitelist=cfg.native_tool_whitelist,
             )
         if cfg.log_raw_llm_io:
             dump_raw_llm_request(req, source="main")

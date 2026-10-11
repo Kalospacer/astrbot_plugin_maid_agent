@@ -140,11 +140,21 @@ export function SettingsDialog(props: { open: boolean; onClose: () => void }) {
                 {settings !== null &&
                   Object.entries(value).map(([key, current]) => {
                     const meta: SettingsFieldSchema = properties[key] ?? {};
+                    if (meta.condition) {
+                      const condMet = Object.entries(meta.condition).every(
+                        ([condKey, expected]) => value[condKey] === expected
+                      );
+                      if (!condMet) return null;
+                    }
                     const label = meta.description ?? key;
                     const hintId = `setting-hint-${key}`;
                     const inputId = `setting-input-${key}`;
                     const stringOptions = Array.isArray(meta.options)
                       ? meta.options.filter((option): option is string => typeof option === "string")
+                      : [];
+                    const isListField = Array.isArray(current) || meta.type === "list";
+                    const selectedList = Array.isArray(current)
+                      ? current.map((item) => String(item))
                       : [];
                     const hint = meta.hint ? <span id={hintId} className={css.hint}>{meta.hint}</span> : null;
                     if (typeof current === "boolean" || meta.type === "bool") {
@@ -168,7 +178,62 @@ export function SettingsDialog(props: { open: boolean; onClose: () => void }) {
                     return (
                       <div key={key} className={css.field}>
                         <label className={css.label} htmlFor={inputId}>{label}</label>
-                        {stringOptions.length > 0 ? (
+                        {isListField && stringOptions.length > 0 ? (
+                          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                            <select
+                              id={inputId}
+                              className={css.select}
+                              value=""
+                              aria-describedby={meta.hint ? hintId : undefined}
+                              onChange={(e) => {
+                                const picked = e.target.value;
+                                if (picked && !selectedList.includes(picked)) {
+                                  setDraft({ ...value, [key]: [...selectedList, picked] });
+                                }
+                              }}
+                            >
+                              <option value="">+ 从当前已有工具中选择添加…</option>
+                              {stringOptions
+                                .filter((opt) => !selectedList.includes(opt))
+                                .map((option) => (
+                                  <option key={option} value={option}>
+                                    {option}
+                                  </option>
+                                ))}
+                            </select>
+                            {selectedList.length > 0 ? (
+                              <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                                {selectedList.map((item) => (
+                                  <Button
+                                    key={item}
+                                    variant="outline"
+                                    onClick={() =>
+                                      setDraft({
+                                        ...value,
+                                        [key]: selectedList.filter((x) => x !== item),
+                                      })
+                                    }
+                                  >
+                                    {item} ×
+                                  </Button>
+                                ))}
+                              </div>
+                            ) : null}
+                            <Input
+                              value={selectedList.join(", ")}
+                              placeholder="也可手动输入工具名（逗号分隔）"
+                              onChange={(e) =>
+                                setDraft({
+                                  ...value,
+                                  [key]: String(e.target.value)
+                                    .split(",")
+                                    .map((s) => s.trim())
+                                    .filter(Boolean),
+                                })
+                              }
+                            />
+                          </div>
+                        ) : stringOptions.length > 0 ? (
                           <select
                             id={inputId}
                             className={css.select}
@@ -181,7 +246,7 @@ export function SettingsDialog(props: { open: boolean; onClose: () => void }) {
                             ) : null}
                             {stringOptions.map((option) => <option key={option} value={option}>{option}</option>)}
                           </select>
-                        ) : Array.isArray(current) || meta.type === "list" ? (
+                        ) : isListField ? (
                           <Input
                             id={inputId}
                             value={Array.isArray(current) ? current.join(", ") : String(current ?? "")}

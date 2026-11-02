@@ -11,6 +11,7 @@ import {
   IconNewChatOutline16,
   IconPanelLeftOutline16,
   IconSearchOutline16,
+  IconListPenOutline16,
   IconSettingsOutline16,
   IconTrashOutline16,
   IconUserOutline16,
@@ -68,6 +69,7 @@ export function SessionSidebar(props: {
   width: number;
   onToggle: () => void;
   onOpenSettings: () => void;
+  onOpenDecisions: () => void;
 }) {
   const { collapsed, width } = props;
   const [startError, setStartError] = useState("");
@@ -197,6 +199,12 @@ export function SessionSidebar(props: {
 
       <div className={css.footArea}>
         <UmoSwitcher wide={wide} />
+        <Tooltip label="判断记录" delayMs={500} disabled={wide}>
+          <button type="button" className={css.settingsButton} aria-label="判断记录" onClick={props.onOpenDecisions}>
+            <IconListPenOutline16 size={wide ? 16 : 18} />
+            {wide && <span>判断记录</span>}
+          </button>
+        </Tooltip>
         <Tooltip label="设置" delayMs={500} disabled={wide}>
           <button type="button" className={css.settingsButton} aria-label="设置" onClick={props.onOpenSettings}>
             <IconSettingsOutline16 size={wide ? 16 : 18} />

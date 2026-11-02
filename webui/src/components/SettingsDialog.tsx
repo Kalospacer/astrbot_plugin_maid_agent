@@ -25,6 +25,40 @@ function navIcon(id: SectionId) {
   return <IconSettingsOutline16 size={16} />;
 }
 
+/** AstrBot template_list 字段（对象数组）按 JSON 编辑；解析失败时不改动已有值。 */
+function TemplateListField(props: {
+  id: string;
+  value: unknown;
+  describedBy?: string;
+  onChange: (next: unknown[]) => void;
+}) {
+  const [text, setText] = useState(() => JSON.stringify(props.value ?? [], null, 2));
+  const [invalid, setInvalid] = useState(false);
+  return (
+    <>
+      <textarea
+        id={props.id}
+        className={css.textarea}
+        value={text}
+        rows={6}
+        aria-describedby={props.describedBy}
+        aria-invalid={invalid || undefined}
+        onChange={(e) => {
+          setText(e.target.value);
+          try {
+            const parsed: unknown = JSON.parse(e.target.value);
+            setInvalid(!Array.isArray(parsed));
+            if (Array.isArray(parsed)) props.onChange(parsed);
+          } catch {
+            setInvalid(true);
+          }
+        }}
+      />
+      {invalid ? <span className={css.hint}>需要 JSON 数组，修正前不会保存这一项的改动。</span> : null}
+    </>
+  );
+}
+
 export function SettingsDialog(props: { open: boolean; onClose: () => void }) {
   const settings = useApp((s) => s.settings);
   const theme = useApp((s) => s.theme);
@@ -178,7 +212,14 @@ export function SettingsDialog(props: { open: boolean; onClose: () => void }) {
                     return (
                       <div key={key} className={css.field}>
                         <label className={css.label} htmlFor={inputId}>{label}</label>
-                        {isListField && stringOptions.length > 0 ? (
+                        {meta.type === "template_list" ? (
+                          <TemplateListField
+                            id={inputId}
+                            value={current}
+                            describedBy={meta.hint ? hintId : undefined}
+                            onChange={(next) => setDraft({ ...value, [key]: next })}
+                          />
+                        ) : isListField && stringOptions.length > 0 ? (
                           <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
                             <select
                               id={inputId}
@@ -267,7 +308,8 @@ export function SettingsDialog(props: { open: boolean; onClose: () => void }) {
                             id={inputId}
                             type="number"
                             step={meta.type === "float" ? "any" : 1}
-                            min={key === "max_agent_steps" ? 1 : key === "session_idle_timeout_hours" ? 0.1 : undefined}
+                            min={key === "max_workers" ? 1 : key === "session_idle_timeout_hours" ? 0.1 : undefined}
+                            max={key === "max_workers" ? 16 : undefined}
                             value={String(current)}
                             aria-describedby={meta.hint ? hintId : undefined}
                             onChange={(e) => setDraft({ ...value, [key]: Number(e.target.value) })}

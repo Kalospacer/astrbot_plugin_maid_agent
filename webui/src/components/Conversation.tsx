@@ -7,6 +7,7 @@ import { useApp } from "@/hooks";
 import * as app from "@/store/app";
 import { ChatView } from "@/components/ChatView";
 import { Composer } from "@/components/Composer";
+import { SessionDecisions } from "@/components/DecisionsPanel";
 import css from "./Conversation.module.css";
 
 export function ConversationRoot(props: {
@@ -48,6 +49,7 @@ export function ConversationRoot(props: {
       <div className={css.scrollBody} data-conversation-scroll="">
         {!hero && !props.booting ? (
           <div className={css.viewArea}>
+            {current !== undefined ? <SessionDecisions sessionId={current} /> : null}
             <ChatView />
           </div>
         ) : null}

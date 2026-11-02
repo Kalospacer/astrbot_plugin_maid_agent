@@ -221,13 +221,11 @@ class ChatRuntime:
                     if target is not None:
                         task = target
                         task.update(ended=None, attention=None, delivery=None)
-                        if mandate is not None:
-                            task["mandate"] = mandate
                         add_input(task, "", human=not inferred, kind="resumed")
                     else:
                         task = self.tasks.create(
                             scope=self.chats.key(umo), epoch=state["epoch"], umo=umo, conversation_id=state["conversationId"],
-                            branch=selected_branch, request=request, strength=strength, mandate=mandate,
+                            branch=selected_branch, request=request, strength=strength,
                         )
                     item = add_input(task, "", human=not inferred, full=request, trigger=trigger, images=refs)
                     item["text"] = self._dispatch_text(item, mandate)

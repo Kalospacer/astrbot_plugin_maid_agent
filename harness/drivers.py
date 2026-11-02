@@ -41,6 +41,7 @@ from .tasks import (
     SETTLED_REPORT_STATES,
     TaskStore,
     add_input,
+    delivered_since_report,
     end_assignment,
     end_task,
     latest_report,
@@ -463,10 +464,11 @@ class SessionDriver:
                 async with self.log.lock:
                     await self._emit("turn/end", {"turn": self._count_turns(), "reason": c.reason_error(str(exc))})
                 self._settle_turn({"status": "failed", "error": str(exc), "result": "", "exception": exc})
-                self.registry.finish_turn(self, self.last_turn)
+                self.registry.finish_turn(self, {**self.last_turn, "exception": exc})
+                exc.__traceback__ = None
 
     def _settle_turn(self, payload: dict) -> None:
-        self.last_turn = payload
+        self.last_turn = {key: value for key, value in payload.items() if key != "exception"}
         self._meta_update(
             lastStatus=payload.get("status", ""),
             lastResult=payload.get("result", ""),
@@ -1037,6 +1039,9 @@ class DriverRegistry:
         waiting = any(item.get("human") for kind in ("launch", "delivery") for item in self.effects.payloads(kind))
         return busy < limit and not waiting
 
+    def _can_start_turn(self, driver: SessionDriver, task: dict, *, human: bool) -> bool:
+        return not driver.busy and (task["strength"] == "console" or self.slot_free(human=human))
+
     def epoch_active(self, umo: str, epoch: Any) -> bool:
         """本轮所属的执行代次是否仍然有效。
 
@@ -1153,7 +1158,7 @@ class DriverRegistry:
         driver = self.driver(assignment["sessionId"])
         if driver is None:
             raise RuntimeError("任务的管家会话不存在。")
-        if driver.busy or (task["strength"] != "console" and not self.slot_free(human=payload["human"])):
+        if not self._can_start_turn(driver, task, human=payload["human"]):
             raise Later
 
         with self.db.transaction():
@@ -1195,7 +1200,7 @@ class DriverRegistry:
                 take_undelivered(task, assignment, read=False)
                 self.tasks.save(task)
             return
-        if driver.busy or (task["strength"] != "console" and not self.slot_free(human=human)):
+        if not self._can_start_turn(driver, task, human=human):
             raise Later
 
         with self.db.transaction():
@@ -1274,7 +1279,7 @@ class DriverRegistry:
                 if assignment is None or not self.epoch_active(task["umo"], task["epoch"]):
                     continue
                 report = assignment.get("report")
-                busy = bool(report and assignment.get("deliveredAt") and assignment["deliveredAt"] >= report["at"])
+                busy = delivered_since_report(assignment)
                 if not report or report["state"] not in SETTLED_REPORT_STATES or busy:
                     self.restart_assignment(task, assignment, "hostRestarted", RECOVERY_NOTE)
                     self.tasks.save(task)
@@ -1302,8 +1307,8 @@ class DriverRegistry:
                 self._transient_tries.pop(assignment["id"], None)
                 # 已交还给人（给出结果或提了问题且之后没有新输入，或在等人处理 blocked/failed）就不写 waiting。
                 report = assignment.get("report")
-                since = bool(report and assignment.get("deliveredAt") and assignment["deliveredAt"] >= report["at"])
-                asked = bool(report and (report["state"] == "ready" or task.get("attention")))
+                since = delivered_since_report(assignment)
+                asked = bool(report and task.get("attention"))
                 if not ((asked and not since) or waits_for_person(task)):
                     self._report_idle(task, result.get("result", ""))
             if task["undelivered"]:
@@ -1347,7 +1352,7 @@ class DriverRegistry:
             driver = self.driver(assignment["sessionId"])
             if driver is None:
                 return
-            if not driver.busy and (task["strength"] == "console" or self.slot_free(human=False)):
+            if self._can_start_turn(driver, task, human=False):
                 driver.enqueue(c.user_message([c.text_block(note)]), run_context=self._run_context(task, assignment))
                 return
             await asyncio.sleep(SLOT_WAIT_S)

@@ -6,15 +6,14 @@ src/policy.ts 的 decideAssessment）。
 
 from __future__ import annotations
 
-import re
 import uuid
 from collections.abc import Mapping
 from dataclasses import asdict, dataclass
 
+from ..constants import RULE_ID_RE
 from .contracts import now_ms
 from .db import Database, dump, load
 
-RULE_ID_RE = re.compile(r"^[a-zA-Z0-9_-]{1,80}$")
 TARGET_BASES = ("specified", "existing-standard", "undetermined")
 RULE_REASON_MAX_CHARS = 500
 EVIDENCE_MAX_CHARS = 700
@@ -139,7 +138,7 @@ def assess(form: AdmissionForm, rules: tuple) -> Admission:
     if enabled:
         judged = [item.rule_id for item in form.rule_assessments]
         enabled_ids = {rule.id for rule in enabled}
-        if len(judged) != len(enabled) or len(set(judged)) != len(judged) or set(judged) != enabled_ids:
+        if len(judged) != len(enabled) or set(judged) != enabled_ids:
             raise AdmissionError("必须对每条启用的规则各给一条判断；不能缺少、重复，也不能包含未知或已禁用的规则。")
         matched = tuple(item.rule_id for item in form.rule_assessments if item.matched)
 

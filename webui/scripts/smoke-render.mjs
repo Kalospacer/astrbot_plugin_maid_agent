@@ -146,6 +146,7 @@ async function respond(method, payload) {
       return { accepted: true };
     }
     case "session.cancel": return { accepted: true };
+    case "session.decisions": return { items: [] };
     case "session.models": return { current: { provider: "mock", model: "mock-1", override: false }, providers: [] };
     case "agentPreset.list":
       return { presets: [{ id: "butler", trust: "system", name: "butler" }], authorable: false };

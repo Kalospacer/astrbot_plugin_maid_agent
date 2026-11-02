@@ -8,7 +8,6 @@ web api 处理器消费 StreamHub。
 from __future__ import annotations
 
 import base64
-import json
 
 from ..config import ConfigValidationError
 from ..constants import DASHBOARD_UMO
@@ -33,14 +32,15 @@ SETTINGS_KEYS = {
     "log_raw_llm_io",
     "dispatch_prompt_template",
     "memory_agent_names",
-    "max_active_per_umo",
-    "max_active_global",
+    "max_workers",
+    "inferred_dispatch",
+    "inferred_rules",
     "retention_days",
-    "max_turn_seconds",
     "max_upload_mb",
-    "max_agent_steps",
     "session_idle_timeout_hours",
 }
+DECISION_PAGE_MAX = 100
+DAY_MS = 86_400_000
 
 
 class ApiProxy:
@@ -68,6 +68,8 @@ class ApiProxy:
             "session.attachment": self.session_attachment,
             "session.updateQueue": self.session_update_queue,
             "session.cancel": self.session_cancel,
+            "session.decisions": self.session_decisions,
+            "decision.list": self.decision_list,
             "agentPreset.list": self.preset_list,
             "agentPreset.select": self.preset_select,
             "settings.describe": self.settings_describe,
@@ -323,10 +325,9 @@ class ApiProxy:
         last_completed = next((e for e in reversed(events) if e.get("type") == "turn/end"), None)
         if last_completed is None:
             raise RpcError("fork-unavailable", "没有已完成的轮次可供分支。", {"sessionId": session_id})
-        context_state = ContextState(log.dir)
+        context_state = ContextState(log.db, session_id)
         turn = int(last_completed["data"]["turn"])
-        checkpoint = log.dir / "context_checkpoints" / f"{turn}.json"
-        if not checkpoint.exists() and driver is not None and not driver.busy and turn == driver._count_turns():
+        if not context_state.has_checkpoint(turn) and driver is not None and not driver.busy and turn == driver._count_turns():
             # 仅最新终态能使用当前持久化消息，不能把后续轮次混入历史 Fork。
             context_state.checkpoint(turn)
         try:
@@ -350,7 +351,7 @@ class ApiProxy:
                 "agentName": meta.get("agentName", ""),
             },
         )
-        child_context = ContextState(child.dir)
+        child_context = ContextState(child.db, child.session_id)
         child_context.seed(seed_context)
         child_context.checkpoint(sum(1 for e in events if e.get("type") == "turn/start"))
         from shutil import copytree
@@ -405,13 +406,10 @@ class ApiProxy:
         if not blocks:
             raise bad_request("content 没有可发送的块。")
 
-        if mode == "steer" and driver.running:
-            text = "".join(b.get("text", "") for b in blocks if b.get("type") == "text")
-            driver.steer(text)
+        if mode == "steer" and driver.steer("".join(b.get("text", "") for b in blocks if b.get("type") == "text")):
             return {"accepted": True}
 
-        if not self.registry.capacity_available(driver.umo):
-            raise RpcError("agent-busy", "并发上限已满，稍后重试。", {"reason": "capacity"})
+        # 控制台是用户本人在用，不计入 max_workers，也不排队。
         rpc_id = str(payload.get("_rpcId") or "")
         message = (
             c.user_rpc_message(blocks, rpc_id, payload.get("clientTimeZone"))
@@ -451,9 +449,47 @@ class ApiProxy:
         session_id = str(payload.get("sessionId") or "")
         self._require_session(session_id)
         driver = self.registry.driver(session_id)
-        if driver is not None:
+        if driver is None:
+            return {"accepted": True}
+        task_id = driver.active_task_id()
+        if task_id:
+            self.registry.stop_task(self.registry.tasks.get(task_id), strength="explicit")
+        else:
             driver.request_stop()
         return {"accepted": True}
+
+    def _decision_view(self, decision: dict) -> dict:
+        """判断记录加上任务名与规则名，供判断页与会话视图显示。"""
+        view = dict(decision)
+        if decision["taskId"]:
+            try:
+                task = self.registry.tasks.get(decision["taskId"])
+            except ValueError:
+                task = None
+            if task is not None:
+                view["taskDescription"] = task["description"]
+                view["sessionId"] = task["sessionId"]
+        names = {rule.id: rule.name for rule in self.registry.config.inferred_rules}
+        view["matchedNames"] = [names.get(rule_id, rule_id) for rule_id in decision["matched"]]
+        return view
+
+    async def decision_list(self, payload: dict) -> dict:
+        kinds = [str(kind) for kind in payload.get("kinds") or [] if isinstance(kind, str)]
+        offset = payload.get("offset")
+        offset = offset if isinstance(offset, int) and offset >= 0 else 0
+        limit = payload.get("limit")
+        limit = min(limit, DECISION_PAGE_MAX) if isinstance(limit, int) and limit > 0 else 30
+        since = c.now_ms() - DAY_MS if payload.get("window") == "24h" else 0
+        items, more = self.registry.decisions.page(kinds=kinds, since=since, offset=offset, limit=limit)
+        return {"items": [self._decision_view(item) for item in items], "nextOffset": offset + limit if more else None}
+
+    async def session_decisions(self, payload: dict) -> dict:
+        """会话所属任务的全部判断记录。"""
+        log = self._require_session(str(payload.get("sessionId") or ""))
+        task_ids = self.registry.tasks.ids_for_session(log.session_id)
+        decisions = [item for task_id in task_ids for item in self.registry.decisions.for_task(task_id)]
+        decisions.sort(key=lambda item: item["at"])
+        return {"items": [self._decision_view(item) for item in decisions]}
 
 
     def _preset_entries(self) -> list[dict]:
@@ -500,13 +536,7 @@ class ApiProxy:
         log.update_meta(agentName=preset)
         header = log.load_header() or {}
         header["agentPreset"] = preset
-        import os
-
-        header_path = log.header_path
-        tmp = header_path.with_suffix(".json.tmp")
-        with open(tmp, "w", encoding="utf-8") as fh:
-            json.dump(header, fh, ensure_ascii=False, indent=2)
-        os.replace(tmp, header_path)
+        log.save_header(header)
         driver = self.registry.driver(session_id)
         if driver is not None:
             driver.agent_name = preset

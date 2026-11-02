@@ -74,17 +74,53 @@
     "type": "list",
     "default": []
   },
-  "max_active_per_umo": {
-    "description": "每个会话最大并发活跃 run 数",
-    "hint": "同一聊天来源活跃子任务上限，启动中和自动补跑也占容量。超限立即拒绝，不把普通派发暗中排队。",
+  "max_workers": {
+    "description": "同时干活的管家上限",
+    "hint": "所有聊天来源合计，范围 1 至 16。满了就排队，按先后启动；有人发来的新输入可以额外多用 1 个位置。控制台会话不计入。",
     "type": "int",
-    "default": 5
+    "default": 3
   },
-  "max_active_global": {
-    "description": "全局最大并发活跃 run 数",
-    "hint": "所有聊天来源和控制台合计的活跃子任务上限，包含启动中状态。",
-    "type": "int",
-    "default": 20
+  "inferred_dispatch": {
+    "description": "自我唤醒时允许派发",
+    "hint": "大小姐被定时任务等自我唤醒时（CronMessageEvent），派发前必须填写评估表单并通过校验。关闭后自我唤醒时不能派发。有人发消息时的派发不受影响。",
+    "type": "bool",
+    "default": true
+  },
+  "inferred_rules": {
+    "description": "自我唤醒派发规则",
+    "hint": "大小姐自我唤醒时要逐条判断的规则。列表为空时跳过规则判断，只校验方向和证据；不为空时至少命中一条才派发。",
+    "type": "template_list",
+    "templates": {
+      "rule": {
+        "name": "规则",
+        "display_item": "name",
+        "items": {
+          "id": {
+            "description": "规则 ID",
+            "hint": "字母、数字、下划线或连字符，最长 80 字，不能重复。",
+            "type": "string",
+            "default": ""
+          },
+          "name": {
+            "description": "名称",
+            "type": "string",
+            "default": ""
+          },
+          "enabled": {
+            "description": "启用",
+            "type": "bool",
+            "default": true
+          },
+          "instruction": {
+            "description": "说明",
+            "hint": "什么情况算命中、命中后管家怎么做。",
+            "type": "text",
+            "default": ""
+          }
+        }
+      }
+    },
+    "default": []
   },
   "retention_days": {
     "description": "runtime 轨迹保留天数",
@@ -92,23 +128,11 @@
     "type": "int",
     "default": 30
   },
-  "max_turn_seconds": {
-    "description": "单 turn 看门狗超时（秒）",
-    "hint": "一个 turn 运行超过该秒数会被看门狗强制终止并标记为 interrupted（防止网络挂死/工具卡住导致 webui 永远显示工作中）。0 表示关闭看门狗。",
-    "type": "int",
-    "default": 1800
-  },
   "max_upload_mb": {
     "description": "单个附件最大体积（MB）",
     "hint": "控制台上传和 Agent 交付文件共用此上限。文件以随机 ID 保存，并仅可由所属会话下载。",
     "type": "int",
     "default": 25
-  },
-  "max_agent_steps": {
-    "description": "子代理执行轮数上限",
-    "hint": "插件独立控制每个执行轮次的工具循环预算，不读取 AstrBot 轮数设置。达到上限返回限额收尾，不视为正常完成；下一轮生效。",
-    "type": "int",
-    "default": 128
   },
   "session_idle_timeout_hours": {
     "description": "工作上下文空闲保留时长（小时）",

@@ -10,12 +10,12 @@ from pathlib import Path
 from .db import Database, dump, load
 
 
-def freeze_messages(messages: list, *, exclude_system: bool = False) -> list[dict]:
+def freeze_messages(messages: list) -> list[dict]:
     """复制运行消息，不改动主 runner；本地媒体转为稳定 data URI。"""
     copied = []
     for message in messages:
         role = message.get("role") if isinstance(message, dict) else getattr(message, "role", None)
-        if role == "_checkpoint" or (exclude_system and role == "system"):
+        if role == "_checkpoint":
             continue
         copied.append(deepcopy(message if isinstance(message, dict) else message.model_dump()))
     _freeze_media(copied)

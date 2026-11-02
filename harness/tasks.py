@@ -13,7 +13,7 @@ from .contracts import now_ms
 from .db import Database, dump, load
 
 REPORT_STATES = ("progress", "waiting", "ready", "blocked", "failed", "dropped")
-MAID_REPORT_STATES = ("progress", "ready", "blocked", "failed", "dropped")
+MAID_REPORT_STATES = tuple(state for state in REPORT_STATES if state != "waiting")
 SETTLED_REPORT_STATES = frozenset({"waiting", "ready", "blocked", "failed"})
 HUMAN_ACTION_MAX_CHARS = 1000
 CARD_SUMMARY_CHARS = 300
@@ -39,6 +39,11 @@ def latest_report(task: dict) -> dict | None:
     return None
 
 
+def delivered_since_report(assignment: dict) -> bool:
+    report = assignment.get("report")
+    return bool(report and assignment.get("deliveredAt") and assignment["deliveredAt"] >= report["at"])
+
+
 def waits_for_person(task: dict) -> bool:
     """最近一次上报是 blocked/failed，且之后没有新输入。"""
     assignment = latest_assignment(task)
@@ -58,7 +63,7 @@ def stage(task: dict) -> str:
         return "person/answer"
     assignment = latest_assignment(task)
     report = (assignment or {}).get("report") or {}
-    if report.get("state") in ("blocked", "failed") and waits_for_person(task):
+    if waits_for_person(task):
         return f"person/{report['state']}"
     if assignment is None or assignment["state"] == "pending":
         return "working/queued"
@@ -232,9 +237,8 @@ class TaskStore:
         branch: str,
         request: str,
         strength: str,
-        mandate: dict | None = None,
     ) -> dict:
-        """新建任务；strength 是 explicit / inferred / console，mandate 记推断派发命中的规则与范围。"""
+        """新建任务；strength 是 explicit / inferred / console。"""
         stamp = now_ms()
         task = {
             "taskId": uuid.uuid4().hex,
@@ -244,10 +248,8 @@ class TaskStore:
             "conversationId": conversation_id,
             "branchId": branch,
             "sessionId": "",
-            "request": request,
             "description": " ".join(request.split())[:160],
             "strength": strength,
-            "mandate": mandate,
             "createdAt": stamp,
             "updatedAt": stamp,
             "assignments": [],
@@ -259,11 +261,17 @@ class TaskStore:
         }
         return task
 
-    def list(self, *, scope: str, epoch: str) -> list[dict]:
-        rows = self.db.execute(
-            "SELECT value FROM tasks WHERE scope = ? AND epoch = ? ORDER BY created_at", (scope, epoch)
-        ).fetchall()
+    def list(self, *, scope: str, epoch: str, open_only: bool = False) -> list[dict]:
+        sql = "SELECT value FROM tasks WHERE scope = ? AND epoch = ?"
+        if open_only:
+            sql += " AND open = 1"
+        rows = self.db.execute(sql + " ORDER BY created_at", (scope, epoch)).fetchall()
         return [load(row[0]) for row in rows]
+
+    def latest_update(self, *, scope: str, epoch: str) -> int | None:
+        return self.db.execute(
+            "SELECT MAX(updated_at) FROM tasks WHERE scope = ? AND epoch = ?", (scope, epoch)
+        ).fetchone()[0]
 
     def ids_for_session(self, session_id: str) -> list[str]:
         """当前绑定在这个管家会话上的任务。"""

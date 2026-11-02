@@ -2,14 +2,13 @@
 
 from __future__ import annotations
 
-import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 from math import isfinite
 from string import Formatter
 from typing import Any
 
-from .constants import MISTRESS_REQUEST_BLOCK_LABEL, USER_INPUT_BLOCK_LABEL
+from .constants import MISTRESS_REQUEST_BLOCK_LABEL, RULE_ID_RE, USER_INPUT_BLOCK_LABEL
 from .harness._log import logger
 
 DEFAULT_ALLOWED_AGENT_NAMES = ("butler",)
@@ -26,7 +25,6 @@ MAID_AGENT_PERSONA = (
 )
 DEFAULT_DISPATCH_PROMPT_TEMPLATE = "{user_input_block}{maid_request_block}" + MAID_AGENT_PERSONA
 _DISPATCH_PROMPT_FIELDS = frozenset({"user_input_block", "maid_request_block"})
-_RULE_ID_RE = re.compile(r"^[a-zA-Z0-9_-]{1,80}$")
 
 
 class ConfigValidationError(ValueError):
@@ -149,7 +147,7 @@ def _inferred_rules(value: Any) -> tuple[InferredRule, ...]:
         name = item.get("name")
         enabled = item.get("enabled", True)
         instruction = item.get("instruction")
-        if not isinstance(rule_id, str) or not _RULE_ID_RE.match(rule_id):
+        if not isinstance(rule_id, str) or not RULE_ID_RE.match(rule_id):
             raise ConfigValidationError({"inferred_rules": "规则 id 只能由字母、数字、下划线和连字符组成，最长 80 字。"})
         if not isinstance(name, str) or not name.strip() or not isinstance(instruction, str) or not instruction.strip():
             raise ConfigValidationError({"inferred_rules": f"规则 {rule_id} 的名称和说明不能为空。"})

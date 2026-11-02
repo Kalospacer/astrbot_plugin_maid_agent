@@ -2,6 +2,10 @@
 大小姐管家模式插件 - 常量定义
 """
 
+import re
+
+RULE_ID_RE = re.compile(r"^[a-zA-Z0-9_-]{1,80}$")
+
 PLUGIN_DATA_DIR_NAME = "astrbot_plugin_maid_agent"
 MAID_AGENT_TOOL_NAME = "maid_agent"
 MAID_SEND_MESSAGE_TOOL_NAME = "maid_send_message"

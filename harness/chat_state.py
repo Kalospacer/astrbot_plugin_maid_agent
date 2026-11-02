@@ -80,11 +80,11 @@ class ChatStateStore:
 
     def working(self, state: dict) -> list[dict]:
         """当前代次里管家正在处理或排队的任务。"""
-        return [task for task in self.task_list(state) if stage(task).startswith("working")]
+        return [task for task in self.open(state) if stage(task).startswith("working")]
 
     def open(self, state: dict) -> list[dict]:
         """当前代次里尚未结束的任务。"""
-        return [task for task in self.task_list(state) if not task.get("ended")]
+        return self.tasks.list(scope=self.key(state["umo"]), epoch=state["epoch"], open_only=True)
 
     async def retention_prune(self, retention_days: int) -> set[str]:
         cutoff = self.clock() - max(1, retention_days) * 86_400_000
@@ -128,8 +128,8 @@ class ChatStateStore:
         """启动时补上空闲计时：用最后一次工具调用与任务更新的较晚者。"""
         for state in self._all():
             if state["idleSince"] is None:
-                stamps = [state["lastToolAt"], *(task["updatedAt"] for task in self.task_list(state))]
-                state["idleSince"] = max(stamps)
+                latest = self.tasks.latest_update(scope=self.key(state["umo"]), epoch=state["epoch"])
+                state["idleSince"] = max(state["lastToolAt"], latest) if latest is not None else state["lastToolAt"]
                 self.save(state)
 
     def target(self, state: dict, task_id: str) -> dict:

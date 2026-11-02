@@ -38,9 +38,15 @@ from .constants import (
 )
 from .harness import contracts as c
 from .harness._log import dump_raw_llm_output, dump_raw_llm_request
-from .harness.admission import INFERRED_DISPATCH_GUIDE
+from .harness.admission import (
+    EVIDENCE_MAX_CHARS,
+    INFERRED_DISPATCH_GUIDE,
+    RULE_REASON_MAX_CHARS,
+    SCOPE_MAX_CHARS,
+    TARGET_BASES,
+)
 from .harness.api import ApiProxy
-from .harness.chat_dispatch import READ_DEFAULT_LIMIT, ChatRuntime
+from .harness.chat_dispatch import READ_DEFAULT_LIMIT, READ_MAX_LIMIT, ChatRuntime
 from .harness.db import Database
 from .harness.drivers import DriverRegistry
 from .harness.hub import StreamHub, sse_frame
@@ -74,7 +80,7 @@ _ADMISSION_FORM_PROPERTIES = {
             "properties": {
                 "rule_id": {"type": "string"},
                 "matched": {"type": "boolean"},
-                "reason": {"type": "string", "minLength": 1, "maxLength": 500},
+                "reason": {"type": "string", "minLength": 1, "maxLength": RULE_REASON_MAX_CHARS},
             },
             "required": ["rule_id", "matched", "reason"],
         },
@@ -85,14 +91,14 @@ _ADMISSION_FORM_PROPERTIES = {
         "additionalProperties": False,
         "properties": {
             "implementation_requested": {"type": "boolean"},
-            "target_basis": {"type": "string", "enum": ["specified", "existing-standard", "undetermined"]},
+            "target_basis": {"type": "string", "enum": list(TARGET_BASES)},
             "requires_design_decision": {"type": "boolean"},
-            "evidence": {"type": "string", "minLength": 1, "maxLength": 700},
+            "evidence": {"type": "string", "minLength": 1, "maxLength": EVIDENCE_MAX_CHARS},
         },
         "required": ["implementation_requested", "target_basis", "requires_design_decision", "evidence"],
     },
-    "intent_evidence": {"type": "string", "maxLength": 700, "description": f"{_SELF_WAKE_ONLY} Source quotes that establish the request."},
-    "scope": {"type": "string", "maxLength": 1500, "description": f"{_SELF_WAKE_ONLY} What exactly the maid may do."},
+    "intent_evidence": {"type": "string", "maxLength": EVIDENCE_MAX_CHARS, "description": f"{_SELF_WAKE_ONLY} Source quotes that establish the request."},
+    "scope": {"type": "string", "maxLength": SCOPE_MAX_CHARS, "description": f"{_SELF_WAKE_ONLY} What exactly the maid may do."},
 }
 
 
@@ -494,7 +500,7 @@ class MaidAgent(Star):
                 "properties": {
                     "resource": {"type": "string", "description": "conversation, input/<id> or trigger/<id>."},
                     "offset": {"type": "integer", "minimum": 0},
-                    "limit": {"type": "integer", "minimum": 1, "maximum": 8000},
+                    "limit": {"type": "integer", "minimum": 1, "maximum": READ_MAX_LIMIT},
                 },
                 "required": ["resource"],
             }

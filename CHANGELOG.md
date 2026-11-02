@@ -31,6 +31,16 @@
 - 派发时的【对方原话】一直为空：原先在 `ResultDecorateStage` 里写入，晚于派发；现在直接取触发消息原文。
 - 唤醒转述那一轮 AstrBot 会并入人格工具集，现在剔除管家专用工具。
 
+### 重构
+
+- 规则 ID 正则只保留 `constants.py` 一份；`maid_agent`、`maid_send_message` 的评估表单和 `maid_read` 的字数、枚举上限改为引用 `admission.py`、`chat_dispatch.py` 的既有常量，不再在工具 schema 里另写字面量。模型看到的参数约束与后台校验共用同一份定义。
+- 启动、送达、重试三处原本各写一遍“管家是否忙碌、是否控制台任务、是否有空位”的判断，改为共用 `DriverRegistry._can_start_turn()`；控制台不占槽、有人发来的输入可额外多用 1 个位置的规则不变。
+- 重启恢复与回合收尾里“上报之后是否又送达过输入”的相同表达式收进 `tasks.delivered_since_report()`，比较边界仍为 `>=`。
+- 任务文档不再重复保存无人读取的 `request` 与 `mandate` 副本：原文仍在输入记录里，推断派发的命中规则与范围仍写进派发内容和判断记录。
+- 未结束任务改在 SQL 层筛选（`TaskStore.list(open_only=True)`），启动恢复改用 `MAX(updated_at)` 取空闲时间，不再解码整个代次的历史任务文档。列表顺序和数据库结构不变。
+- 删除 `freeze_messages()` 已无调用者的 `exclude_system` 参数、`stage()` 中重复的状态判断、回合收尾里不可达的 `ready` 分支，以及规则覆盖校验中被前两项蕴含的重复条件。错误文案不变。
+- 失败的回合不再把异常对象留在 `SessionDriver.last_turn` 里；原始异常仍临时传给重试判定，处理完后清除 traceback，闲置的驱动不会再保留失败轮次的消息上下文。
+
 ## 2.0.69 - 2026-10-10
 
 ### 修复

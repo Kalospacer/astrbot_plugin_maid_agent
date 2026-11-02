@@ -1,6 +1,6 @@
-"""磁盘 session store + 概要索引。
+"""session store + 概要索引。
 
-sessions/<sid>/ 由 SessionLog 负责；这里管：
+会话日志由 SessionLog 存在数据库里；这里管：
 - 会话发现与概要（updatedAt/blank/parentSession/origin/agentPreset/projections 基线）
 - 附件（prompt 图片的持久化：attachments/<sid>/<attachmentId>.<ext>）
 """
@@ -17,6 +17,7 @@ import uuid
 from pathlib import Path
 
 from .contracts import now_ms
+from .db import Database
 from .event_log import SessionLog
 from .history import derive_surface, visible_events
 from .projections import ProjectionRegistry
@@ -64,11 +65,10 @@ def new_session_id() -> str:
 
 
 class SessionStore:
-    def __init__(self, root: Path, projections: ProjectionRegistry | None = None):
+    def __init__(self, root: Path, db: Database, projections: ProjectionRegistry | None = None):
         self.root = Path(root)
-        self.sessions_dir = self.root / "sessions"
+        self.db = db
         self.attachments_dir = self.root / "attachments"
-        self.sessions_dir.mkdir(parents=True, exist_ok=True)
         self.attachments_dir.mkdir(parents=True, exist_ok=True)
         self.projections = projections or ProjectionRegistry()
         self._logs: dict[str, SessionLog] = {}
@@ -77,7 +77,7 @@ class SessionStore:
     def log(self, session_id: str) -> SessionLog:
         log = self._logs.get(session_id)
         if log is None:
-            log = SessionLog(self.sessions_dir, session_id)
+            log = SessionLog(self.db, session_id)
             self._logs[session_id] = log
         return log
 
@@ -87,13 +87,7 @@ class SessionStore:
         return self.log(session_id).exists()
 
     def list_session_ids(self) -> list[str]:
-        out = []
-        if self.sessions_dir.exists():
-            for child in self.sessions_dir.iterdir():
-                if child.is_dir() and SESSION_ID_RE.match(child.name):
-                    if (child / "header.json").exists():
-                        out.append(child.name)
-        return sorted(out)
+        return [row[0] for row in self.db.execute("SELECT id FROM sessions ORDER BY id").fetchall()]
 
 
     def create_session(
@@ -124,9 +118,17 @@ class SessionStore:
             header["delegationDepth"] = delegation_depth
         if agent_preset is not None:
             header["agentPreset"] = agent_preset
-        log.create(header)
-        if seed_events:
-            for event in seed_events:
+        merged_meta = {
+            "createdAt": header["createdAt"],
+            "updatedAt": header["createdAt"],
+            "blank": True,
+        }
+        if meta:
+            merged_meta.update(meta)
+
+        with self.db.transaction():
+            log.create(header)
+            for event in seed_events or []:
                 log.append(
                     event["type"],
                     event.get("data", {}),
@@ -135,15 +137,9 @@ class SessionStore:
                     source_event_seqs=event.get("sourceEventSeqs"),
                     time_ms=event.get("time"),
                 )
-            log.append("session/end-seed", {})
-        merged_meta = {
-            "createdAt": header["createdAt"],
-            "updatedAt": header["createdAt"],
-            "blank": True,
-        }
-        if meta:
-            merged_meta.update(meta)
-        log.save_meta(merged_meta)
+            if seed_events:
+                log.append("session/end-seed", {})
+            log.save_meta(merged_meta)
         return log
 
 
@@ -371,11 +367,7 @@ class SessionStore:
     def delete_session(self, session_id: str) -> None:
         import shutil
 
-        log = self.log(session_id)
-        log.invalidate_cache()
-        target = self.sessions_dir / session_id
-        if target.is_dir():
-            shutil.rmtree(target, ignore_errors=True)
+        self.log(session_id).delete()
         attach_dir = self.attachments_dir / session_id
         if attach_dir.is_dir():
             shutil.rmtree(attach_dir, ignore_errors=True)

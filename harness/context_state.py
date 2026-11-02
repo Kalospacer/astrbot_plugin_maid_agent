@@ -1,21 +1,13 @@
-"""实际运行消息的持久化，以及主对话增量和工作记录的组织。"""
+"""管家会话实际运行消息的持久化快照，存在 contexts / context_checkpoints 表里。"""
 
 from __future__ import annotations
 
 import base64
-import json
 import mimetypes
 from copy import deepcopy
 from pathlib import Path
 
-from .contracts import fingerprint
-from .tasks import FORMAT_VERSION, write_json
-
-BACKGROUND_HEADER = (
-    "【主代理对话记录：背景资料】\n"
-    "以下是主对话中的记录，并非本子代理已经执行的步骤。"
-    "仅作为背景；本次任务以末尾派发要求为准，新的修正优先于旧记录。\n"
-)
+from .db import Database, dump, load
 
 
 def freeze_messages(messages: list, *, exclude_system: bool = False) -> list[dict]:
@@ -45,103 +37,30 @@ def _freeze_media(value) -> None:
             _freeze_media(item)
 
 
-def main_block(records: list[dict]) -> dict:
-    """背景来源单独标注，多媒体保留为内容块，不能冒充子代理工具执行。"""
-    parts = [{"type": "text", "text": BACKGROUND_HEADER}]
-    for record in records:
-        copy = deepcopy(record)
-        media = []
-        if isinstance(copy.get("content"), list):
-            text_parts = []
-            for part in copy["content"]:
-                if part.get("type") in ("image_url", "audio_url"):
-                    media.append(part)
-                else:
-                    # 主模型的推理签名不作为另一个模型的有效签名发送。
-                    text_parts.append(part)
-            copy["content"] = text_parts
-        parts.append({"type": "text", "text": json.dumps(copy, ensure_ascii=False) + "\n"})
-        parts.extend(media)
-    from astrbot.core.agent.message import Message
-
-    return Message.model_validate({"role": "user", "content": parts}).model_dump()
-
-
 class ContextState:
-    def __init__(self, session_dir: Path):
-        self.path = session_dir / "context.json"
-        # 一轮里每步都会读写这份快照，缓存避免重复读盘；实例之间仍以文件为准。
+    def __init__(self, db: Database, session_id: str):
+        self.db = db
+        self.session_id = session_id
+        # 一轮里每步都会读写这份快照，缓存避免重复读库；实例之间仍以数据库为准。
         self._state: dict | None = None
 
     def load(self) -> dict:
-        if self._state is not None:
-            return self._state
-        if not self.path.exists():
-            self._state = {
-                "version": FORMAT_VERSION,
-                "messages": [],
-                "mainContext": [],
-                "backgroundHashes": [],
-                "systemPrompt": "",
-            }
-            return self._state
-        state = json.loads(self.path.read_text(encoding="utf-8"))
-        if state.get("version") != FORMAT_VERSION:
-            raise ValueError("上下文格式不受支持，不能从旧展示日志恢复。")
-        self._state = state
-        return state
+        if self._state is None:
+            row = self.db.execute("SELECT value FROM contexts WHERE session_id = ?", (self.session_id,)).fetchone()
+            self._state = load(row[0]) if row else {"messages": [], "systemPrompt": ""}
+        return self._state
 
     def _save(self, state: dict) -> None:
         self._state = state
-        write_json(self.path, state)
+        self.db.execute(
+            "INSERT INTO contexts (session_id, value) VALUES (?, ?) "
+            "ON CONFLICT (session_id) DO UPDATE SET value = excluded.value",
+            (self.session_id, dump(state)),
+        )
 
-    @staticmethod
-    def _update(state: dict, main_context: list[dict]) -> tuple[list[dict], bool]:
-        previous = state["mainContext"]
-        if state.get("backgroundNeedsRebase", False):
-            return main_context, True
-        if main_context == previous:
-            return [], False
-        if main_context[:len(previous)] == previous:
-            return main_context[len(previous):], False
-        return main_context, True
-
-    def prepare(self, main_context: list[dict] | None) -> list[dict]:
-        state = self.load()
-        if main_context is not None:
-            incoming = freeze_messages(main_context, exclude_system=True)
-            delta, rebase = self._update(state, incoming)
-            if delta:
-                block = main_block(delta)
-                if rebase:
-                    hashes = set(state["backgroundHashes"])
-                    work = [item for item in state["messages"] if fingerprint(item) not in hashes]
-                    state["messages"] = [block, *work]
-                    state["backgroundHashes"] = [fingerprint(block)]
-                else:
-                    state["messages"].append(block)
-                    state["backgroundHashes"].append(fingerprint(block))
-            elif rebase:
-                hashes = set(state["backgroundHashes"])
-                state["messages"] = [item for item in state["messages"] if fingerprint(item) not in hashes]
-                state["backgroundHashes"] = []
-            state["mainContext"] = incoming
-            state["backgroundNeedsRebase"] = False
-            self._save(state)
-        return deepcopy(state["messages"])
-
-    def followup_text(self, main_context: list[dict], request: str) -> str:
-        # 调用方传进来的主背景已经冻结过，这里再复制一遍只是浪费。
-        state = self.load()
-        delta, rebase = self._update(state, main_context)
-        label = "【当前主背景更新：旧背景已压缩或改写】" if rebase else "【主对话新增记录】"
-        context_text = label + "\n" + json.dumps(delta, ensure_ascii=False) + "\n" if delta else ""
-        return context_text + "【运行中补充要求】\n" + request
-
-    def mark_main_synced(self, main_context: list[dict]) -> None:
-        state = self.load()
-        state["mainContext"] = freeze_messages(main_context, exclude_system=True)
-        self._save(state)
+    def messages(self) -> list[dict]:
+        """下一轮 runner 的初始上下文。"""
+        return deepcopy(self.load()["messages"])
 
     def capture(self, messages: list, system_prompt: str) -> None:
         actual = freeze_messages(messages)
@@ -152,29 +71,28 @@ class ContextState:
         if state["messages"] == actual and state["systemPrompt"] == system_prompt:
             # 这一步没有新增内容，不必重写整份快照。
             return
-        state["messages"] = actual
-        state["systemPrompt"] = system_prompt
-        previous_hashes = state["backgroundHashes"]
-        if previous_hashes:
-            hashes = {fingerprint(item) for item in actual}
-            if any(key not in hashes for key in previous_hashes):
-                state["backgroundNeedsRebase"] = True
-            state["backgroundHashes"] = [key for key in previous_hashes if key in hashes]
-        self._save(state)
+        self._save({"messages": actual, "systemPrompt": system_prompt})
 
     def checkpoint(self, turn: int) -> None:
-        write_json(self.path.parent / "context_checkpoints" / f"{turn}.json", self.load())
+        self.db.execute(
+            "INSERT INTO context_checkpoints (session_id, turn, value) VALUES (?, ?, ?) "
+            "ON CONFLICT (session_id, turn) DO UPDATE SET value = excluded.value",
+            (self.session_id, turn, dump(self.load())),
+        )
+
+    def has_checkpoint(self, turn: int) -> bool:
+        row = self.db.execute(
+            "SELECT 1 FROM context_checkpoints WHERE session_id = ? AND turn = ?", (self.session_id, turn)
+        ).fetchone()
+        return row is not None
 
     def fork_state(self, turn: int) -> dict:
-        checkpoint = self.path.parent / "context_checkpoints" / f"{turn}.json"
-        if not checkpoint.exists():
-            raise ValueError("目标轮次没有新格式上下文快照，不能从展示日志恢复。")
-        state = json.loads(checkpoint.read_text(encoding="utf-8"))
-        if state.get("version") != FORMAT_VERSION:
-            raise ValueError("目标上下文格式不受支持。")
-        return state
+        row = self.db.execute(
+            "SELECT value FROM context_checkpoints WHERE session_id = ? AND turn = ?", (self.session_id, turn)
+        ).fetchone()
+        if row is None:
+            raise ValueError("目标轮次没有上下文快照，不能从展示日志恢复。")
+        return load(row[0])
 
     def seed(self, state: dict) -> None:
-        if state.get("version") != FORMAT_VERSION:
-            raise ValueError("上下文格式不受支持。")
-        write_json(self.path, deepcopy(state))
+        self._save(deepcopy(state))

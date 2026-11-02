@@ -6,13 +6,8 @@ Python 侧用构造器保证写入形状，读取侧按 type 判别）。
 
 from __future__ import annotations
 
-import hashlib
-import json
-import os
 import time
 import uuid
-from pathlib import Path
-from typing import Any
 
 SESSION_FORMAT_VERSION = 3
 
@@ -23,21 +18,6 @@ def new_id() -> str:
 
 def now_ms() -> int:
     return int(time.time() * 1000)
-
-
-def write_json_atomic(path: Path, payload: dict, *, indent: int | None = None) -> None:
-    """先写临时文件再替换，避免读到写了一半的 JSON。"""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_suffix(path.suffix + ".tmp")
-    with open(temporary, "w", encoding="utf-8") as handle:
-        json.dump(payload, handle, ensure_ascii=False, indent=indent)
-    os.replace(temporary, path)
-
-
-def fingerprint(payload: Any) -> str:
-    """计算结构的规范化 JSON sha256 摘要。"""
-    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-    return hashlib.sha256(encoded.encode()).hexdigest()
 
 
 def text_block(text: str) -> dict:

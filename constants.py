@@ -9,6 +9,8 @@ MAID_LIST_AGENTS_TOOL_NAME = "maid_list_agents"
 MAID_TASK_OUTPUT_TOOL_NAME = "maid_task_output"
 MAID_TASK_STOP_TOOL_NAME = "maid_task_stop"
 MAID_DELIVER_FILE_TOOL_NAME = "maid_deliver_file"
+MAID_REPORT_TOOL_NAME = "maid_report"
+MAID_READ_TOOL_NAME = "maid_read"
 MAID_TOOL_NAMES = frozenset(
     {
         MAID_AGENT_TOOL_NAME,
@@ -18,9 +20,8 @@ MAID_TOOL_NAMES = frozenset(
         MAID_TASK_STOP_TOOL_NAME,
     }
 )
-
-RAW_INPUT_EXTRA_KEY = "_maid_agent_raw_input"
-TRUE_USER_INPUT_EXTRA_KEY = "_maid_agent_true_user_input"
+# 只给管家用的工具：大小姐看不到，管家的工具集里总会补上。
+MAID_WORKER_ONLY_TOOL_NAMES = frozenset({MAID_REPORT_TOOL_NAME, MAID_READ_TOOL_NAME})
 
 USER_INPUT_BLOCK_LABEL = "对方原话"
 MISTRESS_REQUEST_BLOCK_LABEL = "大小姐请求"

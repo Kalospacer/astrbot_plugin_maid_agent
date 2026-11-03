@@ -8,17 +8,15 @@ from math import isfinite
 from string import Formatter
 from typing import Any
 
-from .constants import MISTRESS_REQUEST_BLOCK_LABEL, USER_INPUT_BLOCK_LABEL
+from .constants import MISTRESS_REQUEST_BLOCK_LABEL, RULE_ID_RE, USER_INPUT_BLOCK_LABEL
 from .harness._log import logger
 
 DEFAULT_ALLOWED_AGENT_NAMES = ("butler",)
 DEFAULT_MAID_AGENT_NAME = "butler"
-DEFAULT_MAX_ACTIVE_PER_UMO = 5
-DEFAULT_MAX_ACTIVE_GLOBAL = 20
+DEFAULT_MAX_WORKERS = 3
+MAX_WORKERS_RANGE = (1, 16)
 DEFAULT_RETENTION_DAYS = 30
-DEFAULT_MAX_TURN_SECONDS = 1800
 DEFAULT_MAX_UPLOAD_MB = 25
-DEFAULT_MAX_AGENT_STEPS = 128
 DEFAULT_SESSION_IDLE_TIMEOUT_HOURS = 5.0
 MAID_AGENT_PERSONA = (
     "你是MuiceMaid，大小姐的管家。你的任务是完成大小姐交给你的请求，"
@@ -38,6 +36,16 @@ class ConfigValidationError(ValueError):
 
 
 @dataclass(slots=True, frozen=True)
+class InferredRule:
+    """自我唤醒派发时大小姐要逐条判断的规则。"""
+
+    id: str
+    name: str
+    enabled: bool
+    instruction: str
+
+
+@dataclass(slots=True, frozen=True)
 class MaidModeConfig:
     allowed_agent_names: tuple[str, ...] = DEFAULT_ALLOWED_AGENT_NAMES
     default_agent_name: str = DEFAULT_MAID_AGENT_NAME
@@ -50,12 +58,11 @@ class MaidModeConfig:
     log_raw_llm_io: bool = False
     dispatch_prompt_template: str = DEFAULT_DISPATCH_PROMPT_TEMPLATE
     memory_agent_names: tuple[str, ...] = ()
-    max_active_per_umo: int = DEFAULT_MAX_ACTIVE_PER_UMO
-    max_active_global: int = DEFAULT_MAX_ACTIVE_GLOBAL
+    max_workers: int = DEFAULT_MAX_WORKERS
+    inferred_dispatch: bool = True
+    inferred_rules: tuple[InferredRule, ...] = ()
     retention_days: int = DEFAULT_RETENTION_DAYS
-    max_turn_seconds: int = DEFAULT_MAX_TURN_SECONDS
     max_upload_mb: int = DEFAULT_MAX_UPLOAD_MB
-    max_agent_steps: int = DEFAULT_MAX_AGENT_STEPS
     session_idle_timeout_hours: float = DEFAULT_SESSION_IDLE_TIMEOUT_HOURS
 
 
@@ -119,6 +126,45 @@ def _strict_int(cfg: Mapping[str, Any], key: str, default: int, *, minimum: int)
     if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
         raise ConfigValidationError({key: f"必须是不小于 {minimum} 的整数。"})
     return value
+
+
+def _max_workers(value: Any) -> int:
+    low, high = MAX_WORKERS_RANGE
+    if isinstance(value, bool) or not isinstance(value, int) or not low <= value <= high:
+        raise ConfigValidationError({"max_workers": f"必须是 {low} 至 {high} 的整数。"})
+    return value
+
+
+def _inferred_rules(value: Any) -> tuple[InferredRule, ...]:
+    """AstrBot template_list 存成对象数组，每项带 __template_key；这里只取规则字段。"""
+    if not isinstance(value, (list, tuple)):
+        raise ConfigValidationError({"inferred_rules": "必须是规则列表。"})
+    rules = []
+    for item in value:
+        if not isinstance(item, Mapping):
+            raise ConfigValidationError({"inferred_rules": "每条规则必须是对象。"})
+        rule_id = item.get("id")
+        name = item.get("name")
+        enabled = item.get("enabled", True)
+        instruction = item.get("instruction")
+        if not isinstance(rule_id, str) or not RULE_ID_RE.match(rule_id):
+            raise ConfigValidationError({"inferred_rules": "规则 id 只能由字母、数字、下划线和连字符组成，最长 80 字。"})
+        if not isinstance(name, str) or not name.strip() or not isinstance(instruction, str) or not instruction.strip():
+            raise ConfigValidationError({"inferred_rules": f"规则 {rule_id} 的名称和说明不能为空。"})
+        if not isinstance(enabled, bool):
+            raise ConfigValidationError({"inferred_rules": f"规则 {rule_id} 的 enabled 必须是布尔值。"})
+        rules.append(InferredRule(rule_id, name.strip(), enabled, instruction.strip()))
+    if len({rule.id for rule in rules}) != len(rules):
+        raise ConfigValidationError({"inferred_rules": "规则 id 不能重复。"})
+    return tuple(rules)
+
+
+def _tolerant_with(cfg: Mapping[str, Any], key: str, default: Any, parse) -> Any:
+    try:
+        return parse(cfg.get(key, default))
+    except ConfigValidationError as exc:
+        logger.warning("[maid] 配置项 %s 无效，已改用默认值: %s", key, exc.errors[key])
+        return default
 
 
 def _tolerant_bool(cfg: Mapping[str, Any], key: str, default: bool) -> bool:
@@ -219,12 +265,11 @@ def load_maid_mode_config(config: Mapping[str, Any] | None = None, *, strict: bo
             log_raw_llm_io=_tolerant_bool(cfg, "log_raw_llm_io", False),
             dispatch_prompt_template=_tolerant_template(cfg),
             memory_agent_names=memory,
-            max_active_per_umo=_tolerant_int(cfg, "max_active_per_umo", DEFAULT_MAX_ACTIVE_PER_UMO, minimum=1),
-            max_active_global=_tolerant_int(cfg, "max_active_global", DEFAULT_MAX_ACTIVE_GLOBAL, minimum=1),
+            max_workers=_tolerant_with(cfg, "max_workers", DEFAULT_MAX_WORKERS, _max_workers),
+            inferred_dispatch=_tolerant_bool(cfg, "inferred_dispatch", True),
+            inferred_rules=_tolerant_with(cfg, "inferred_rules", (), _inferred_rules),
             retention_days=_tolerant_int(cfg, "retention_days", DEFAULT_RETENTION_DAYS, minimum=1),
-            max_turn_seconds=_tolerant_int(cfg, "max_turn_seconds", DEFAULT_MAX_TURN_SECONDS, minimum=0),
             max_upload_mb=_tolerant_int(cfg, "max_upload_mb", DEFAULT_MAX_UPLOAD_MB, minimum=1),
-            max_agent_steps=_tolerant_int(cfg, "max_agent_steps", DEFAULT_MAX_AGENT_STEPS, minimum=1),
             session_idle_timeout_hours=_tolerant_idle_timeout(cfg, DEFAULT_SESSION_IDLE_TIMEOUT_HOURS),
         )
     allowed = _strict_names(cfg.get("allowed_agent_names", DEFAULT_ALLOWED_AGENT_NAMES), "allowed_agent_names", allow_empty=False)
@@ -257,12 +302,11 @@ def load_maid_mode_config(config: Mapping[str, Any] | None = None, *, strict: bo
         log_raw_llm_io=_strict_bool(cfg, "log_raw_llm_io", False),
         dispatch_prompt_template=_validate_template(cfg.get("dispatch_prompt_template", DEFAULT_DISPATCH_PROMPT_TEMPLATE)),
         memory_agent_names=memory,
-        max_active_per_umo=_strict_int(cfg, "max_active_per_umo", DEFAULT_MAX_ACTIVE_PER_UMO, minimum=1),
-        max_active_global=_strict_int(cfg, "max_active_global", DEFAULT_MAX_ACTIVE_GLOBAL, minimum=1),
+        max_workers=_max_workers(cfg.get("max_workers", DEFAULT_MAX_WORKERS)),
+        inferred_dispatch=_strict_bool(cfg, "inferred_dispatch", True),
+        inferred_rules=_inferred_rules(cfg.get("inferred_rules", ())),
         retention_days=_strict_int(cfg, "retention_days", DEFAULT_RETENTION_DAYS, minimum=1),
-        max_turn_seconds=_strict_int(cfg, "max_turn_seconds", DEFAULT_MAX_TURN_SECONDS, minimum=0),
         max_upload_mb=_strict_int(cfg, "max_upload_mb", DEFAULT_MAX_UPLOAD_MB, minimum=1),
-        max_agent_steps=_strict_int(cfg, "max_agent_steps", DEFAULT_MAX_AGENT_STEPS, minimum=1),
         session_idle_timeout_hours=_idle_timeout(cfg.get("session_idle_timeout_hours", DEFAULT_SESSION_IDLE_TIMEOUT_HOURS)),
     )
 

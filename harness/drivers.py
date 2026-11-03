@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import json
 import mimetypes
+import re
 import time
 from copy import deepcopy
 from pathlib import Path
@@ -30,16 +31,65 @@ from ..constants import DASHBOARD_UMO
 from . import contracts as c
 from . import tools_view
 from ._log import dump_raw_llm_output, dump_raw_llm_request, logger
+from .admission import DecisionStore
 from .chat_state import ChatStateStore
 from .context_state import ContextState
+from .db import EffectQueue, Later
 from .history import visible_events
 from .store import SessionStore
-from .tasks import TaskStore
+from .tasks import (
+    SETTLED_REPORT_STATES,
+    TaskStore,
+    add_input,
+    delivered_since_report,
+    end_assignment,
+    end_task,
+    latest_report,
+    new_assignment,
+    record_report,
+    requeue_unread,
+    running_assignment,
+    take_undelivered,
+    waits_for_person,
+)
 
 if TYPE_CHECKING:
     from astrbot.api.star import Context
 
 CHUNK_THROTTLE_S = 0.0
+TRANSIENT_TRIES = 3
+TRANSIENT_BACKOFF_S = 15
+SLOT_WAIT_S = 5
+# superagent src/executor/dsh.ts 的临时故障特征，补上 Python 侧连接与超时异常的类名。
+_TRANSIENT_ERROR_RE = re.compile(
+    "|".join(
+        [
+            "ECONNRESET", "ECONNREFUSED", "ETIMEDOUT", "EAI_AGAIN", "ENOTFOUND", "EPIPE", "UND_ERR",
+            "socket hang up", "fetch failed", "network error", "overloaded", "rate limit",
+            r"\b(?:408|429|50[0-4])\b",
+            "ConnectionError", "Connection(?:Reset|Refused|Aborted)Error", "ConnectError",
+            "TimeoutError", "ReadTimeout", "RemoteProtocolError",
+        ]
+    ),
+    re.IGNORECASE,
+)
+RECOVERY_NOTE = (
+    "宿主在本任务进行中重启。继续之前先检查当前状态，不要重复已经完成的外部操作。"
+    "完成原任务并上报状态。"
+)
+NO_REPORT_NOTICE = "管家没有上报状态就结束了。可以用 maid_task_output 查看它的进度。"
+
+
+def transient(error: BaseException | str) -> bool:
+    """临时故障（网络、限流、上游 5xx）可以重试；其余失败直接写 failed。"""
+    status = getattr(error, "status_code", None) or getattr(error, "status", None)
+    if isinstance(status, int):
+        return status in (408, 429) or status >= 500
+    if isinstance(error, BaseException):
+        text = f"{type(error).__name__} {error} {getattr(error, 'code', '') or ''}"
+    else:
+        text = str(error)
+    return bool(_TRANSIENT_ERROR_RE.search(text))
 
 
 def _chain_text(chain: Any) -> str:
@@ -221,19 +271,19 @@ class SessionDriver:
         self._task: asyncio.Task | None = None
         self._steer_fn = None
         self._stop_fn = None
-        self._turn_result_waiters: list[asyncio.Future] = []
         meta = self.log.load_meta()
         self.umo = str(meta.get("umo") or DASHBOARD_UMO)
         self.provider_id = str(meta.get("providerId") or "")
         self.agent_name = str(meta.get("agentName") or "")
         self.sender_id = str(meta.get("senderId") or "")
+        self.source_kind = str(meta.get("sourceKind") or "")
         self._stop_requested = False
         self._interrupted = False
         self.turn_started_at: float | None = None
         self.last_turn: dict = {}
         self._voice_sink = None
         self.current_execution: dict = {}
-        self._followup_tickets: list[tuple[str, object, list]] = []
+        self._steered: list[tuple[list[str], object]] = []
         self._run_context: dict = {}
         self._child_event = None
         self._framework_stopped = False
@@ -251,6 +301,13 @@ class SessionDriver:
     @property
     def busy(self) -> bool:
         return self.running or bool(self.inbox)
+
+    def active_task_id(self) -> str:
+        """正在跑的这一轮所属的任务；没在跑时取排队的第一轮；空闲时为空。"""
+        if self.running:
+            return str(self.current_execution.get("task_id") or "")
+        queued = next((item for item in self.inbox if item["placement"] == "queued"), None)
+        return str(((queued or {}).get("run_context") or {}).get("task_id") or "")
 
     def _meta_update(self, **fields) -> None:
         self.log.update_meta(**fields)
@@ -277,31 +334,25 @@ class SessionDriver:
         self._kick()
         return item["id"]
 
-    def steer(self, text: str, followup_id: str = "", main_context: list | None = None) -> str | None:
-        """运行中可靠保存补充；空闲时由控制台显式排下一轮。"""
-        task_id = self.current_execution.get("task_id")
-        if self.running and task_id and not followup_id:
-            main_context = ContextState(self.log.dir).load()["mainContext"]
-            pending = self.registry.tasks.add_followup(task_id, text, main_context)
-            followup_id = pending["id"]
-        if self.running and self._steer_fn is not None:
-            ticket = self._steer_fn(text)
-            if ticket is not None and followup_id:
-                self._followup_tickets.append((followup_id, ticket, main_context or []))
-            if ticket is None:
-                return None
-            item = {
-                "id": c.new_id(),
-                "placement": "steering",
-                "message": c.user_message([c.text_block(text)]),
-            }
-            self.inbox.append(item)
-            self._publish_queue()
-            return item["id"]
-        if self.running:
-            return "pending"
-        self.enqueue(c.user_message([c.text_block(text)]), placement="queued")
-        return "queued"
+    def steer(self, text: str, input_ids: list[str] | None = None) -> bool:
+        """把一段话插进正在运行的这一轮；返回是否插入成功。
+
+        input_ids 是这段话承载的任务输入，这一轮结束前没被读到的会放回待送达。
+        """
+        if not self.running or self._steer_fn is None:
+            return False
+        ticket = self._steer_fn(text)
+        if ticket is None:
+            return False
+        if input_ids:
+            self._steered.append((input_ids, ticket))
+        self.inbox.append({
+            "id": c.new_id(),
+            "placement": "steering",
+            "message": c.user_message([c.text_block(text)]),
+        })
+        self._publish_queue()
+        return True
 
     def update_queue_item(self, item_id: str, action: dict) -> None:
         """edit / remove / steer（对应 updateQueue）。"""
@@ -317,8 +368,9 @@ class SessionDriver:
                 text = "".join(
                     block.get("text", "") for block in action.get("content") or [] if block.get("type") == "text"
                 )
-                self.inbox.pop(index)
-                self.steer(text)
+                if self.steer(text):
+                    self.inbox.remove(item)
+                    self._publish_queue()
                 return
             self._publish_queue()
             return
@@ -327,32 +379,16 @@ class SessionDriver:
         raise RpcError("queue-item-not-found", f"队列项不存在: {item_id}", {"itemId": item_id})
 
     def request_stop(self) -> None:
+        """取消正在运行的这一轮，并丢掉排队还没开始的轮次。"""
         self._stop_requested = True
-        task_id = self.current_execution.get("task_id")
-        if task_id:
-            self.registry.tasks.cancel_followups(task_id)
+        if self.inbox:
+            self.inbox.clear()
+            self._publish_queue()
         if self._stop_fn is not None:
             try:
                 self._stop_fn()
             except Exception as exc:  # noqa: BLE001
                 logger.warning("[maid] 停止钩子执行失败: session=%s err=%s", self.session_id[:8], exc)
-            return
-        if not self.running:
-            if not self.inbox:
-                return
-            queued = list(self.inbox)
-            self.inbox.clear()
-            stopped_result = {"status": "stopped", "result": "", "error": "任务在执行前被停止。"}
-            self._settle_turn(stopped_result)
-            for item in queued:
-                execution = item.get("run_context") or {}
-                if execution.get("task_id"):
-                    self.current_execution = execution
-                    self.registry.settle_execution(self, stopped_result)
-                    stopped_event = self.log.append("maid/task", {"taskId": execution["task_id"], "status": "stopped-before-run"}, ignorable=True)
-                    self.registry.publish_event_frame(self.session_id, stopped_event)
-            self.log.update_meta(activeTaskId="", deliveryStatus="stopped")
-            self._publish_queue()
 
     def framework_stop(self) -> None:
         self._framework_stopped = True
@@ -362,11 +398,6 @@ class SessionDriver:
         """插件停用：标记 interrupted 并停循环。"""
         self._interrupted = True
         self.request_stop()
-        if self._task is not None and not self._task.done():
-            self._task.cancel()
-
-    def watchdog_cancel(self) -> None:
-        """看门狗超时：取消当前 turn 任务（_pump 会补写终态并继续存活）。"""
         if self._task is not None and not self._task.done():
             self._task.cancel()
 
@@ -391,7 +422,7 @@ class SessionDriver:
                 closed = True
         if last_start_seq < 0 or closed:
             return False
-        ContextState(self.log.dir).checkpoint(start_count)
+        ContextState(self.log.db, self.session_id).checkpoint(start_count)
         event = self.log.append(
             "turn/end",
             {"turn": start_count, "reason": c.reason_interrupted()},
@@ -426,42 +457,18 @@ class SessionDriver:
                 self._run_context = item["run_context"] or self.registry.manual_execution(self, item["message"])
                 await self.run_turn(item["message"])
             except asyncio.CancelledError:
-                if self._interrupted:
-                    if self.current_execution.get("task_id"):
-                        self.registry.settle_execution(self, {"status": "interrupted", "error": "插件停用或进程中断。", "result": ""})
-                    raise
-                logger.warning("[maid] turn 被看门狗取消: session=%s", self.session_id[:8])
-                async with self.log.lock:
-                    await self._emit("turn/end", {"turn": self._count_turns(), "reason": c.reason_interrupted()})
-                self._settle_turn({"status": "interrupted", "error": "turn watchdog timeout", "result": ""})
-                self.registry.settle_execution(self, self.last_turn)
-                for waiter in list(self._turn_result_waiters):
-                    if not waiter.done():
-                        waiter.set_result(dict(self.last_turn))
+                # 插件停用：任务状态原样留在库里，下次启动按重启恢复处理。
+                raise
             except Exception as exc:  # noqa: BLE001
                 logger.error("[maid] turn 执行失败: session=%s err=%s", self.session_id[:8], exc, exc_info=True)
                 async with self.log.lock:
                     await self._emit("turn/end", {"turn": self._count_turns(), "reason": c.reason_error(str(exc))})
-                self._settle_turn({"status": "failed", "error": str(exc), "result": ""})
-                self.registry.settle_execution(self, self.last_turn)
-            for waiter in list(self._turn_result_waiters):
-                if not waiter.done():
-                    waiter.set_result(dict(self.last_turn))
-
-    async def wait_next_turn_result(self, timeout: float | None = None) -> dict:
-        """前台等待本轮结果（chat 侧 maid_agent 用）。"""
-        waiter = asyncio.get_running_loop().create_future()
-        self._turn_result_waiters.append(waiter)
-        try:
-            if timeout is not None:
-                return await asyncio.wait_for(waiter, timeout)
-            return await waiter
-        finally:
-            with _suppress():
-                self._turn_result_waiters.remove(waiter)
+                self._settle_turn({"status": "failed", "error": str(exc), "result": "", "exception": exc})
+                self.registry.finish_turn(self, {**self.last_turn, "exception": exc})
+                exc.__traceback__ = None
 
     def _settle_turn(self, payload: dict) -> None:
-        self.last_turn = payload
+        self.last_turn = {key: value for key, value in payload.items() if key != "exception"}
         self._meta_update(
             lastStatus=payload.get("status", ""),
             lastResult=payload.get("result", ""),
@@ -478,10 +485,8 @@ class SessionDriver:
         turn = self._count_turns() + 1
         self.state = "running"
         self.current_execution = deepcopy(self._run_context)
-        self._followup_tickets = []
+        self._steered = []
         self._framework_stopped = False
-        if self.current_execution.get("task_id"):
-            self.registry.tasks.mark_running(self.current_execution["task_id"], self.current_execution["round_id"])
         self.turn_started_at = time.monotonic()
         self._stop_requested = False
         self.registry.publish_host_frame(
@@ -499,10 +504,10 @@ class SessionDriver:
 
             result = await self._execute_turn(turn)
             self._settle_turn(result)
-            self.registry.settle_execution(self, result)
+            self.registry.finish_turn(self, result)
             return result
         finally:
-            ContextState(self.log.dir).checkpoint(turn)
+            ContextState(self.log.db, self.session_id).checkpoint(turn)
             self._clear_steering_items()
             if self._child_event is not None:
                 from astrbot.core.utils.active_event_registry import active_event_registry
@@ -523,7 +528,6 @@ class SessionDriver:
         from ..maid_dispatcher import _build_runner
 
         context = self.registry.context
-        agent_max_step = self.registry.config.max_agent_steps
         agent_name = self.agent_name
         if not agent_name:
             raise ValueError("会话缺少配置的管家名称。")
@@ -563,8 +567,8 @@ class SessionDriver:
 
         toolset = self.registry.build_toolset(handoff=handoff, umo=umo, agent_name=resolved_name)
 
-        context_state = ContextState(self.log.dir)
-        initial_contexts = context_state.prepare(self.current_execution.get("main_context"))
+        context_state = ContextState(self.log.db, self.session_id)
+        initial_contexts = context_state.messages()
         if not initial_contexts:
             from ..maid_dispatcher import _normalize_begin_dialogs
 
@@ -623,7 +627,7 @@ class SessionDriver:
         status = "completed"
         error_text = ""
         final_text = ""
-        max_step_hit = False
+        failure: BaseException | None = None
         try:
             self._message_prefix = list(runner.run_context.messages)
             persisted = len(self._message_prefix)
@@ -654,29 +658,14 @@ class SessionDriver:
                     async with self.log.lock:
                         await self._emit("step/end", {"turn": turn, "step": step_idx})
 
-            while not runner.done() and step < agent_max_step and not self._interrupted:
+            while not runner.done() and not self._interrupted:
                 step += 1
                 await _execute_step(step)
-                self._sync_followup_consumption(context_state)
+                self._mark_steered_read()
                 context_state.capture(runner.run_context.messages, system_prompt)
                 self._clear_steering_items()
                 if stop_requested_flag():
                     break
-
-            if not runner.done() and step >= agent_max_step and not self._interrupted and not stop_requested_flag():
-                max_step_hit = True
-                from astrbot.core.agent.message import Message
-
-                if runner.req:
-                    runner.req.func_tool = None
-                runner.run_context.messages.append(
-                    Message(
-                        role="user",
-                        content="工具调用次数已达到上限，请停止使用工具，并根据已经收集到的信息，对你的任务和发现进行总结，然后直接回复对方。",
-                    ),
-                )
-                step += 1
-                await _execute_step(step)
 
             llm_resp = runner.get_final_llm_resp()
             final_text = (getattr(llm_resp, "completion_text", "") or "") if llm_resp is not None else ""
@@ -690,9 +679,12 @@ class SessionDriver:
             elif stop_requested_flag():
                 reason = c.reason_aborted("user")
                 status = "stopped"
-            elif max_step_hit:
-                reason = {"kind": "step-limit", "limit": agent_max_step}
-                status = "step_limit"
+            elif getattr(llm_resp, "role", "") == "err":
+                # 所有 provider 都失败时 runner 不抛异常，而是给一条 err 回复，不能当作完成。
+                reason = c.reason_error(final_text)
+                status = "failed"
+                error_text = final_text
+                final_text = ""
             else:
                 reason = c.reason_completed()
         except Exception as exc:  # noqa: BLE001
@@ -701,8 +693,9 @@ class SessionDriver:
             status = "failed"
             error_text = str(exc)
             final_text = ""
+            failure = exc
         finally:
-            self._sync_followup_consumption(context_state)
+            self._mark_steered_read()
             context_state.capture(runner.run_context.messages, system_prompt)
             self._steer_fn = None
             self._stop_fn = None
@@ -716,26 +709,24 @@ class SessionDriver:
         if turn == 1:
             self.registry.schedule_title_generation(self, prompt_text)
 
-        return {"status": status, "result": final_text, "error": error_text}
-
+        return {"status": status, "result": final_text, "error": error_text, "exception": failure}
 
     def delivery_allowed(self) -> bool:
         if self._framework_stopped or self._interrupted:
             return False
         return self.registry.epoch_active(self.umo, self.current_execution.get("epoch"))
 
-    def _sync_followup_consumption(self, context_state: ContextState) -> None:
+    def _mark_steered_read(self) -> None:
+        """runner 已读到的插话，把它承载的任务输入记为已读。"""
         task_id = self.current_execution.get("task_id")
-        if not task_id:
+        consumed = [ids for ids, ticket in self._steered if getattr(ticket, "consumed", False)]
+        if not task_id or not consumed:
             return
-        remaining = []
-        for followup_id, ticket, main_context in self._followup_tickets:
-            if getattr(ticket, "consumed", False):
-                self.registry.tasks.set_followup_status(task_id, [followup_id], "consumed")
-                context_state.mark_main_synced(main_context)
-            else:
-                remaining.append((followup_id, ticket, main_context))
-        self._followup_tickets = remaining
+        self._steered = [(ids, ticket) for ids, ticket in self._steered if not getattr(ticket, "consumed", False)]
+        self.registry.mark_inputs_read(task_id, [input_id for ids in consumed for input_id in ids])
+
+    def unread_steered_ids(self) -> set[str]:
+        return {input_id for ids, _ in self._steered for input_id in ids}
 
     async def _emit(self, event_type: str, data: dict, view: dict | None = None, **extra) -> dict:
         event = self.log.append(event_type, data, **extra)
@@ -971,16 +962,17 @@ class SessionDriver:
         self.registry.push_projection_changes(self.session_id)
 
 
-class _suppress:
-    def __enter__(self):
-        return self
-
-    def __exit__(self, exc_type, exc, tb):
-        return exc_type in (Exception, ValueError, KeyError)
+def _log_background_failure(done: asyncio.Task) -> None:
+    if not done.cancelled() and done.exception() is not None:
+        logger.error("[maid] 后台任务 %s 失败: %s", done.get_name(), done.exception())
 
 
 class DriverRegistry:
-    """全部会话驱动的注册表 + 与 AstrBot 上下文的桥。"""
+    """全部会话驱动的注册表、任务执行的调度，以及与 AstrBot 上下文的桥。
+
+    任务的启动、输入送达和唤醒大小姐都登记成持久化副作用（EffectQueue），
+    在写入任务的同一个事务里登记，提交后才执行。
+    """
 
     def __init__(
         self,
@@ -991,19 +983,26 @@ class DriverRegistry:
         config: Any,
     ):
         self.context = context
-        self.invalid_epochs: set[str] = set()
-        self.tasks = TaskStore(store.root)
-        self.chats = ChatStateStore(store.root, self.tasks)
-        self.tasks.interrupt_active()
-        self.chats.recover()
         self.store = store
+        self.db = store.db
         self.mux_hub = mux_hub
         self.host_hub = host_hub
         self.config = config
+        self.invalid_epochs: set[str] = set()
+        self.tasks = TaskStore(self.db)
+        self.chats = ChatStateStore(self.db, self.tasks)
+        self.decisions = DecisionStore(self.db)
+        self.chats.recover()
+
+        self.effects = EffectQueue(self.db)
+        self.effects.handle("launch", self._launch, retry=(5_000, 300_000))
+        self.effects.handle("delivery", self._deliver, retry=(2_000, 60_000))
+        self.effects.handle("wake", self._wake, retry=(2_000, 60_000), ordered=True)
+        self.on_wake = None
+
         self.drivers: dict[str, SessionDriver] = {}
         self._background_tasks: set[asyncio.Task] = set()
-        self.on_turn_terminal = None
-
+        self._transient_tries: dict[str, int] = {}
 
     def driver(self, session_id: str) -> SessionDriver | None:
         driver = self.drivers.get(session_id)
@@ -1027,21 +1026,26 @@ class DriverRegistry:
     def running_count(self) -> int:
         return sum(1 for d in self.drivers.values() if d.busy)
 
-    def running_count_for_umo(self, umo: str) -> int:
-        return sum(1 for d in self.drivers.values() if d.busy and d.umo == umo)
+    def busy_workers(self) -> int:
+        """占着位置的管家：聊天来源、这一轮正在跑或已排队。控制台会话不计入。"""
+        return sum(1 for d in self.drivers.values() if d.busy and d.source_kind == "chat")
 
-    def capacity_available(self, umo: str, slots: int = 1) -> bool:
-        per_umo = int(getattr(self.config, "max_active_per_umo", 5) or 5)
-        global_cap = int(getattr(self.config, "max_active_global", 20) or 20)
-        return (
-            self.running_count_for_umo(umo) + slots <= per_umo
-            and self.running_count() + slots <= global_cap
-        )
+    def slot_free(self, *, human: bool) -> bool:
+        """有人发来的新输入可以多用 1 个位置，并且排在新任务前面。"""
+        limit = self.config.max_workers
+        busy = self.busy_workers()
+        if human:
+            return busy < limit + 1
+        waiting = any(item.get("human") for kind in ("launch", "delivery") for item in self.effects.payloads(kind))
+        return busy < limit and not waiting
+
+    def _can_start_turn(self, driver: SessionDriver, task: dict, *, human: bool) -> bool:
+        return not driver.busy and (task["strength"] == "console" or self.slot_free(human=human))
 
     def epoch_active(self, umo: str, epoch: Any) -> bool:
         """本轮所属的执行代次是否仍然有效。
 
-        投递守卫、终态回灌与自动补跑都据此判断同一件事，不能各写一份。
+        投递守卫、唤醒与重启恢复都据此判断同一件事，不能各写一份。
         """
         if epoch is None or epoch == "console":
             return True
@@ -1049,9 +1053,6 @@ class DriverRegistry:
             return False
         state = self.chats.get(umo)
         return state is not None and state["epoch"] == epoch
-
-    async def drop_context_binding(self, session_id: str) -> None:
-        await self.chats.unbind_session(session_id)
 
     async def delete_session(self, session_id: str) -> None:
         from .rpc import RpcError
@@ -1088,108 +1089,282 @@ class DriverRegistry:
         return removed
 
     def manual_execution(self, driver: SessionDriver, message: dict) -> dict:
-        """控制台手动选择 session 不经自动路由，但仍拥有独立 task。"""
+        """控制台手动发给会话的消息不经派发，但仍记成一项独立的控制台任务。"""
         request = "".join(part.get("text", "") for part in message.get("content", []) if part.get("type") == "text")
         state = self.chats.get(driver.umo)
         epoch = state["epoch"] if state is not None else "console"
-        task = self.tasks.create(scope=self.chats.key(driver.umo), epoch=epoch, branch=driver.log.load_meta().get("branchId", driver.session_id), request=request)
-        execution = self.tasks.start_round(task["taskId"], driver.session_id, request)
-        driver.log.update_meta(activeTaskId=task["taskId"])
-        if state is not None:
-            self.chats.begin(state)
-        return {"task_id": task["taskId"], "round_id": execution["roundId"], "epoch": epoch, "conversation_id": state["conversationId"] if state is not None else "", "main_context": None}
+        with self.db.transaction():
+            task = self.tasks.create(
+                scope=self.chats.key(driver.umo),
+                epoch=epoch,
+                umo=driver.umo,
+                conversation_id=state["conversationId"] if state is not None else "",
+                branch=driver.log.load_meta().get("branchId", driver.session_id),
+                request=request,
+                strength="console",
+            )
+            assignment = new_assignment(task, driver.session_id)
+            assignment.update(state="running", startedAt=c.now_ms())
+            add_input(task, request, human=True)
+            take_undelivered(task, assignment, read=True)
+            self.tasks.save(task)
+            driver.log.update_meta(activeTaskId=task["taskId"])
+            if state is not None:
+                self.chats.begin(state)
+        return self._run_context(task, assignment)
 
-    def settle_execution(self, driver: SessionDriver, result: dict) -> None:
-        execution = deepcopy(driver.current_execution)
-        task_id = execution.get("task_id")
+    @staticmethod
+    def _run_context(task: dict, assignment: dict) -> dict:
+        return {
+            "task_id": task["taskId"],
+            "assignment_id": assignment["id"],
+            "epoch": task["epoch"],
+            "conversation_id": task["conversationId"],
+        }
+
+    def _turn_message(self, inputs: list[dict]) -> dict:
+        content = [c.text_block("\n\n".join(item["text"] for item in inputs))]
+        content.extend(c.image_block(ref) for item in inputs for ref in item.get("images", []))
+        return c.user_message(content)
+
+    def queue_launch(self, task: dict, assignment: dict, *, human: bool) -> None:
+        self.effects.enqueue(
+            "launch", assignment["id"], {"task_id": task["taskId"], "assignment_id": assignment["id"], "human": human}
+        )
+
+    def queue_delivery(self, task: dict) -> None:
+        human = any(item["human"] for item in task["inputs"] if item["id"] in task["undelivered"])
+        self.effects.enqueue("delivery", task["taskId"], {"task_id": task["taskId"], "human": human})
+
+    def queue_wake(self, task: dict, report: dict, kind: str) -> bool:
+        """登记一次唤醒大小姐；控制台任务不唤醒。kind 是 question（管家在问）或 result。"""
+        if task["strength"] == "console":
+            return False
+        self.effects.enqueue(
+            "wake",
+            f"{task['taskId']}:{report['id']}",
+            {"task_id": task["taskId"], "report_id": report["id"], "kind": kind},
+        )
+        return True
+
+    async def _launch(self, payload: dict, _key: str) -> None:
+        """启动一次待启动的执行：占一个位置，把待送达的输入作为第一轮发给管家。"""
+        task = self.tasks.get(payload["task_id"])
+        assignment = next((item for item in task["assignments"] if item["id"] == payload["assignment_id"]), None)
+        if task.get("ended") or assignment is None or assignment["state"] != "pending":
+            return
+        if not self.epoch_active(task["umo"], task["epoch"]):
+            return
+        driver = self.driver(assignment["sessionId"])
+        if driver is None:
+            raise RuntimeError("任务的管家会话不存在。")
+        if not self._can_start_turn(driver, task, human=payload["human"]):
+            raise Later
+
+        with self.db.transaction():
+            assignment.update(state="running", startedAt=c.now_ms())
+            inputs = take_undelivered(task, assignment, read=True)
+            self.tasks.save(task)
+            driver.log.update_meta(activeTaskId=task["taskId"])
+        if inputs:
+            driver.enqueue(self._turn_message(inputs), run_context=self._run_context(task, assignment))
+
+    async def _deliver(self, payload: dict, _key: str) -> None:
+        """把待送达的输入交给进行中的执行；失败时记在任务上（person/delivery）再重试。"""
+        task = self.tasks.get(payload["task_id"])
+        assignment = running_assignment(task)
+        if task.get("ended") or assignment is None or not task["undelivered"]:
+            return
+        if not self.epoch_active(task["umo"], task["epoch"]):
+            return
+        try:
+            self._hand_over(task, assignment, human=payload["human"])
+        except Later:
+            raise
+        except Exception as exc:
+            with self.db.transaction():
+                task["delivery"] = {"error": str(exc)[:300], "at": c.now_ms()}
+                self.tasks.save(task)
+            raise
+
+    def _hand_over(self, task: dict, assignment: dict, *, human: bool) -> None:
+        """管家这一轮正在跑就插进去，空闲就占一个位置开新一轮。"""
+        driver = self.driver(assignment["sessionId"])
+        if driver is None:
+            raise RuntimeError("任务的管家会话不存在。")
+        if driver.running and driver.current_execution.get("assignment_id") == assignment["id"]:
+            pending = [item for item in task["inputs"] if item["id"] in task["undelivered"]]
+            if not driver.steer("\n\n".join(item["text"] for item in pending), [item["id"] for item in pending]):
+                raise Later
+            with self.db.transaction():
+                take_undelivered(task, assignment, read=False)
+                self.tasks.save(task)
+            return
+        if not self._can_start_turn(driver, task, human=human):
+            raise Later
+
+        with self.db.transaction():
+            inputs = take_undelivered(task, assignment, read=True)
+            self.tasks.save(task)
+        driver.enqueue(self._turn_message(inputs), run_context=self._run_context(task, assignment))
+
+    async def _wake(self, payload: dict, key: str) -> None:
+        if self.on_wake is not None:
+            await self.on_wake(payload, key)
+
+    def mark_inputs_read(self, task_id: str, input_ids: list[str]) -> None:
+        with self.db.transaction():
+            task = self.tasks.get(task_id)
+            at = c.now_ms()
+            for item in task["inputs"]:
+                if item["id"] in input_ids and item["readAt"] is None:
+                    item["readAt"] = at
+            self.tasks.save(task)
+
+    def report(self, driver: SessionDriver, *, state: str, summary: str, human_action: str | None, clear_question: bool) -> dict:
+        """记下管家的上报，并按上报决定是否唤醒大小姐（对应 superagent reportRelay）。"""
+        task_id = driver.current_execution.get("task_id")
         if not task_id:
-            self.notify_turn_terminal(driver, result)
+            raise ValueError("此工具只能在派发的任务里使用。")
+        with self.db.transaction():
+            task = self.tasks.get(task_id)
+            report = record_report(task, state=state, summary=summary, question=human_action, keep_question=not clear_question)
+            if state in ("ready", "dropped"):
+                end_task(task, by="executor", outcome="completed" if state == "ready" else "dropped")
+            self.tasks.save(task)
+            if human_action and task.get("attention"):
+                notified = self.queue_wake(task, report, "question")
+            elif state != "progress":
+                notified = self.queue_wake(task, report, "result")
+            else:
+                notified = False
+        outcome = {"reported": True, "notification": "orchestrator" if notified else "internal_only"}
+        if task.get("attention"):
+            outcome["attention"] = task["attention"]["question"]
+        return outcome
+
+    def stop_task(self, task: dict, *, strength: str) -> dict:
+        """人停下任务：结束任务与当前执行，取消管家正在跑的这一轮，不唤醒大小姐。"""
+        if task.get("ended"):
+            return self.tasks.card(task)
+        assignment = running_assignment(task)
+        with self.db.transaction():
+            end_task(task, by="human", outcome="stopped")
+            self.tasks.save(task)
+            self.decisions.record(kind="stop", strength=strength, reason="humanStop", task_id=task["taskId"])
+        driver = self.drivers.get(assignment["sessionId"]) if assignment is not None else None
+        if driver is not None and driver.active_task_id() == task["taskId"]:
+            driver.request_stop()
+        return self.tasks.card(task)
+
+    def restart_assignment(self, task: dict, assignment: dict, reason: str, note: str) -> None:
+        """结束这次执行，在同一会话开一次新的；note 作为新执行的第一条输入。调用方负责保存。"""
+        end_assignment(task, assignment, reason)
+        requeue_unread(task, assignment)
+        replacement = new_assignment(task, assignment["sessionId"])
+        add_input(task, note, human=False)
+        self.queue_launch(task, replacement, human=False)
+
+    def recover_open_tasks(self) -> None:
+        """启动时处理被重启打断的执行（对应 superagent Assignments.interrupted）。
+
+        停在稳定点（最近一次上报是 waiting/ready/blocked/failed，且之后没有新输入送达）的
+        只补投没送达的输入；其余结束本次执行，在同一会话带恢复说明重开。排队中的执行由
+        持久化的 launch 副作用继续。已作废代次的任务不恢复。
+        """
+        recovered = 0
+        with self.db.transaction():
+            for task in self.tasks.open_tasks():
+                assignment = running_assignment(task)
+                if assignment is None or not self.epoch_active(task["umo"], task["epoch"]):
+                    continue
+                report = assignment.get("report")
+                busy = delivered_since_report(assignment)
+                if not report or report["state"] not in SETTLED_REPORT_STATES or busy:
+                    self.restart_assignment(task, assignment, "hostRestarted", RECOVERY_NOTE)
+                    self.tasks.save(task)
+                    recovered += 1
+                elif task["undelivered"]:
+                    self.queue_delivery(task)
+        if recovered:
+            logger.info("[maid] 重启恢复：%d 个执行带恢复说明重开", recovered)
+
+    def finish_turn(self, driver: SessionDriver, result: dict) -> None:
+        """一轮结束后的任务记账：临时故障重试，否则写 failed；没交还给人就写 waiting；再送达剩下的输入。"""
+        task_id = driver.current_execution.get("task_id")
+        if not task_id or result["status"] in ("interrupted", "stopped"):
             return
         task = self.tasks.get(task_id)
-        scheduled = [item["id"] for item in task["followups"] if item["status"] == "scheduled" and item["id"] in execution.get("followup_ids", [])]
-        if scheduled:
-            if result["status"] in {"failed", "stopped", "interrupted"}:
-                followup_status = "failed" if result["status"] == "failed" else "cancelled"
-                self.tasks.set_followup_status(task_id, scheduled, followup_status)
+        assignment = running_assignment(task)
+        if task.get("ended") or assignment is None or assignment["id"] != driver.current_execution.get("assignment_id"):
+            return
+
+        with self.db.transaction():
+            requeue_unread(task, assignment, driver.unread_steered_ids())
+            if result["status"] == "failed":
+                self._settle_failure(task, assignment, result)
             else:
-                self.tasks.set_followup_status(task_id, scheduled, "consumed")
-        stopped = result["status"] in {"stopped", "interrupted"}
-        pending = self.tasks.pending(task_id)
-        if stopped:
-            self.tasks.set_followup_status(task_id, [item["id"] for item in pending], "cancelled")
-            pending = []
-        finished = self.tasks.finish(task_id, execution["round_id"], result, pending=bool(pending))
-        # 只带通知需要的字段：execution 里的 main_context 可能很大，不能让它跟着
-        # 通知被回灌路径长期持有。
-        notification = {
-            "status": result["status"],
-            "result": result.get("result", ""),
-            "error": result.get("error", ""),
-            "task_id": task_id,
-            "round_id": execution["round_id"],
-            "epoch": execution.get("epoch"),
-            "conversation_id": execution.get("conversation_id", ""),
-            "delivery_cancelled": driver._framework_stopped,
-            "round": finished,
-            "description": task["description"],
-        }
-        self.notify_turn_terminal(driver, notification)
-        state = self.chats.get(driver.umo)
-        if pending and self.epoch_active(driver.umo, execution.get("epoch")):
-            self.tasks.set_followup_status(task_id, [item["id"] for item in pending], "scheduled")
-            request = "\n\n".join(item["content"] for item in pending)
-            # 先释放上一轮状态，再为同一 task 创建补跑轮次。
-            task = self.tasks.get(task_id)
-            task["status"] = result["status"]
+                self._transient_tries.pop(assignment["id"], None)
+                # 已交还给人（给出结果或提了问题且之后没有新输入，或在等人处理 blocked/failed）就不写 waiting。
+                report = assignment.get("report")
+                since = delivered_since_report(assignment)
+                asked = bool(report and task.get("attention"))
+                if not ((asked and not since) or waits_for_person(task)):
+                    self._report_idle(task, result.get("result", ""))
+            if task["undelivered"]:
+                self.queue_delivery(task)
             self.tasks.save(task)
-            next_round = self.tasks.start_round(task_id, driver.session_id, request)
-            follow_context = {**execution, "round_id": next_round["roundId"], "main_context": self.tasks.followup_context(pending[-1]) if state is not None else None, "followup_ids": [item["id"] for item in pending]}
-            driver.enqueue(c.user_message([c.text_block(request)]), run_context=follow_context)
-        elif state is not None and state["epoch"] == execution.get("epoch"):
+
+        state = self.chats.get(task["umo"])
+        if state is not None and state["epoch"] == task["epoch"]:
             self.chats.settle(state)
 
-    def resume_pending_reports(self) -> None:
-        for task, execution in self.tasks.pending_reports():
-            sid = execution["sessionId"]
-            if not self.store.exists(sid):
-                continue
-            meta = self.store.log(sid).load_meta()
-            if meta.get("sourceKind") != "chat":
-                continue
-            umo = meta["umo"]
-            if not self.epoch_active(umo, task["epoch"]):
-                self.tasks.delivery(task["taskId"], execution["roundId"], "skipped")
-                continue
-            state = self.chats.get(umo)
-            self.notify_turn_terminal(self.attach(sid), {
-                "status": execution["status"],
-                "result": execution.get("result", ""),
-                "error": execution.get("error", ""),
-                "task_id": task["taskId"],
-                "round_id": execution["roundId"],
-                "epoch": task["epoch"],
-                "conversation_id": state["conversationId"] if state is not None else "",
-                "description": task["description"],
-            })
-
-    def notify_turn_terminal(self, driver: SessionDriver, result: dict) -> None:
-        callback = self.on_turn_terminal
-        if callback is None:
+    def _settle_failure(self, task: dict, assignment: dict, result: dict) -> None:
+        """临时故障按 15/30/60 秒退避在同一会话重试，最多 3 次；否则写 failed 并唤醒大小姐。"""
+        failure = result.get("exception") or result.get("error", "")
+        tries = self._transient_tries.get(assignment["id"], 0)
+        if transient(failure) and tries < TRANSIENT_TRIES:
+            self._transient_tries[assignment["id"]] = tries + 1
+            note = f"上一轮因临时原因失败（{str(failure)[:200]}），从中断处继续任务。"
+            self._spawn(self._retry_after(TRANSIENT_BACKOFF_S * 2**tries, task["taskId"], assignment["id"], note), "maid-retry")
             return
-        task = asyncio.create_task(callback(driver, result), name=f"maid-terminal-{driver.session_id[:8]}")
+        self._transient_tries.pop(assignment["id"], None)
+        report = record_report(task, state="failed", summary=result.get("error") or "执行失败。")
+        self.queue_wake(task, report, "result")
+
+    def _report_idle(self, task: dict, said: str) -> None:
+        """这一轮结束却没交还给人：记 waiting；有话说，或之前从没上报过时唤醒大小姐。"""
+        said = said.strip()
+        before = (latest_report(task) or {}).get("summary", "")
+        report = record_report(task, state="waiting", summary=said or before or NO_REPORT_NOTICE)
+        if said or not before.strip():
+            self.queue_wake(task, report, "result")
+
+    async def _retry_after(self, delay: float, task_id: str, assignment_id: str, note: str) -> None:
+        """等退避时间到、有空位后，在同一会话发一条继续的消息。"""
+        await asyncio.sleep(delay)
+        while True:
+            task = self.tasks.get(task_id)
+            assignment = running_assignment(task)
+            if task.get("ended") or assignment is None or assignment["id"] != assignment_id:
+                self._transient_tries.pop(assignment_id, None)
+                return
+            driver = self.driver(assignment["sessionId"])
+            if driver is None:
+                return
+            if self._can_start_turn(driver, task, human=False):
+                driver.enqueue(c.user_message([c.text_block(note)]), run_context=self._run_context(task, assignment))
+                return
+            await asyncio.sleep(SLOT_WAIT_S)
+
+    def _spawn(self, coroutine, name: str) -> None:
+        task = asyncio.create_task(coroutine, name=name)
         self._background_tasks.add(task)
         task.add_done_callback(self._background_tasks.discard)
-
-        def _log_terminal_failure(done: asyncio.Task) -> None:
-            if done.cancelled():
-                return
-            exc = done.exception()
-            if exc is not None:
-                logger.error("[maid] turn 终态回调失败: session=%s err=%s", driver.session_id[:8], exc)
-
-        task.add_done_callback(_log_terminal_failure)
+        task.add_done_callback(_log_background_failure)
 
     async def shutdown(self) -> None:
+        await self.effects.stop()
         for driver in list(self.drivers.values()):
             driver.interrupt()
         tasks = [d._task for d in self.drivers.values() if d._task and not d._task.done()]
@@ -1316,11 +1491,7 @@ class DriverRegistry:
 
 
     def schedule_title_generation(self, driver: SessionDriver, request_text: str) -> None:
-        task = asyncio.create_task(
-            self._generate_title(driver, request_text), name=f"maid-title-{driver.session_id[:8]}"
-        )
-        self._background_tasks.add(task)
-        task.add_done_callback(self._background_tasks.discard)
+        self._spawn(self._generate_title(driver, request_text), f"maid-title-{driver.session_id[:8]}")
 
     async def _generate_title(self, driver: SessionDriver, request_text: str) -> None:
         try:

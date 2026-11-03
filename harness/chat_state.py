@@ -4,17 +4,16 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
-import json
 import uuid
-from pathlib import Path
 
-from .tasks import FORMAT_VERSION, TaskStore, now_ms, write_json
+from .contracts import now_ms
+from .db import Database, dump, load
+from .tasks import TaskStore, stage
 
 
 class ChatStateStore:
-    def __init__(self, root: Path, tasks: TaskStore, clock=now_ms):
-        self.root = root / "chat_states"
-        self.root.mkdir(parents=True, exist_ok=True)
+    def __init__(self, db: Database, tasks: TaskStore, clock=now_ms):
+        self.db = db
         self.tasks = tasks
         self.clock = clock
         self._locks: dict[str, asyncio.Lock] = {}
@@ -26,26 +25,16 @@ class ChatStateStore:
     def key(umo: str) -> str:
         return hashlib.sha256(umo.encode()).hexdigest()
 
-    def _path(self, umo: str) -> Path:
-        return self.root / f"{self.key(umo)}.json"
-
-    @staticmethod
-    def _read(path: Path) -> dict:
-        data = json.loads(path.read_text(encoding="utf-8"))
-        if data.get("version") != FORMAT_VERSION:
-            raise ValueError("主对话状态格式不受支持。")
-        return data
-
     def get(self, umo: str) -> dict | None:
-        path = self._path(umo)
-        if not path.exists():
-            return None
-        return self._read(path)
+        row = self.db.execute("SELECT value FROM chat_states WHERE umo = ?", (umo,)).fetchone()
+        return load(row[0]) if row else None
+
+    def _all(self) -> list[dict]:
+        return [load(row[0]) for row in self.db.execute("SELECT value FROM chat_states").fetchall()]
 
     async def unbind_session(self, session_id: str, before_remove=None) -> None:
         """与派发共用聊天锁，锁内重新读取绑定并检查是否可删除。"""
-        for path in self.root.glob("*.json"):
-            previous = self._read(path)
+        for previous in self._all():
             if session_id not in previous["branches"].values():
                 continue
             async with self.lock(previous["umo"]):
@@ -61,11 +50,13 @@ class ChatStateStore:
                     self.save(state)
 
     def save(self, state: dict) -> None:
-        write_json(self._path(state["umo"]), state)
+        self.db.execute(
+            "INSERT INTO chat_states (umo, value) VALUES (?, ?) ON CONFLICT (umo) DO UPDATE SET value = excluded.value",
+            (state["umo"], dump(state)),
+        )
 
     def reset(self, umo: str, conversation_id: str) -> dict:
         state = {
-            "version": FORMAT_VERSION,
             "umo": umo,
             "conversationId": conversation_id,
             "epoch": uuid.uuid4().hex,
@@ -87,20 +78,24 @@ class ChatStateStore:
     def task_list(self, state: dict) -> list[dict]:
         return self.tasks.list(scope=self.key(state["umo"]), epoch=state["epoch"])
 
-    def active(self, state: dict) -> list[dict]:
-        return self.tasks.active(scope=self.key(state["umo"]), epoch=state["epoch"])
+    def working(self, state: dict) -> list[dict]:
+        """当前代次里管家正在处理或排队的任务。"""
+        return [task for task in self.open(state) if stage(task).startswith("working")]
+
+    def open(self, state: dict) -> list[dict]:
+        """当前代次里尚未结束的任务。"""
+        return self.tasks.list(scope=self.key(state["umo"]), epoch=state["epoch"], open_only=True)
 
     async def retention_prune(self, retention_days: int) -> set[str]:
         cutoff = self.clock() - max(1, retention_days) * 86_400_000
         live_epochs: set[str] = set()
-        for path in self.root.glob("*.json"):
-            previous = self._read(path)
+        for previous in self._all():
             async with self.lock(previous["umo"]):
                 state = self.get(previous["umo"])
                 if state is None:
                     continue
-                if not state["branches"] and state["lastToolAt"] < cutoff and not self.active(state):
-                    path.unlink()
+                if not state["branches"] and state["lastToolAt"] < cutoff and not self.working(state):
+                    self.db.execute("DELETE FROM chat_states WHERE umo = ?", (state["umo"],))
                 else:
                     live_epochs.add(state["epoch"])
         return live_epochs
@@ -108,15 +103,15 @@ class ChatStateStore:
     def touch_tool(self, state: dict, timeout_hours: float) -> bool:
         """先失效过期 session，再刷新活跃时间；task 身份不受影响。"""
         now = self.clock()
-        active = self.active(state)
+        working = bool(self.working(state))
         idle_since = state["idleSince"]
-        expired = not active and idle_since is not None and now - idle_since >= timeout_hours * 3_600_000
+        expired = not working and idle_since is not None and now - idle_since >= timeout_hours * 3_600_000
         if expired:
             state["contextGeneration"] += 1
             state["branches"] = {}
             state["defaultBranch"] = None
         state["lastToolAt"] = now
-        state["idleSince"] = None if active else now
+        state["idleSince"] = None if working else now
         self.save(state)
         return expired
 
@@ -125,18 +120,16 @@ class ChatStateStore:
         self.save(state)
 
     def settle(self, state: dict) -> None:
-        if not self.active(state):
+        if not self.working(state):
             state["idleSince"] = self.clock()
             self.save(state)
 
     def recover(self) -> None:
-        """保留已有空闲计时；恢复中断执行时使用最后持久化活动时间。"""
-        for path in self.root.glob("*.json"):
-            state = self._read(path)
+        """启动时补上空闲计时：用最后一次工具调用与任务更新的较晚者。"""
+        for state in self._all():
             if state["idleSince"] is None:
-                stamps = [state["lastToolAt"]]
-                stamps.extend(task.get("interruptedFromAt", task["updatedAt"]) for task in self.task_list(state))
-                state["idleSince"] = max(stamps)
+                latest = self.tasks.latest_update(scope=self.key(state["umo"]), epoch=state["epoch"])
+                state["idleSince"] = max(state["lastToolAt"], latest) if latest is not None else state["lastToolAt"]
                 self.save(state)
 
     def target(self, state: dict, task_id: str) -> dict:

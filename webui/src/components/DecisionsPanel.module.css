@@ -1,0 +1,108 @@
+.dialog {
+  width: min(720px, 100%);
+}
+
+.toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.recent {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+  font-size: 12.5px;
+  color: var(--maid-alias-label-secondary);
+}
+
+.list {
+  display: grid;
+  gap: 10px;
+  max-height: 60vh;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  list-style: none;
+}
+
+.row {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+}
+
+.mark {
+  flex: none;
+  padding: 1px 8px;
+  border-radius: 999px;
+  font-size: 12px;
+  line-height: 18px;
+  background: var(--maid-alias-interactive-bg-hover);
+  color: var(--maid-alias-label-secondary);
+}
+
+.accept,
+.reopen {
+  color: var(--maid-alias-label-primary);
+}
+
+.body {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.title {
+  padding: 0;
+  border: none;
+  background: none;
+  text-align: left;
+  font-size: 13.5px;
+  color: var(--maid-alias-label-primary);
+  overflow-wrap: anywhere;
+}
+
+button.title {
+  cursor: pointer;
+}
+
+button.title:hover {
+  text-decoration: underline;
+}
+
+.quote,
+.meta {
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--maid-alias-label-tertiary);
+  overflow-wrap: anywhere;
+}
+
+.meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.form {
+  margin: 4px 0 0;
+  padding: 8px;
+  border-radius: 8px;
+  background: var(--maid-alias-interactive-bg-hover);
+  font-size: 12px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.empty {
+  font-size: 12.5px;
+  color: var(--maid-alias-label-tertiary);
+}
+
+.session {
+  margin-bottom: 12px;
+}

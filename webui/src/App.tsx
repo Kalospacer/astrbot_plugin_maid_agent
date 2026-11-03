@@ -6,11 +6,13 @@ import { useApp } from "@/hooks";
 import { ConversationRoot } from "@/components/Conversation";
 import { SessionSidebar } from "@/components/SessionSidebar";
 import { SettingsDialog } from "@/components/SettingsDialog";
+import { DecisionsDialog } from "@/components/DecisionsPanel";
 
 export function App() {
   const connection = useApp((s) => s.connection);
   const booting = useApp((s) => s.booting);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [decisionsOpen, setDecisionsOpen] = useState(false);
 
   return (
     <>
@@ -26,11 +28,15 @@ export function App() {
             width={api.width}
             onToggle={api.toggle}
             onOpenSettings={() => setSettingsOpen(true)}
+            onOpenDecisions={() => setDecisionsOpen(true)}
           />
         )}
         conversation={<ConversationRoot booting={booting} />}
         overlay={
-          <SettingsDialog open={settingsOpen} onClose={() => setSettingsOpen(false)} />
+          <>
+            <SettingsDialog open={settingsOpen} onClose={() => setSettingsOpen(false)} />
+            <DecisionsDialog open={decisionsOpen} onClose={() => setDecisionsOpen(false)} />
+          </>
         }
       />
     </>

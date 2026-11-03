@@ -34,6 +34,7 @@ from .constants import (
     MAID_AGENT_TOOL_NAME,
     MAID_DELIVER_FILE_TOOL_NAME,
     MAID_TOOL_NAMES,
+    MAID_WORKER_ONLY_TOOL_NAMES,
     PLUGIN_DATA_DIR_NAME,
 )
 
@@ -111,7 +112,9 @@ def apply_main_tool_policy(
       delegates to the maid instead of calling AstrBot native tools.
     - Otherwise, when ``hide_transfer_tools=True``: drop all ``transfer_to_*``
       handoff tools while keeping the maid tools and the rest of the native tools.
-    - Both flags off: return the toolset untouched.
+    - Both flags off: keep everything else.
+
+    The maid-only tools (``maid_report`` / ``maid_read``) are always removed.
 
     Guard: only applies when ``maid_agent`` is present in the toolset, so
     third-party agent runners that assemble their own tool lists are never
@@ -119,10 +122,10 @@ def apply_main_tool_policy(
     """
     if toolset is None:
         return None
-    if not hide_native_tools and not hide_transfer_tools:
-        return toolset
     if toolset.get_tool(MAID_AGENT_TOOL_NAME) is None:
         return toolset
+    for name in MAID_WORKER_ONLY_TOOL_NAMES:
+        toolset.remove_tool(name)
     if hide_native_tools:
         keep = set(MAID_TOOL_NAMES) | {
             str(name).strip() for name in (native_tool_whitelist or ()) if str(name).strip()
@@ -130,7 +133,7 @@ def apply_main_tool_policy(
         for tool in list(toolset.tools):
             if tool.name not in keep:
                 toolset.remove_tool(tool.name)
-    else:
+    elif hide_transfer_tools:
         for tool in list(toolset.tools):
             if _is_handoff_tool(tool) or tool.name == MAID_DELIVER_FILE_TOOL_NAME:
                 toolset.remove_tool(tool.name)
@@ -219,6 +222,13 @@ def build_child_toolset(
                 toolset.add_tool(rt_tool)
 
     sanitized = _sanitize_child_toolset(toolset)
+
+    # 上报与按需读取是管家的工作方式本身，不受 subagent 的工具配置限制。
+    for name in MAID_WORKER_ONLY_TOOL_NAMES:
+        worker_tool = tool_mgr.get_func(name) if tool_mgr else None
+        if worker_tool is not None:
+            sanitized = sanitized or ToolSet()
+            sanitized.add_tool(worker_tool)
 
     if _agent_memory_enabled(memory_agent_names, agent_name):
         sanitized = _augment_with_file_tools(sanitized, context)

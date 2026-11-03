@@ -439,12 +439,14 @@ class SessionDriver:
 
 
     def _kick(self) -> None:
+        if self._interrupted:
+            return
         self._wakeup.set()
         if self._task is None or self._task.done():
             self._task = asyncio.create_task(self._pump(), name=f"maid-driver-{self.session_id[:8]}")
 
     async def _pump(self) -> None:
-        while True:
+        while not self._interrupted:
             self._wakeup.clear()
             queued = [item for item in self.inbox if item["placement"] == "queued"]
             if not queued:

@@ -20,7 +20,12 @@ from astrbot.api.event import filter
 from astrbot.api.star import Star, StarTools
 from astrbot.core.utils.history_saver import persist_agent_history
 
-from .config import _safe_int, load_maid_mode_config
+from .config import (
+    ConfigValidationError,
+    _safe_int,
+    assign_dispatch_rule_ids,
+    load_maid_mode_config,
+)
 from .constants import (
     MAID_AGENT_TOOL_NAME,
     MAID_DELIVER_FILE_TOOL_NAME,
@@ -39,8 +44,8 @@ from .constants import (
 from .harness import contracts as c
 from .harness._log import dump_raw_llm_output, dump_raw_llm_request
 from .harness.admission import (
+    DISPATCH_GUIDE,
     EVIDENCE_MAX_CHARS,
-    INFERRED_DISPATCH_GUIDE,
     RULE_REASON_MAX_CHARS,
     SCOPE_MAX_CHARS,
     TARGET_BASES,
@@ -64,16 +69,16 @@ from .katex_fonts import materialize_katex_fonts
 from .maid_dispatcher import ensure_default_subagent
 from .toolset_adapter import apply_main_tool_policy
 
-__version__ = "2.1.0"
+__version__ = "2.1.1"
 RELAY_SUMMARY_CHARS = 600
 
 _SETTINGS_SCHEMA_CACHE: dict | None = None
 
-_SELF_WAKE_ONLY = "Self-wake (scheduled) turns only; omit when a person's message started this turn."
+_DISPATCH_FORM_NOTE = "Required for every dispatched task or follow-up; batches fill the form in each item."
 _ADMISSION_FORM_PROPERTIES = {
     "rule_assessments": {
         "type": "array",
-        "description": f"{_SELF_WAKE_ONLY} Exactly one judgment for every enabled rule; empty when no rule is enabled.",
+        "description": f"{_DISPATCH_FORM_NOTE} Exactly one judgment for every enabled rule; empty when no rule is enabled.",
         "items": {
             "type": "object",
             "additionalProperties": False,
@@ -87,7 +92,7 @@ _ADMISSION_FORM_PROPERTIES = {
     },
     "direction": {
         "type": "object",
-        "description": f"{_SELF_WAKE_ONLY} Whether the work is settled enough to start.",
+        "description": f"{_DISPATCH_FORM_NOTE} Whether the work is settled enough to start.",
         "additionalProperties": False,
         "properties": {
             "implementation_requested": {"type": "boolean"},
@@ -97,8 +102,8 @@ _ADMISSION_FORM_PROPERTIES = {
         },
         "required": ["implementation_requested", "target_basis", "requires_design_decision", "evidence"],
     },
-    "intent_evidence": {"type": "string", "maxLength": EVIDENCE_MAX_CHARS, "description": f"{_SELF_WAKE_ONLY} Source quotes that establish the request."},
-    "scope": {"type": "string", "maxLength": SCOPE_MAX_CHARS, "description": f"{_SELF_WAKE_ONLY} What exactly the maid may do."},
+    "intent_evidence": {"type": "string", "maxLength": EVIDENCE_MAX_CHARS, "description": f"{_DISPATCH_FORM_NOTE} Source quotes that establish the request."},
+    "scope": {"type": "string", "maxLength": SCOPE_MAX_CHARS, "description": f"{_DISPATCH_FORM_NOTE} What exactly the maid may do."},
 }
 
 
@@ -117,7 +122,7 @@ def _load_settings_schema() -> dict:
 def _config_dict(config) -> dict:
     """配置对象转回 AstrBot 插件配置的形状；规则列表要带上 template_list 的模板键。"""
     value = asdict(config)
-    value["inferred_rules"] = [{"__template_key": "rule", **rule} for rule in value["inferred_rules"]]
+    value["dispatch_rules"] = [{"__template_key": "rule", **rule} for rule in value["dispatch_rules"]]
     return value
 
 
@@ -140,15 +145,20 @@ class _ConfigHolder:
         effective = load_maid_mode_config(self.plugin.config, strict=False)
         candidate = _config_dict(effective)
         candidate.update(patch)
+        assign_dispatch_rule_ids(candidate)
         validated = load_maid_mode_config(candidate)
+        previous = dict(self.plugin.config)
         self.plugin.config.clear()
         self.plugin.config.update(candidate)
         try:
             self.plugin.config.save_config()
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("[maid] 配置持久化失败: %s", exc)
+        except Exception:
+            self.plugin.config.clear()
+            self.plugin.config.update(previous)
+            raise
         self.plugin.maid_mode_config = validated
         self.plugin.registry.config = self.plugin.maid_mode_config
+        self.plugin._patch_llm_tool_schemas()
         self.plugin._refresh_tool_whitelist_schema_options()
         return self.get_config()
 
@@ -162,6 +172,12 @@ class MaidAgent(Star):
     def __init__(self, context, config: dict | None = None):
         super().__init__(context)
         self.config = config if config is not None else {}
+        try:
+            ids_changed = assign_dispatch_rule_ids(self.config)
+        except ConfigValidationError:
+            ids_changed = False
+        if ids_changed and callable(getattr(self.config, "save_config", None)):
+            self.config.save_config()
         self.maid_mode_config = load_maid_mode_config(self.config, strict=False)
         self._active_asyncio_tasks: set[asyncio.Task] = set()
 
@@ -415,6 +431,13 @@ class MaidAgent(Star):
         ):
             if manager is not None and manager.get_func(tool_name) is None:
                 logger.warning("[maid] 工具 %s 未注册，模型将看到空参数 schema。", tool_name)
+        form_properties = {
+            **_ADMISSION_FORM_PROPERTIES,
+            "rule_assessments": {
+                **_ADMISSION_FORM_PROPERTIES["rule_assessments"],
+                "description": self._dispatch_guide(),
+            },
+        }
         agent_tool = manager.get_func(MAID_AGENT_TOOL_NAME) if manager else None
         if agent_tool is not None:
             agent_tool.parameters = {
@@ -429,11 +452,11 @@ class MaidAgent(Star):
                         "description": "Explicit batch of independent new tasks; does not require force_new.",
                         "items": {
                             "type": "object", "additionalProperties": False,
-                            "properties": {"prompt": {"type": "string", "minLength": 1}, **_ADMISSION_FORM_PROPERTIES},
+                            "properties": {"prompt": {"type": "string", "minLength": 1}, **form_properties},
                             "required": ["prompt"],
                         },
                     },
-                    **_ADMISSION_FORM_PROPERTIES,
+                    **form_properties,
                 },
             }
         send_tool = manager.get_func(MAID_SEND_MESSAGE_TOOL_NAME) if manager else None
@@ -444,7 +467,7 @@ class MaidAgent(Star):
                 "properties": {
                     "task_id": {"type": "string", "description": "Open task to send to; required when several tasks are open."},
                     "message": {"type": "string", "minLength": 1},
-                    **_ADMISSION_FORM_PROPERTIES,
+                    **form_properties,
                 },
                 "required": ["message"],
             }
@@ -510,10 +533,25 @@ class MaidAgent(Star):
         if not isinstance(self.config, dict) or not self.config:
             return
         try:
-            latest = load_maid_mode_config(self.config, strict=False)
+            candidate = dict(self.config)
+            try:
+                ids_changed = assign_dispatch_rule_ids(candidate)
+            except ConfigValidationError:
+                ids_changed = False
+            latest = load_maid_mode_config(candidate, strict=False)
+            if ids_changed:
+                previous = self.config.get("dispatch_rules", [])
+                self.config["dispatch_rules"] = candidate["dispatch_rules"]
+                try:
+                    if callable(getattr(self.config, "save_config", None)):
+                        self.config.save_config()
+                except Exception:
+                    self.config["dispatch_rules"] = previous
+                    raise
             if latest != self.maid_mode_config:
                 self.maid_mode_config = latest
                 self.registry.config = latest
+                self._patch_llm_tool_schemas()
         except Exception as exc:  # noqa: BLE001
             logger.debug("[maid] 同步配置跳过: %s", exc)
 
@@ -599,28 +637,21 @@ class MaidAgent(Star):
                 hide_transfer_tools=cfg.hide_transfer_tools,
                 native_tool_whitelist=cfg.native_tool_whitelist,
             )
-        if self._self_wake_dispatch_possible(_event, req):
-            req.system_prompt = f"{req.system_prompt or ''}\n\n{self._inferred_dispatch_guide()}".strip()
+        if req.func_tool is not None and any(
+            req.func_tool.get_tool(name) is not None
+            for name in (MAID_AGENT_TOOL_NAME, MAID_SEND_MESSAGE_TOOL_NAME)
+        ):
+            req.system_prompt = f"{req.system_prompt or ''}\n\n{self._dispatch_guide()}".strip()
         if cfg.log_raw_llm_io:
             dump_raw_llm_request(req, source="main")
 
-    def _self_wake_dispatch_possible(self, event, req) -> bool:
-        from astrbot.core.cron.events import CronMessageEvent
-
-        return (
-            isinstance(event, CronMessageEvent)
-            and self.maid_mode_config.inferred_dispatch
-            and req.func_tool is not None
-            and req.func_tool.get_tool(MAID_AGENT_TOOL_NAME) is not None
-        )
-
-    def _inferred_dispatch_guide(self) -> str:
-        """自我唤醒时注入的派发说明，附上启用的规则（对应 superagent prompts/admission.md）。"""
-        rules = [rule for rule in self.maid_mode_config.inferred_rules if rule.enabled]
+    def _dispatch_guide(self) -> str:
+        """每次派发使用的评估说明，附上启用的规则（对应 superagent prompts/admission.md）。"""
+        rules = [rule for rule in self.maid_mode_config.dispatch_rules if rule.enabled]
         if not rules:
-            return f"{INFERRED_DISPATCH_GUIDE}\n当前没有启用的规则：rule_assessments 传空数组，direction 与证据照填。"
+            return f"{DISPATCH_GUIDE}\n当前没有启用的规则：rule_assessments 传空数组，direction 与证据照填。"
         lines = "\n".join(f"- {rule.id}（{rule.name}）：{rule.instruction}" for rule in rules)
-        return f"{INFERRED_DISPATCH_GUIDE}\n启用的规则（至少命中一条才派发）：\n{lines}"
+        return f"{DISPATCH_GUIDE}\n启用的规则（至少命中一条才派发）：\n{lines}"
 
     @filter.on_llm_response()
     async def _log_main_llm_response(self, _event, resp) -> None:
@@ -679,8 +710,8 @@ class MaidAgent(Star):
         work context, a new task keeps that context. Open tasks take new input
         through maid_send_message, not this tool. Use force_new for independent
         parallel work, or tasks for an explicit independent batch. Ambiguous
-        branches require task_id once to choose a default. On a self-wake turn,
-        fill the assessment form fields. After dispatch, reply to the user; do
+        branches require task_id once to choose a default. Every dispatched task
+        requires the assessment form fields. After dispatch, reply to the user; do
         not poll to keep the turn open.
         """
         form = _admission_form(rule_assessments, direction, intent_evidence, scope)
@@ -882,7 +913,7 @@ class MaidAgent(Star):
 
         The result confirms acceptance, not immediate model consumption. Input
         reaches a running maid within its current turn, or starts a new turn
-        when the maid is idle. On a self-wake turn, fill the assessment form.
+        when the maid is idle. Every follow-up requires the assessment form.
         """
         form = _admission_form(rule_assessments, direction, intent_evidence, scope)
         return self._json_outcome(await self.chat_runtime.send(event, task_id, message, form))
@@ -1040,7 +1071,7 @@ class MaidAgent(Star):
         for driver in busy:
             task_id = driver.active_task_id()
             if task_id:
-                self.registry.stop_task(self.registry.tasks.get(task_id), strength="explicit")
+                self.registry.stop_task(self.registry.tasks.get(task_id))
             else:
                 driver.request_stop()
         yield event.plain_result(f"已停止 {len(busy)} 个活跃任务。")

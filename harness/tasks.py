@@ -238,7 +238,7 @@ class TaskStore:
         request: str,
         strength: str,
     ) -> dict:
-        """新建任务；strength 是 explicit / inferred / console。"""
+        """新建任务；strength 仅区分普通工具任务 chat 与控制台任务 console。"""
         stamp = now_ms()
         task = {
             "taskId": uuid.uuid4().hex,

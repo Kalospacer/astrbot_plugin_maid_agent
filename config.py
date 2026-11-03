@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+import uuid
+from collections.abc import Mapping, MutableMapping
 from dataclasses import dataclass
 from math import isfinite
 from string import Formatter
@@ -36,8 +37,8 @@ class ConfigValidationError(ValueError):
 
 
 @dataclass(slots=True, frozen=True)
-class InferredRule:
-    """自我唤醒派发时大小姐要逐条判断的规则。"""
+class DispatchRule:
+    """每次派发前大小姐要逐条判断的规则。"""
 
     id: str
     name: str
@@ -59,8 +60,7 @@ class MaidModeConfig:
     dispatch_prompt_template: str = DEFAULT_DISPATCH_PROMPT_TEMPLATE
     memory_agent_names: tuple[str, ...] = ()
     max_workers: int = DEFAULT_MAX_WORKERS
-    inferred_dispatch: bool = True
-    inferred_rules: tuple[InferredRule, ...] = ()
+    dispatch_rules: tuple[DispatchRule, ...] = ()
     retention_days: int = DEFAULT_RETENTION_DAYS
     max_upload_mb: int = DEFAULT_MAX_UPLOAD_MB
     session_idle_timeout_hours: float = DEFAULT_SESSION_IDLE_TIMEOUT_HOURS
@@ -135,28 +135,46 @@ def _max_workers(value: Any) -> int:
     return value
 
 
-def _inferred_rules(value: Any) -> tuple[InferredRule, ...]:
+def _dispatch_rules(value: Any) -> tuple[DispatchRule, ...]:
     """AstrBot template_list 存成对象数组，每项带 __template_key；这里只取规则字段。"""
     if not isinstance(value, (list, tuple)):
-        raise ConfigValidationError({"inferred_rules": "必须是规则列表。"})
+        raise ConfigValidationError({"dispatch_rules": "必须是规则列表。"})
     rules = []
     for item in value:
         if not isinstance(item, Mapping):
-            raise ConfigValidationError({"inferred_rules": "每条规则必须是对象。"})
+            raise ConfigValidationError({"dispatch_rules": "每条规则必须是对象。"})
         rule_id = item.get("id")
         name = item.get("name")
         enabled = item.get("enabled", True)
         instruction = item.get("instruction")
         if not isinstance(rule_id, str) or not RULE_ID_RE.match(rule_id):
-            raise ConfigValidationError({"inferred_rules": "规则 id 只能由字母、数字、下划线和连字符组成，最长 80 字。"})
+            raise ConfigValidationError({"dispatch_rules": "规则 id 只能由字母、数字、下划线和连字符组成，最长 80 字。"})
         if not isinstance(name, str) or not name.strip() or not isinstance(instruction, str) or not instruction.strip():
-            raise ConfigValidationError({"inferred_rules": f"规则 {rule_id} 的名称和说明不能为空。"})
+            raise ConfigValidationError({"dispatch_rules": f"规则 {rule_id} 的名称和说明不能为空。"})
         if not isinstance(enabled, bool):
-            raise ConfigValidationError({"inferred_rules": f"规则 {rule_id} 的 enabled 必须是布尔值。"})
-        rules.append(InferredRule(rule_id, name.strip(), enabled, instruction.strip()))
+            raise ConfigValidationError({"dispatch_rules": f"规则 {rule_id} 的 enabled 必须是布尔值。"})
+        rules.append(DispatchRule(rule_id, name.strip(), enabled, instruction.strip()))
     if len({rule.id for rule in rules}) != len(rules):
-        raise ConfigValidationError({"inferred_rules": "规则 id 不能重复。"})
+        raise ConfigValidationError({"dispatch_rules": "规则 id 不能重复。"})
     return tuple(rules)
+
+
+def assign_dispatch_rule_ids(config: MutableMapping[str, Any]) -> bool:
+    """给缺少 ID 的新规则补 UUID；整份规则有效后才写回配置，不进行 I/O。"""
+    value = config.get("dispatch_rules", ())
+    if not isinstance(value, (list, tuple)):
+        _dispatch_rules(value)
+    entries = [dict(item) if isinstance(item, Mapping) else item for item in value]
+    changed = False
+    for item in entries:
+        if isinstance(item, dict) and item.get("id", "") == "":
+            item["id"] = str(uuid.uuid4())
+            changed = True
+
+    _dispatch_rules(entries)
+    if changed:
+        config["dispatch_rules"] = entries
+    return changed
 
 
 def _tolerant_with(cfg: Mapping[str, Any], key: str, default: Any, parse) -> Any:
@@ -266,8 +284,7 @@ def load_maid_mode_config(config: Mapping[str, Any] | None = None, *, strict: bo
             dispatch_prompt_template=_tolerant_template(cfg),
             memory_agent_names=memory,
             max_workers=_tolerant_with(cfg, "max_workers", DEFAULT_MAX_WORKERS, _max_workers),
-            inferred_dispatch=_tolerant_bool(cfg, "inferred_dispatch", True),
-            inferred_rules=_tolerant_with(cfg, "inferred_rules", (), _inferred_rules),
+            dispatch_rules=_tolerant_with(cfg, "dispatch_rules", (), _dispatch_rules),
             retention_days=_tolerant_int(cfg, "retention_days", DEFAULT_RETENTION_DAYS, minimum=1),
             max_upload_mb=_tolerant_int(cfg, "max_upload_mb", DEFAULT_MAX_UPLOAD_MB, minimum=1),
             session_idle_timeout_hours=_tolerant_idle_timeout(cfg, DEFAULT_SESSION_IDLE_TIMEOUT_HOURS),
@@ -303,8 +320,7 @@ def load_maid_mode_config(config: Mapping[str, Any] | None = None, *, strict: bo
         dispatch_prompt_template=_validate_template(cfg.get("dispatch_prompt_template", DEFAULT_DISPATCH_PROMPT_TEMPLATE)),
         memory_agent_names=memory,
         max_workers=_max_workers(cfg.get("max_workers", DEFAULT_MAX_WORKERS)),
-        inferred_dispatch=_strict_bool(cfg, "inferred_dispatch", True),
-        inferred_rules=_inferred_rules(cfg.get("inferred_rules", ())),
+        dispatch_rules=_dispatch_rules(cfg.get("dispatch_rules", ())),
         retention_days=_strict_int(cfg, "retention_days", DEFAULT_RETENTION_DAYS, minimum=1),
         max_upload_mb=_strict_int(cfg, "max_upload_mb", DEFAULT_MAX_UPLOAD_MB, minimum=1),
         session_idle_timeout_hours=_idle_timeout(cfg.get("session_idle_timeout_hours", DEFAULT_SESSION_IDLE_TIMEOUT_HOURS)),

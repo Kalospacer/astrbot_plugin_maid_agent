@@ -33,8 +33,7 @@ SETTINGS_KEYS = {
     "dispatch_prompt_template",
     "memory_agent_names",
     "max_workers",
-    "inferred_dispatch",
-    "inferred_rules",
+    "dispatch_rules",
     "retention_days",
     "max_upload_mb",
     "session_idle_timeout_hours",
@@ -453,7 +452,7 @@ class ApiProxy:
             return {"accepted": True}
         task_id = driver.active_task_id()
         if task_id:
-            self.registry.stop_task(self.registry.tasks.get(task_id), strength="explicit")
+            self.registry.stop_task(self.registry.tasks.get(task_id))
         else:
             driver.request_stop()
         return {"accepted": True}
@@ -469,7 +468,7 @@ class ApiProxy:
             if task is not None:
                 view["taskDescription"] = task["description"]
                 view["sessionId"] = task["sessionId"]
-        names = {rule.id: rule.name for rule in self.registry.config.inferred_rules}
+        names = {rule.id: rule.name for rule in self.registry.config.dispatch_rules}
         view["matchedNames"] = [names.get(rule_id, rule_id) for rule_id in decision["matched"]]
         return view
 

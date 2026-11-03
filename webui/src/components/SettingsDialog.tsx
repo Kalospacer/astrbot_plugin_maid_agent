@@ -25,38 +25,27 @@ function navIcon(id: SectionId) {
   return <IconSettingsOutline16 size={16} />;
 }
 
-/** AstrBot template_list 字段（对象数组）按 JSON 编辑；解析失败时不改动已有值。 */
-function TemplateListField(props: {
+interface DispatchRuleDraft {
+  __template_key: "rule";
   id: string;
-  value: unknown;
-  describedBy?: string;
-  onChange: (next: unknown[]) => void;
-}) {
-  const [text, setText] = useState(() => JSON.stringify(props.value ?? [], null, 2));
-  const [invalid, setInvalid] = useState(false);
-  return (
-    <>
-      <textarea
-        id={props.id}
-        className={css.textarea}
-        value={text}
-        rows={6}
-        aria-describedby={props.describedBy}
-        aria-invalid={invalid || undefined}
-        onChange={(e) => {
-          setText(e.target.value);
-          try {
-            const parsed: unknown = JSON.parse(e.target.value);
-            setInvalid(!Array.isArray(parsed));
-            if (Array.isArray(parsed)) props.onChange(parsed);
-          } catch {
-            setInvalid(true);
-          }
-        }}
-      />
-      {invalid ? <span className={css.hint}>需要 JSON 数组，修正前不会保存这一项的改动。</span> : null}
-    </>
-  );
+  name: string;
+  enabled: boolean;
+  instruction: string;
+}
+
+function createDispatchRule(source?: DispatchRuleDraft): DispatchRuleDraft {
+  // AstrBot 可通过普通 HTTP 访问；getRandomValues 不要求 HTTPS，randomUUID 则要求。
+  const bytes = crypto.getRandomValues(new Uint8Array(16));
+  bytes[6] = (bytes[6] & 0x0f) | 0x40;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  const hex = Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
+  return {
+    __template_key: "rule",
+    id: `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`,
+    name: source ? `${source.name}（副本）` : "",
+    enabled: source?.enabled ?? true,
+    instruction: source?.instruction ?? "",
+  };
 }
 
 export function SettingsDialog(props: { open: boolean; onClose: () => void }) {
@@ -191,6 +180,55 @@ export function SettingsDialog(props: { open: boolean; onClose: () => void }) {
                       ? current.map((item) => String(item))
                       : [];
                     const hint = meta.hint ? <span id={hintId} className={css.hint}>{meta.hint}</span> : null;
+                    if (key === "dispatch_rules") {
+                      const rules = current as DispatchRuleDraft[];
+                      return (
+                        <div key={key} className={css.field}>
+                          <span id={inputId} className={css.label}>{label}</span>
+                          <div className={css.ruleList} aria-labelledby={inputId} aria-describedby={meta.hint ? hintId : undefined}>
+                            {rules.length === 0 ? <span className={css.hint}>暂无规则</span> : null}
+                            {rules.map((rule, index) => (
+                              <fieldset key={rule.id} className={css.ruleCard}>
+                                <legend className={css.ruleTitle}>{rule.name.trim() || "新规则"}</legend>
+                                <label className={css.checkRow}>
+                                  <span>启用规则</span>
+                                  <input
+                                    type="checkbox"
+                                    className={css.checkbox}
+                                    checked={rule.enabled}
+                                    onChange={(e) => setDraft({ ...value, [key]: rules.map((item, position) => position === index ? { ...item, enabled: e.target.checked } : item) })}
+                                  />
+                                </label>
+                                <label className={css.field}>
+                                  <span className={css.label}>名称</span>
+                                  <Input
+                                    aria-label="规则名称"
+                                    value={rule.name}
+                                    onChange={(e) => setDraft({ ...value, [key]: rules.map((item, position) => position === index ? { ...item, name: e.target.value } : item) })}
+                                  />
+                                </label>
+                                <label className={css.field}>
+                                  <span className={css.label}>规则说明</span>
+                                  <textarea
+                                    aria-label="规则说明"
+                                    className={css.textarea}
+                                    rows={3}
+                                    value={rule.instruction}
+                                    onChange={(e) => setDraft({ ...value, [key]: rules.map((item, position) => position === index ? { ...item, instruction: e.target.value } : item) })}
+                                  />
+                                </label>
+                                <div className={css.ruleActions}>
+                                  <Button variant="ghost" onClick={() => setDraft({ ...value, [key]: [...rules.slice(0, index + 1), createDispatchRule(rule), ...rules.slice(index + 1)] })}>复制规则</Button>
+                                  <Button variant="ghost" onClick={() => setDraft({ ...value, [key]: rules.filter((_, position) => position !== index) })}>删除规则</Button>
+                                </div>
+                              </fieldset>
+                            ))}
+                            <Button variant="outline" onClick={() => setDraft({ ...value, [key]: [...rules, createDispatchRule()] })}>新增规则</Button>
+                          </div>
+                          {hint}
+                        </div>
+                      );
+                    }
                     if (typeof current === "boolean" || meta.type === "bool") {
                       return (
                         <div key={key} className={css.field}>
@@ -212,14 +250,7 @@ export function SettingsDialog(props: { open: boolean; onClose: () => void }) {
                     return (
                       <div key={key} className={css.field}>
                         <label className={css.label} htmlFor={inputId}>{label}</label>
-                        {meta.type === "template_list" ? (
-                          <TemplateListField
-                            id={inputId}
-                            value={current}
-                            describedBy={meta.hint ? hintId : undefined}
-                            onChange={(next) => setDraft({ ...value, [key]: next })}
-                          />
-                        ) : isListField && stringOptions.length > 0 ? (
+                        {isListField && stringOptions.length > 0 ? (
                           <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
                             <select
                               id={inputId}

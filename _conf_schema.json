@@ -80,15 +80,9 @@
     "type": "int",
     "default": 3
   },
-  "inferred_dispatch": {
-    "description": "定时唤醒时允许派发",
-    "hint": "收到定时任务或心跳事件（CronMessageEvent）时，主模型必须在派发前填写评估表单并通过校验。关闭后，此类唤醒不能派发。用户消息触发的派发不受影响。",
-    "type": "bool",
-    "default": true
-  },
-  "inferred_rules": {
-    "description": "定时唤醒派发规则",
-    "hint": "定时唤醒时，主模型必须逐条判断的规则。列表为空时跳过规则判断，只校验方向和证据。列表不为空时，至少一条规则匹配才能派发。",
+  "dispatch_rules": {
+    "description": "派发规则",
+    "hint": "每次派发前，主模型必须逐条判断的规则。列表为空时跳过规则判断，只校验方向和证据。列表不为空时，至少一条规则匹配才能派发。",
     "type": "template_list",
     "templates": {
       "rule": {
@@ -97,7 +91,7 @@
         "items": {
           "id": {
             "description": "规则 ID",
-            "hint": "字母、数字、下划线或连字符，最长 80 字，不能重复。",
+            "invisible": true,
             "type": "string",
             "default": ""
           },

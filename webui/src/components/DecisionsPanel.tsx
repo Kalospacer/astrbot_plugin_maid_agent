@@ -13,7 +13,6 @@ interface Decision {
   id: string;
   at: number;
   kind: "accept" | "reopen" | "stop" | "ignore";
-  strength: "explicit" | "inferred";
   reason: string;
   taskId: string;
   trigger: string;

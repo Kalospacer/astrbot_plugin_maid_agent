@@ -256,3 +256,33 @@
   clip: rect(0 0 0 0);
   white-space: nowrap;
 }
+
+.ruleList {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+}
+
+.ruleCard {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+  margin: 0;
+  padding: 10px 12px 12px;
+  border: 1px solid var(--maid-alias-border-l2);
+  border-radius: 8px;
+}
+
+.ruleTitle {
+  max-width: 100%;
+  padding: 0 4px;
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
+.ruleActions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}

@@ -121,6 +121,12 @@ function summary(s) {
   };
 }
 
+const settingsSchema = { type: "object", properties: {
+  dispatch_session_mode: { description: "聊天任务执行环境", hint: "控制台任务始终使用隔离 sandbox。", type: "string", options: ["foreground", "background"] },
+  dispatch_rules: { description: "派发规则", hint: "每次派发前判断；无启用规则时跳过规则判断。", type: "template_list" },
+} };
+let settingsValue = { dispatch_session_mode: "background", dispatch_rules: [] };
+
 async function respond(method, payload) {
   switch (method) {
     case "session.list":
@@ -154,12 +160,13 @@ async function respond(method, payload) {
       return {
         namespaces: [{
           ns: "maid",
-          schema: { type: "object", properties: {
-            dispatch_session_mode: { description: "聊天任务执行环境", hint: "控制台任务始终使用隔离 sandbox。", type: "string", options: ["foreground", "background"] },
-          } },
-          value: { dispatch_session_mode: "background" }, applies: "live", secrets: [], revision: 1,
+          schema: settingsSchema,
+          value: structuredClone(settingsValue), applies: "live", secrets: [], revision: 1,
         }],
       };
+    case "settings.update":
+      settingsValue = structuredClone({ ...settingsValue, ...payload.patch });
+      return { ns: "maid", schema: settingsSchema, value: structuredClone(settingsValue), applies: "live", secrets: [], revision: 2 };
     default:
       return {};
   }
@@ -278,6 +285,50 @@ const settingsOk =
   settingsSelect.querySelectorAll("option").length === 2 &&
   document.getElementById("root").textContent.includes("控制台任务始终使用隔离 sandbox。");
 console.log(`${settingsOk ? "PASS" : "FAIL"} 配置选项与提示`);
+
+// 使用真实构建产物操作规则表单，桥仅替代持久化服务。
+const findButton = (label) => [...document.querySelectorAll("button")].find((button) => button.textContent.trim() === label);
+findButton("新增规则")?.click();
+await delay(40);
+const nameField = document.querySelector('input[aria-label="规则名称"]');
+const instructionField = document.querySelector('textarea[aria-label="规则说明"]');
+if (nameField && instructionField) {
+  Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set.call(nameField, "仅处理指定任务");
+  nameField.dispatchEvent(new window.Event("input", { bubbles: true }));
+  await delay(30);
+  Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, "value").set.call(instructionField, "检查明确要求，再执行指定范围。");
+  instructionField.dispatchEvent(new window.Event("input", { bubbles: true }));
+  await delay(30);
+}
+findButton("复制规则")?.click();
+await delay(40);
+const hasTwoRows = document.querySelectorAll('input[aria-label="规则名称"]').length === 2;
+const noIdInput = !document.querySelector('input[name="id"], input[aria-label="规则 ID"]');
+findButton("保存")?.click();
+await delay(100);
+const savedRules = structuredClone(settingsValue.dispatch_rules);
+const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const savedIdsOk = savedRules.length === 2 && savedRules.every((rule) => uuidPattern.test(rule.id)) && savedRules[0].id !== savedRules[1].id;
+document.querySelector('button[aria-label="设置"]')?.click();
+await delay(100);
+const reopenedNames = [...document.querySelectorAll('input[aria-label="规则名称"]')].map((input) => input.value);
+const reopenedOk = reopenedNames.length === 2 && reopenedNames[0] === "仅处理指定任务" && reopenedNames[1].includes("仅处理指定任务");
+const deleteButtons = [...document.querySelectorAll("button")].filter((button) => button.textContent.trim() === "删除规则");
+deleteButtons[1]?.click();
+await delay(30);
+const remainingName = document.querySelector('input[aria-label="规则名称"]');
+if (remainingName) {
+  Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set.call(remainingName, "修改名称");
+  remainingName.dispatchEvent(new window.Event("input", { bubbles: true }));
+  await delay(30);
+}
+findButton("保存")?.click();
+await delay(100);
+const ruleEditorOk = hasTwoRows && noIdInput && savedIdsOk && reopenedOk &&
+  settingsValue.dispatch_rules.length === 1 && settingsValue.dispatch_rules[0].id === savedRules[0]?.id &&
+  settingsValue.dispatch_rules[0].name === "修改名称" &&
+  settingsValue.dispatch_rules[0].instruction === "检查明确要求，再执行指定范围。";
+console.log(`${ruleEditorOk ? "PASS" : "FAIL"} 规则表单新增/复制/编辑/删除/重开及稳定 ID`);
 window.dispatchEvent(new window.KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
 await delay(50);
 
@@ -420,6 +471,7 @@ if (runtimeErrors.length) {
 const allOk =
   heroOk &&
   settingsOk &&
+  ruleEditorOk &&
   checks.every(([, ok]) => ok) &&
   collapsedOk &&
   expandOk &&

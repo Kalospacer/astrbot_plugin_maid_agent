@@ -1,6 +1,279 @@
-# MaidAgent 对齐 dsh-superagent 实施计划（零上下文版）
+# MaidAgent 2.1.1 实施计划：统一派发校验与规则 ID 自动生成
 
-本文让没有参与讨论的实施者也能直接动手，读者不需要任何对话记录。所有决定都已经由项目所有者 Kalo 逐项确认，确认原话附在第 9 节。
+> **当前可执行范围只包括第 0 节。** 第 1—11 节是 2.1.0 重构的归档，保留用于追溯，不得重新实施。归档中的事件分类、配置名、版本号和验收要求不能覆盖第 0 节。
+>
+> **当前状态：所有者已授权“动手”，2.1.1 实现与本地验证已完成，实机未验证项见 0.11。** 未提交、未推送、未启动子代理。第 0.11 节是实际实施结果，其余规格保留用于对照。
+
+## 0. 2.1.1 当前实施规格
+
+### 0.1 背景、代码基线与参考
+
+目标项目：`C:\astrbot\astrbot_plugin_maid_agent`，仓库 `Kalospacer/astrbot_plugin_maid_agent`。本次核对基线为 `0015aa3faf86573e17dca2b13ed15ae1ecf11fcf`；实施前重新读取工作区差异，保留所有者已有改动。
+
+参考项目：`https://github.com/deepseek-ai/dsh-superagent-prototype`，本轮核对版本 `8c32a9dc5d72c033816c6a8110b37f40cf94fba4`。只参考这些现成行为：
+
+- `src/policy.ts` 的 `assessmentOutcome()`：规则覆盖、方向、规则命中和证据的校验顺序。
+- `prompts/admission.md`：主会话自己作语义判断，规则及评估说明进入模型上下文。这些声明不是结构校验能证明的事实。
+- `docs/002-authorization.md`：接下工作需要评估；叫停不填写这张评估表；命中规则的要求交给执行者。
+- `src/client/eval.tsx`：规则按名称、说明和启用状态编辑；新增与复制时自动生成 UUID；编辑不改变 ID；不提供 ID 输入框。
+
+现有代码中，`ChatRuntime.dispatch()`、`send()` 仅对 `CronMessageEvent` 调用 `_admit()`，其他事件跳过；`stop()` 也用事件类型生成 `strength`。这不能可靠识别所有自主触发路径。因此本次不再识别“自主触发”，不要求心跳或其他调用方提供额外信息。
+
+这些事实以本轮阅读的源码为准，行号只供定位，不能直接套用归档第 2 节的旧行号。
+
+### 0.2 已确认的决定
+
+| 编号 | 决定 | 实施约束 |
+|---|---|---|
+| D01 | 所有工具派发统一评估 | `maid_agent` 的单任务、批量每项、新分支和恢复，以及 `maid_send_message`，都经过同一套校验。 |
+| D02 | 保留完整现有表单 | 保留 `rule_assessments`、`direction`、`intent_evidence`、`scope`；不删除方向或证据，不改变方向判定条件。 |
+| D03 | 没有启用规则时保持插件现状 | 跳过规则覆盖和命中两步；方向和证据仍校验。默认规则列表仍为 `[]`，不新增默认规则。 |
+| D04 | 删除开关 | 删除 `inferred_dispatch`，不改造成其他总开关。 |
+| D05 | 不区分触发来源 | 不再根据 `CronMessageEvent`、平台、角色、消息内容、调用参数或额外标记推断显式/自主来源。 |
+| D06 | 叫停按 dsh | `maid_task_stop`、`/maid stop`、控制台停止不填派发表单、不做规则匹配。实际工具名是 `maid_task_stop`，不新增 `maid_stop`。 |
+| D07 | 评估说明和规则按 dsh 提供 | 能看到派发工具的主会话同时获得启用规则及评估说明；删除定时唤醒专用措辞。 |
+| D08 | 规则改名，不迁移旧键 | `inferred_rules` → `dispatch_rules`，显示名“派发规则”；不读取旧键作回退，不搬运旧规则。 |
+| D09 | 版本号 | 所有本项目版本入口统一为 `2.1.1`，不升到 `2.2.0` 或 `3.0.0`。 |
+| D10 | 规则 ID 本次完成 | 不再另立任务；用户不用填写 ID；新增自动分配，编辑、保存、重启保持稳定。 |
+| D11 | 能照 dsh 的直接照做 | 不再就现成行为逐项询问；与 dsh 不同、跳过和待授权的内容在交付中完整列出。 |
+
+**升级行为必须明确记录：** 只有旧 `inferred_rules` 的配置，升级后有效 `dispatch_rules` 是默认空列表。这不是清空磁盘上的旧键，也不是迁移；旧规则不会自动生效。按 D03，此时跳过规则判断，方向和证据照常校验。README 与 2.1.1 CHANGELOG 必须说明需要重新配置规则，不增加启动警告或自动迁移。
+
+### 0.3 派发、追加与叫停的行为
+
+1. 保留现有任务归属、分支选择、参数类型和停止/重置检查，不扩展任务生命周期。
+2. `dispatch()` 不再创建表示“无需评估”的 `None` admission。每个请求都调用 `_admit()`；批量沿用当前先检查所有表单结构、再逐项执行结果的行为，不改成新的批处理策略。
+3. `_admit()` 使用 `config.dispatch_rules`。`assess()` 的现有校验顺序和条件不变：有启用规则才核对逐条覆盖；然后检查方向；有启用规则才要求至少一个命中；最后检查 `intent_evidence`。
+4. 方向不允许或规则未命中，写 `ignore`；缺字段、字段类型错误或规则覆盖错误，仍按现有 `AdmissionError` 返回，不伪装为成功派发。
+5. `target_basis` 仍允许 `specified`、`existing-standard`、`undetermined`。不按“调研”“排查”等任务名称预设其值，不新增自动归类器，也不声称此字段能证明模型判断属实。
+6. `send()` 无条件先完成表单评估，通过后才向未结束任务追加。拒绝仍写 `ignore`；接受保持现有追加语义，不顺带发明新 Decision 种类或新任务。
+7. 所有接受的新派发都写带完整表单的 `accept`；恢复写带表单的 `reopen`。不再产生绕过评估的 `explicitRouted` 分支。停止仍写 `stop`，不受规则和方向字段限制。
+8. `_dispatch_text()` 对统一评估结果附上 `scope` 和命中规则的名称、ID、说明。删除“自主接下”的来源断言，改为中性派发措辞；不更改既有执行者和消息策略优先级。
+9. 保留插件转述流程里用于构建 AstrBot 请求的 `CronMessageEvent`。删除的是拿事件类型做授权/来源判断，不是删除 AstrBot 所需的事件对象。
+
+### 0.4 来源标记与排队的最小调整
+
+- 删除 `chat_dispatch.py` 中用于派发分类的 `CronMessageEvent` 导入、`isinstance(event, CronMessageEvent)` 判断和对应 `inferred` 分支；保留参数类型等其他 `isinstance` 检查。不新增 `_event_strength()` 或其他来源探测器。
+- 新 Decision 不再写 `strength`；从 `DecisionStore.record()`、`DriverRegistry.stop_task()` 及所有调用方删除只为该标记传递的 `strength` 参数和对应字段，保留这两个方法本身。前端 `Decision` 类型不再要求此字段。旧记录本来包含的额外字段无需迁移，也不能用来决定新操作的权限。
+- 任务文档的 `strength` 目前还承担控制台任务识别。本次不更换任务数据库格式：新工具任务固定写 `chat`，控制台仍写 `console`；运行时只保留 `console` 与普通任务的既有区别，不判断 `explicit`/`inferred`。旧普通任务的值可留存，视同其他非 `console` 任务，不补写来源推断。
+- 输入和排队参数按**当前普通消息路径**统一：`add_input(..., human=True)`；新任务 `queue_launch(..., human=False)`，恢复任务为 `True`；`send()` 的输入为 `True`。此处 `human` 是既有排队标志，不再表示已识别人类来源，不改其持久化键。
+- 新任务和继续已有任务的排队区别仍保留。源码本来只给继续输入额外槽位，并非所有新派发都能多占一个；不得把此前口头说明误写成全局并发上限变化。
+- 不重写 `slot_free()`、`max_workers` 或后台恢复/重试的调度；控制台仍不计入普通聊天额度。更新涉及的注释，避免把统一工具输入描述为已证明来自人类。
+
+### 0.5 规则 ID 自动生成与两个配置入口
+
+#### 0.5.1 公开数据与内部标识
+
+`dispatch_rules` 仍为 AstrBot `template_list`，默认 `[]`。每项持久化 `{__template_key: "rule", id, name, enabled, instruction}`；内部数据类改名为 `DispatchRule`。
+
+- 设置页只让用户填写名称、启用状态和规则说明。
+- ID 是内部关联键，仍用于 `rule_assessments`、判断记录和命中规则说明；不是删掉 ID 字段。
+- 使用 UUID。已有非空合法 ID 保留；编辑名称、说明、启用状态或列表位置不改变 ID。
+- 保留 `RULE_ID_RE`、唯一性和表单中 `rule_id` 的校验。非空非法 ID、非字符串 ID、手工提交重复 ID 仍报错，不静默修复损坏数据。
+- 仅对新配置键 `dispatch_rules` 的缺失或空 ID 补号，不借此读取或迁移旧 `inferred_rules`。
+
+#### 0.5.2 AstrBot 原生配置页
+
+`_conf_schema.json` 中将规则 `id` 标为 `invisible: true`；保留内部默认空串，不给所有条目配置一个固定 UUID。AstrBot 的 `TemplateListEditor.vue` 支持隐藏字段，但新增时仅复制静态默认值，不会自动生成 UUID。
+
+建议新增一个无 I/O 的具名函数 `assign_dispatch_rule_ids(config) -> bool`：只在缺失/空 ID 的新条目上写入 `str(uuid.uuid4())`，返回是否改动。由 `MaidAgent.__init__`、`_sync_config_from_store()`、`_ConfigHolder.save_config()` 调用，三个入口复用同一个补号策略。
+
+把补号和完整规则校验接入现有加载/保存流程。只有规则校验通过才将补过号的原始条目写回实际 AstrBot 配置并调用现有 `save_config()`；不得把宽松加载得到的空列表回写覆盖非法原始配置。原生配置页保存后，无论宿主重载插件还是下一次同步配置，都必须完成补号并持久化。
+
+`_dispatch_rules()` 本身不生成 UUID；反复解析同一份配置不能反复换号。写盘失败不能宣称配置已经持久保存，不在本次新增重试框架或通用配置封装。
+
+#### 0.5.3 插件自带 WebUI
+
+当前 `SettingsDialog.tsx:28-60` 的 `TemplateListField` 是 JSON 文本框；只修改 AstrBot schema 不能把这里的手填 ID 去掉。
+
+本次删除规则的 JSON 编辑框，在现有 `SettingsDialog` 的 `dispatch_rules` 分支内实现结构化条目编辑，沿用现有 `Input`、按钮和样式，不新增通用表单框架或设置分区：
+
+- 名称输入框、规则说明文本框、启用复选框。
+- 新增、复制、删除按钮；这三个操作直接对齐 dsh 的规则编辑行为。
+- 新增和复制共用 `createDispatchRule()`，用 `crypto.randomUUID()` 分配新的 ID；复制保留规则内容但不能复制 ID。编辑时保留原条目 ID。
+- 不显示、编辑或要求填写 ID，不改回 JSON 输入；保存请求仍按原有 `settings.update` RPC（携带 `patch`）→ `_ConfigHolder.save_config()` 路径提交，返回值含保存后的稳定 ID。
+- 原生配置页的空 ID 由 Python 补齐；自带 WebUI 已生成的合法 ID 由后端保留。两个入口使用同一种 UUID 语义，不添加另外一套主键。
+- 浏览器 UUID API 必须在实际支持的访问方式下验证；如复现宿主访问环境不支持，不擅自加一串兼容分支，应报告具体失败并调整这一处生成位置。后端已有补号能力，不新建发号 RPC。
+
+### 0.6 提示词与工具参数
+
+1. `INFERRED_DISPATCH_GUIDE` → `DISPATCH_GUIDE`，`_inferred_dispatch_guide()` → `_dispatch_guide()`。只去掉“自我唤醒”“这一轮不是有人发来的消息”等来源断言，保留现有从 dsh 选取的评估说明及启用规则列表。
+2. `_SELF_WAKE_ONLY` 改为中性的 `_DISPATCH_FORM_NOTE`；两个工具和批量项目的参数说明都说明每次提交需要评估。`scope` 的当前可选性不改，不把表单扩成 dsh 的完整 Ticket 创建 API。
+3. 删除 `_self_wake_dispatch_possible()`；工具是否存在的简单条件在原调用处内联，不再新增只有一个调用点的包装函数。请求工具集中出现 `maid_agent` 或 `maid_send_message` 时，注入同一份 `_dispatch_guide()`，不检查事件类型或旧开关。
+4. **必须补齐的实际遗漏：** 归档 11.4 已记录，AstrBot 原生定时唤醒和插件自己的转述构建流程不一定经过 `on_llm_request`。仅改钩子的条件不能保证这些路径看到规则。
+5. 不改 AstrBot、不让第三方拉起者调用钩子。复用 `_patch_llm_tool_schemas()`，把由同一规则数据生成的当前评估说明/规则列表放入两个工具的参数描述，使任何实际拿到派发工具的请求都能读取规则。初始化、配置变更后刷新已注册工具；不复制一套规则字符串或覆盖其他工具的配置。
+6. 钩子的系统提示和工具描述共享 `_dispatch_guide()` 的内容来源。可见工具的最终请求中必须至少有一处包含全部启用规则的 ID、名称、instruction；看最终请求验证，不仅检查辅助函数返回值。
+7. 保留批量按项填表的设计。不得把单任务顶层字段一律设为 JSON Schema `required`，从而要求批量调用在每项之外再填一份顶层表单；业务必填由现有解析校验执行，结构声明按实际单任务/批量形状更新。
+
+### 0.7 物件清单与净增数
+
+以下是建议实现。如果实际源码支持更少改动、同样能满足全部验收的实现，可以采用；交付时必须解释替代点、理由和验证结果。不能自行增加下面未列出的功能、参数、配置键或公共入口。
+
+**新增物件：**
+
+| 名称 | 位置 | 第一调用方 | 第二调用方 |
+|---|---|---|---|
+| `assign_dispatch_rule_ids` 顶层函数 | `config.py` | `_ConfigHolder.save_config` | `MaidAgent._sync_config_from_store`；另有 `MaidAgent.__init__` |
+| `createDispatchRule` 顶层函数 | `webui/src/components/SettingsDialog.tsx` | 新增规则按钮 | 复制规则按钮 |
+| `DispatchRuleDraft` 类型 | `webui/src/components/SettingsDialog.tsx` | 规则列表编辑 | `createDispatchRule` 入参与返回值 |
+
+**重命名物件，不增加实现层：**
+
+- 类 `InferredRule` → `DispatchRule`（`config.py`）。
+- 顶层函数 `_inferred_rules` → `_dispatch_rules`（`config.py`）。
+- 方法 `MaidAgent._inferred_dispatch_guide` → `MaidAgent._dispatch_guide`（`main.py`）。
+- 常量 `INFERRED_DISPATCH_GUIDE` → `DISPATCH_GUIDE`，`_SELF_WAKE_ONLY` → `_DISPATCH_FORM_NOTE`。
+- 配置字段/键 `inferred_rules` → `dispatch_rules`，包括 `_config_dict()`、宽松/严格加载、RPC 设置白名单、匹配规则名称和派发引用。
+
+**删除物件：**
+
+- `MaidAgent._self_wake_dispatch_possible` 方法。
+- `TemplateListField` 顶层组件函数；唯一用途的规则表单直接放在现有设置组件内，不换成另一层单实现者包装。
+- `MaidModeConfig.inferred_dispatch`、schema 对应项、RPC 设置白名单项及全部生产代码读取。
+- Decision 的 `strength` 参数/字段、停止调用链仅为这个字段传递的参数、事件类型分类和不经评估的派发分支。
+
+净增：生产模块 `0`；类 `0`（一次重命名）；顶层函数 `+1`（新增 2、删除 1，重命名不计）；方法 `-1`；TypeScript 数据类型 `+1`；配置键 `-1`（一个重命名、一个删除）。不新增公共工具或 RPC。
+
+**允许修改的文件：**
+
+| 文件 | 修改范围 |
+|---|---|
+| `config.py`、`_conf_schema.json` | 开关删除、规则改名、ID 补齐及隐藏、说明更新。 |
+| `main.py` | 配置序列化/持久化、工具 schema 和说明、提示词注入、停止参数、版本。 |
+| `harness/admission.py` | 中性说明/常量名称、Decision 去来源字段；`assess()` 的行为保持不变。 |
+| `harness/chat_dispatch.py` | 所有派发统一评估、记录、范围与规则传递、取消来源识别。 |
+| `harness/tasks.py`、`harness/drivers.py` | 普通任务固定标记、停止参数与涉及的注释；不重写调度。 |
+| `harness/api.py` | 设置白名单、规则名读取、停止参数。 |
+| `webui/src/components/SettingsDialog.tsx`、`SettingsDialog.module.css` | 去 JSON 规则编辑、结构化条目及其必要样式。 |
+| `webui/src/components/DecisionsPanel.tsx` | 去新记录的来源字段要求；保留历史原因的正常可读显示，不增加历史查询功能。 |
+| `webui/scripts/smoke-render.mjs` | 只补规则表单交互及相关设置 fixture，不改无关断言。 |
+| `__init__.py`、`metadata.yaml`、`webui/package.json`、`webui/package-lock.json` | 与 `main.__version__` 一并同步项目版本 `2.1.1`；锁文件只改项目根版本，不能全局替换依赖的 `2.1.0`。 |
+| `README.md`、`CHANGELOG.md`、本计划 | 使用说明、升级影响、实际结果。 |
+| `pages/console/` 构建产物 | 仅由现有前端构建命令生成，不手改压缩文件。 |
+
+当前未发现 `agent.md`/`AGENTS.md`。实施时若出现或另有适用说明，先读取，并在每个工作完成后按要求维护；不为满足流程凭空新增。
+
+### 0.8 执行顺序与授权边界
+
+这次按“已有行为修正 + 配置可用性修复”执行，不重做 2.1.0 的数据库、任务模型和执行器。
+
+1. **实施前准备：** 必须等到所有者说“动手”。重新查看当前 diff、项目说明和 `git ls-files --eol`，本计划当前是 LF；只处理确实存在的换行差异，不批量格式化。
+2. **备份：** 修改任何代码之前做项目全量备份，包含当前未提交计划，放到项目目录之外并确认可读。已有旧备份是历史清理前的快照，不能代替当前备份。所有者已要求旧备份暂留，禁止自动删除。禁止以自动 commit 代替备份；本轮未获提交授权。
+3. **验证先行：** 为本次新行为先写会失败的最小验证用例，再实现。只验证下面 0.9 的行为；不引入新测试框架或大规模测试套件。可使用临时脚本/现有 smoke，临时文件不作为生产模块交付。
+4. **配置与规则 ID：** 先完成键名、开关、补号与持久化，使后面的提示和派发读取同一份配置。
+5. **统一派发：** 删除来源分支，处理新建、恢复、批量、追加、Decision 和停止的对应调用点。保持每一步可单独验证。
+6. **提示词：** 系统提示、工具描述和配置变更刷新一起完成，核对绕过钩子的请求。
+7. **规则表单：** 改自带 WebUI，验证新增/复制/编辑/删除和保存；核对原生配置页隐藏 ID。
+8. **版本与文案：** 同步 `2.1.1`、README、CHANGELOG 和构建产物。CHANGELOG 保留 2.1.0 历史，不把历史条目重写成新行为。
+9. **自审与复杂度审查：** 分开进行。自审定位真实缺陷；复杂度审查列出实际删除的分支/包装/JSON 编辑器，没发现额外可删项就写“未发现”。不借机重构无关模块。
+10. **计划回归与交付：** 对照本节逐条报告完成/部分/未做、路径:行号、真实命令结果、未验证项，以及全部跳过项和偏离 dsh 的决定。不提交、不推送，等待所有者后续安排。
+11. **子代理及最终审查：** `skip: 尚未获得明确授权`。只有所有者另行要求后才启动，不能因为本计划提到审查就自动调用；也不做复杂实机压力测试。
+
+### 0.9 可测验收
+
+下面是**未来实施的验收要求，不是当前已通过的结果**。通过构建不能代替实际行为验证。
+
+- A01：普通消息事件、`CronMessageEvent` 和一种非其子类的其他事件调用 `maid_agent`，缺同一表单得到同类错误；合法同表单得到同类评估结果。不能根据来源绕过校验。
+- A02：单任务、`force_new`、恢复 `task_id`、批量每项和 `maid_send_message` 都走评估；不因某项命中而让其他批量项目免填。
+- A03：规则空或全部禁用时，合格方向及证据可派发；方向未定仍为 `directionUnsettled`，缺证据仍报错，不新增默认规则。
+- A04：有启用规则时，缺少、重复、未知或已禁用规则 ID 的表单报错；全部不匹配得到 `noRuleMatched`；至少一条匹配才能派发，并携带对应规则及 scope。
+- A05：新建、恢复、拒绝分别能看到 `accept`、`reopen`、`ignore` 及完整表单；停止不填表也能执行并有 `stop`。判断列表和会话里的记录仍可读取、筛选。
+- A06：只有旧 `inferred_rules` 的配置不自动生效；只读取 `dispatch_rules`。旧开关不再影响派发，也不出现在两个设置入口或 RPC schema 中。
+- A07：AstrBot 原生配置页新建条目不用填 ID；保存/加载后原始持久配置有合法唯一 UUID。连续同步两次、重新打开、重启后的 ID 相同；改名/启用/说明/顺序不变号。
+- A08：插件自带 WebUI 不出现 ID 输入框或要求填写规则 JSON；新增生成 ID，复制生成另一个 ID，编辑保留 ID，删除只删除选中规则；保存后重新打开与后端保存值一致。
+- A09：实际模型请求的系统提示或工具描述含全部启用规则；规则配置改变后可见列表更新。覆盖常规钩子路径及绕过钩子的原生唤醒/插件转述路径，不要求调用方增加参数或标记。
+- A10：普通工具新任务沿用原消息路径的新任务排队值，恢复/追加沿用原消息路径的续接值；来源类型不再影响它们。控制台额度豁免和内部恢复/重试不变。
+- A11：`__init__.__version__`、`main.__version__`、metadata、前端项目版本都是 `2.1.1`；不误改锁文件内其他包的版本。
+- A12：源码按可搜索模式扫描：生产代码不再读取 `inferred_dispatch`、`inferred_rules`，不再用 `CronMessageEvent` 做派发分类；文档历史引用与必要事件构造单独解释，不能机械判为残留。
+
+必要的简单检查：修改到的 Python 文件运行 `python -m compileall -q`；`ruff check` 检查相应文件并区分已有问题；前端在 `webui` 运行 `npm run build` 和更新后的 `npm run smoke`。构建若改变控制台分块，再运行现有 `npm run validate`。使用已提供/现有的 Node 与包管理器环境，不改依赖版本、不弱化断言。
+
+需要真实 AstrBot/provider/浏览器的验收若当前无法执行，必须逐项标“未验证”并说明缺少的条件，不用 mock 日志或辅助函数输出冒充模型实际请求。缺少工具时可在授权内安装必要依赖，不部署生产环境或编造通过结果。
+
+### 0.10 跳过项、偏离 dsh 与明确不做
+
+交付时按此清单逐项更新，不能只写“其余按 dsh”。
+
+| 项目 | 本次处理 | 原因/依据 |
+|---|---|---|
+| dsh 显式请求绕过评估 | 不照搬 | D01/D05：所有工具派发统一评估，无法可靠区分触发来源。 |
+| dsh 没有命中规则就拒绝，包括规则为空 | 不照搬空列表限制 | D03：规则为空或全禁用按插件现状跳过规则判断。 |
+| dsh 默认 `copy` / `visual` 规则 | 不添加 | D03：默认空规则，不替插件用户决定任务范围。 |
+| dsh `off` / `observe` / `auto` | 不添加 | D04：删除旧开关；`observe` 已明确否决，不引入试运行模式。 |
+| dsh Source、allowed/bot 列表与 admission 表 | 不引入 | 不新增来源判断、白名单、角色分级或外部接入协议。AstrBot 自身权限边界不改。 |
+| dsh 原版全部项目/视觉/小改动提示词 | 不照搬整篇 | 插件是通用执行助手；只保留既有评估说明，不新增“只能改本仓库小问题”的业务限制。 |
+| 独立审核模型、代码谓词/正则规则、引用强校验 | 不做 | 仍由主模型评估，代码核对结构和现有条件；不添加未经要求的新规则体系。 |
+| dsh Ticket 的 `decision`、`title`、`worktree_name`、`acknowledgement` 等完整创建参数 | 不扩展 | 保留本插件已选的工具形式和表单字段，不趁本次增加 Ticket 子系统。 |
+| dsh 前端 `crypto.randomUUID()` 创建 ID | 原生入口后端补号；WebUI 用安全随机字节编码 UUID v4 | 原生 template_list 只有静态默认值；真实浏览器已复现普通 HTTP 不提供 `randomUUID()`，因此前端改用 `getRandomValues()`。最终仍为自动 UUID、编辑稳定、用户不填写。 |
+| 只靠系统提示钩子提供规则 | 不作为唯一渠道 | 已核实原生唤醒存在绕过钩子的路径，补到实际工具描述；不要求外部调用方配合。 |
+| 旧规则键迁移、别名或 fallback | 不做 | D08：明确选 C；说明需要重新配置，不偷偷迁移。 |
+| 叫停时填写评估表/匹配规则 | 不做 | D06：按 dsh 叫停，不扩大工作授权。 |
+| 删掉规则内部 ID 或改为名称/数组索引当主键 | 不做 | ID 用于稳定关联，用户只是不该手填。 |
+| 更换任务/Decision 数据库 schema、重做队列、清理历史数据 | 不做 | 仅处理当前必要字段和调用点；保留既有持久数据读取，不执行旧重构。 |
+| 复杂测试、完整新测试套件、压力测试、生产部署 | 跳过 | 本次只写必要最小验证和文档，实机不足列未验证。 |
+| 子代理复审、换模型复审、最终审查 | 待所有者另行授权 | 当前不得启动，不把本计划当作子代理授权。 |
+| Git commit、push、删旧备份 | 未执行 | 本次实施后先汇报；提交和推送仍等待明确授权，旧备份继续保留。 |
+
+本轮无其他待用户拍板的设计分支。实现方案中的必要技术适配、原计划外变更及无法完成的验收必须在实施交付里另列，不能隐藏在“按 dsh”中。
+
+---
+
+### 0.11 2.1.1 实施结果（2026-11-03）
+
+#### 0.11.1 决定到代码的映射
+
+| 决定 | 状态 | 实际位置与结果 |
+|---|---|---|
+| D01 统一评估 | 完成 | `harness/chat_dispatch.py:120,145,239`：单任务、批量、force_new、恢复和追加都评估，去掉按事件类型免填的路径。 |
+| D02 保留表单 | 完成 | `harness/admission.py:97,134`：解析器和 `assess()` 的校验逻辑保持原样；源文本对比确认 `assess()` 未改。 |
+| D03 空规则现状 | 完成 | `config.py:63` 默认空；临时验证覆盖空规则、全部禁用、方向未定、缺证据和不匹配。 |
+| D04 删除开关 | 完成 | `_conf_schema.json:83`、`config.py`、`harness/api.py`：删除旧开关，生产源码无旧键读取。 |
+| D05 不区分来源 | 完成 | `harness/chat_dispatch.py:120,239,300`，`harness/admission.py:160`，`harness/drivers.py:1246`：统一输入及记录，不再推断 explicit/inferred。任务仅保留 chat/console。 |
+| D06 叫停 | 完成 | `harness/chat_dispatch.py:300`、`harness/drivers.py:1246` 及 API/命令调用点：不填表，停止记录保留。 |
+| D07 提供评估规则 | 完成；实机请求待验 | `main.py:421,640,648`：系统提示与两个工具描述共享规则来源；实际框架 OpenAI/Anthropic schema 已验证包含当前规则。 |
+| D08 改名不迁移 | 完成 | `config.py:63,138`、`main.py:122`、`harness/api.py`、`README.md:196`：只读取 dispatch_rules，旧规则不自动生效，升级说明已写。 |
+| D09 版本号 | 完成 | `main.py:72`、`__init__.py:8`、`metadata.yaml:2`、前端 package 与锁文件根版本统一为 2.1.1；依赖项版本逐项比对不变。 |
+| D10 自动规则 ID | 完成；原生面板待实机点击验 | `config.py:162`、`main.py:143,176,531`、`_conf_schema.json:94`、`SettingsDialog.tsx:36,183`：补号、持久化、重启稳定和两个入口均已实现。 |
+| D11 完整披露 | 完成 | 0.10 保留全部 17 项不做/适配清单；本节记录原计划差异、验证证据与未验证项。 |
+
+#### 0.11.2 实际验证
+
+- 全量备份：`C:\Users\Kalo\Downloads\maid_agent_backup_2.1.1_20261103_211534`；源与备份都是 8,556 个文件、155,001,533 字节，包含 `.git` 和实施前计划。旧备份未删除。
+- 临时 Python 验证：`python C:\Users\Kalo\Downloads\maid_agent_2_1_1_verify.py`，**10 组通过**。使用本地真实 AstrBot 类、插件类、临时 SQLite 和磁盘配置；外部 provider、子代理配置及消息平台边界使用替身，不计作实机联调。
+- 测试先行结果：旧代码下普通/其他事件缺表单仍派发、追加仍接受，自动 ID/新键不存在，新增用例失败；实现后同一组验证通过。前端新规则用例在旧产物中失败，在新产物中通过，原有聊天断言保留。
+- Python 语法：`python -m compileall -q config.py main.py __init__.py harness/admission.py harness/chat_dispatch.py harness/tasks.py harness/drivers.py harness/api.py`，退出 0。执行环境为现有 Python 3.13，不宣称在其他 Python 版本运行过。
+- 静态检查：`ruff check` 检查以上文件，仍有 **11 条实施前已存在的问题**，类型/数量一致；本次新增的 import 排序问题已修复，不顺手清理旧问题。
+- 前端：使用随带 Node，直接运行 `node node_modules/typescript/bin/tsc --noEmit`、`node node_modules/vite/bin/vite.js build`，均退出 0。产物已更新到 `pages/console/assets/console.js`、`console.css`。
+- `node scripts/smoke-render.mjs`：**SMOKE OK**。实际构建中的规则新增、复制、编辑、删除、重开和稳定 ID 通过；原有聊天渲染/流式/工具卡片断言均通过。bridge 是持久化服务替身，不是在线 AstrBot。
+- `node scripts/validate-chunks.mjs`：通过；单 JS、零相对导入，JS 1338 KB、CSS 302 KB，均低于现有上限。
+- 普通 HTTP 的真实 Chrome 验证：直接编译现有 `createDispatchRule()` 到临时页面；修复前 `TypeError: crypto.randomUUID is not a function`，修复后 `secure=false, unique=true, valid=true, copied=true`，UUID v4 格式及复制行为正常。
+- 源码差异：`git diff --check -- . ':(exclude)pages/console/assets/*'` 退出 0，相关源码保持 LF。完整 `git diff --check` 会报构建 JS 内嵌第三方字面量的行尾空白；备份产物与新产物各有 8 行，不手工改压缩文件或删除有语义的字面量空白。
+
+验收映射：A01—A06、A08、A10—A12 已完成对应本地验证/代码检查。A07 的补号与重启持久化已验证，真实 AstrBot 原生配置页的点击流程未执行；A09 的工具请求 schema、钩子注入和规则更新已验证，真实唤醒到 provider 的完整链路未执行。所有验收都未冒充在线模型实际行为。
+
+#### 0.11.3 已确认缺陷与复杂度自审
+
+**已确认缺陷：**
+
+1. **已修**，`SettingsDialog.tsx:36`：普通 HTTP 浏览器不存在 `crypto.randomUUID()`，新增/复制规则会直接报错。真实浏览器复现后，在同一个创建函数中改用 `crypto.getRandomValues()` 编码 UUID v4；无 fallback 链、无新依赖。全库同类扫描确认本次只在这一处新增过该调用，无其他生产 `crypto.randomUUID()` 残留。
+2. **已修**，`main.py:143`：原保存路径在写盘异常后仅记日志仍返回成功，不满足自动 ID 已持久化的要求。改为恢复旧内存配置并抛出错误；临时验证注入实际 `OSError`，确认磁盘和生效配置不变。原生补号同步失败也不发布未保存 ID，下次可重试。
+
+**复杂度审查删除清单：** `_self_wake_dispatch_possible()`、`TemplateListField` JSON 编辑器、来源分类分支、旧开关及其检查、无需评估的 `None` admission 分支、`explicitRouted` 免评估分支、Decision/停止链上的 `strength` 传递。未新增生产模块、公共工具、RPC 或通用表单抽象；新增函数及调用方与 0.7 一致。未发现其他应在本次顺手删除的内容。
+
+**未验证风险：** 真实宿主配置页和 provider 唤醒链路尚未联调，不能用本地替身验证代替。**可选建议：** 本次没有额外建议，不追加理论风险或无关重构。
+
+#### 0.11.4 原计划差异与未通过项
+
+- **必要实现适配：** 0.5.3 原建议采用 dsh 的 `crypto.randomUUID()`，实测普通 HTTP 不可用。保留同一函数和 UUID 语义，改用安全随机字节；这不是新增 ID 系统或 RPC。
+- 首次使用随带 pnpm 运行构建时，它自动尝试整理/安装依赖并移动已有依赖，随后请求 registry 超时。已从本次全量备份恢复原依赖，改为直接运行现有 tsc/Vite；没有修改包管理器配置、依赖版本或断言。
+- **未通过、未修改无关脚本：** 原 `validate-preview.mjs` 在服务就绪检查处失败。临时副本指定 127.0.0.1 后也失败；独立预览进程确实监听 `127.0.0.1:7140`，但对首页/JS/CSS 的连接都返回 `connect ETIMEDOUT`。不能归因为代码 404，也不能断言只是 IPv4/IPv6 问题。未修改系统网络/防火墙来通过此项，资源 HTTP 联调保持未验证。
+- 不执行复杂测试、生产部署、子代理复审或最终审查；不提交、不推送。此项待所有者另行安排，不视为已有授权。
+
+---
+
+## 2.1.0 归档计划（以下内容仅供历史追溯）
+
+以下原计划以旧版本和旧决定为背景。尤其“CronMessageEvent 能识别所有自主唤醒”的推论已经被当前决定否定；不得再用它指导实现。第 1—11 节不属于本次 2.1.1 的待实施清单。
 
 ---
 

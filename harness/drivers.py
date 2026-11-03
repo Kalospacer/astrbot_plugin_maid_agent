@@ -1031,7 +1031,7 @@ class DriverRegistry:
         return sum(1 for d in self.drivers.values() if d.busy and d.source_kind == "chat")
 
     def slot_free(self, *, human: bool) -> bool:
-        """有人发来的新输入可以多用 1 个位置，并且排在新任务前面。"""
+        """继续已有任务的工具输入可以多用 1 个位置，并且排在新任务前面。"""
         limit = self.config.max_workers
         busy = self.busy_workers()
         if human:
@@ -1243,15 +1243,15 @@ class DriverRegistry:
             outcome["attention"] = task["attention"]["question"]
         return outcome
 
-    def stop_task(self, task: dict, *, strength: str) -> dict:
-        """人停下任务：结束任务与当前执行，取消管家正在跑的这一轮，不唤醒大小姐。"""
+    def stop_task(self, task: dict) -> dict:
+        """停止任务：结束任务与当前执行，取消管家正在跑的这一轮，不唤醒大小姐。"""
         if task.get("ended"):
             return self.tasks.card(task)
         assignment = running_assignment(task)
         with self.db.transaction():
             end_task(task, by="human", outcome="stopped")
             self.tasks.save(task)
-            self.decisions.record(kind="stop", strength=strength, reason="humanStop", task_id=task["taskId"])
+            self.decisions.record(kind="stop", reason="humanStop", task_id=task["taskId"])
         driver = self.drivers.get(assignment["sessionId"]) if assignment is not None else None
         if driver is not None and driver.active_task_id() == task["taskId"]:
             driver.request_stop()

@@ -1,15 +1,12 @@
 """大小姐侧工具的任务路由：派发、追加输入、列出、读结果和停止；以及管家的 maid_read。
 
-session 只负责上下文，不决定任务身份。有人发消息触发的派发是显式请求；
-CronMessageEvent（自我唤醒）触发的派发是推断候选，要填评估表单。
+session 只负责上下文，不决定任务身份。每次工具派发都填写评估表单，不区分触发来源。
 """
 
 from __future__ import annotations
 
 import json
 import uuid
-
-from astrbot.core.cron.events import CronMessageEvent
 
 from ..config import render_dispatch_prompt
 from ..constants import DISPATCHED_NEXT_STEP
@@ -102,10 +99,10 @@ class ChatRuntime:
 
     def _admit(self, raw: dict) -> tuple[Admission, object]:
         form = parse_form(raw)
-        return assess(form, self.plugin.maid_mode_config.inferred_rules), form
+        return assess(form, self.plugin.maid_mode_config.dispatch_rules), form
 
-    def _dispatch_text(self, item: dict, mandate: dict | None) -> str:
-        """派发给管家的第一条消息：截断后的触发消息与请求，推断派发再附上命中的规则。"""
+    def _dispatch_text(self, item: dict, mandate: dict) -> str:
+        """派发给管家的第一条消息：截断后的触发消息与请求，并附上范围与命中规则。"""
         cfg = self.plugin.maid_mode_config
         text = render_dispatch_prompt(
             cfg.dispatch_prompt_template,
@@ -113,18 +110,15 @@ class ChatRuntime:
             request_text=_truncate(item["full"], REQUEST_PREVIEW_CHARS, f"input/{item['id']}"),
             include_raw_user_input=cfg.include_raw_user_input,
         )
-        if not mandate:
-            return text
         # 对应 superagent src/executor/dsh.ts：命中规则的说明优先于默认的答复与沟通方式。
-        rules = {rule.id: rule for rule in cfg.inferred_rules}
+        rules = {rule.id: rule for rule in cfg.dispatch_rules}
         lines = [f"\n- {rules[rule_id].name} ({rule_id}): {rules[rule_id].instruction}" for rule_id in mandate["rules"] if rule_id in rules]
-        scope = f"自主接下，依据规则 {', '.join(mandate['rules'])}。范围：{mandate['scope']}。" if mandate["rules"] else f"自主接下。范围：{mandate['scope']}。"
+        scope = f"接下任务，依据规则 {', '.join(mandate['rules'])}。范围：{mandate['scope']}。" if mandate["rules"] else f"接下任务。范围：{mandate['scope']}。"
         precedence = f"\n命中的规则；它们的做法与沟通要求优先于本任务默认的答复和消息方式：{''.join(lines)}" if lines else ""
         return f"{text}\n\n{scope}{precedence}"
 
     async def dispatch(self, event, *, prompt: str = "", task_id: str = "", force_new: bool = False, tasks: list | None = None, form: dict | None = None) -> dict:
         umo = event.unified_msg_origin
-        inferred = isinstance(event, CronMessageEvent)
         cfg = self.plugin.maid_mode_config
         async with self.chats.lock(umo):
             state = await self.state(event)
@@ -147,14 +141,10 @@ class ChatRuntime:
                     return self.error(state, "必须提供非空 prompt，或使用 tasks 批量派发。")
                 requests = [(prompt.strip(), form or {})]
 
-            admissions: list[tuple[Admission, object] | None] = [None] * len(requests)
-            if inferred:
-                if not cfg.inferred_dispatch:
-                    return self.error(state, "自我唤醒时不允许派发（inferred_dispatch 已关闭）。")
-                try:
-                    admissions = [self._admit(raw) for _, raw in requests]
-                except AdmissionError as exc:
-                    return self.error(state, str(exc))
+            try:
+                admissions = [self._admit(raw) for _, raw in requests]
+            except AdmissionError as exc:
+                return self.error(state, str(exc))
 
             working = self.chats.working(state)
             target = None
@@ -188,16 +178,14 @@ class ChatRuntime:
 
             # 以下不再 await：任务、会话绑定、判断记录与 launch 在同一个事务里提交。
             trigger = str(event.message_str or "")
-            strength = "inferred" if inferred else "explicit"
             if batch or (force_new and working):
                 state["defaultBranch"] = None
             results = []
             with self.registry.db.transaction():
-                for (request, _), admitted in zip(requests, admissions):
-                    if admitted is not None and not admitted[0].accepted:
-                        admission, parsed = admitted
+                for (request, _), (admission, parsed) in zip(requests, admissions):
+                    if not admission.accepted:
                         self.decisions.record(
-                            kind="ignore", strength=strength, reason=admission.reason, task_id=target["taskId"] if target else "",
+                            kind="ignore", reason=admission.reason, task_id=target["taskId"] if target else "",
                             trigger=trigger, form=parsed, matched=admission.matched,
                         )
                         results.append({"status": "ignored", "reason": admission.reason})
@@ -214,32 +202,26 @@ class ChatRuntime:
                     driver.log.update_meta(agentName=agent_name, identity=identity)
                     refs = [ref for ref in (self.plugin.store.save_attachment_from_path(sid, path) for path in images) if ref is not None]
 
-                    mandate = None
-                    if admitted is not None:
-                        admission, parsed = admitted
-                        mandate = {"rules": list(admission.matched), "scope": parsed.scope}
+                    mandate = {"rules": list(admission.matched), "scope": parsed.scope}
                     if target is not None:
                         task = target
                         task.update(ended=None, attention=None, delivery=None)
-                        add_input(task, "", human=not inferred, kind="resumed")
+                        add_input(task, "", human=True, kind="resumed")
                     else:
                         task = self.tasks.create(
                             scope=self.chats.key(umo), epoch=state["epoch"], umo=umo, conversation_id=state["conversationId"],
-                            branch=selected_branch, request=request, strength=strength,
+                            branch=selected_branch, request=request, strength="chat",
                         )
-                    item = add_input(task, "", human=not inferred, full=request, trigger=trigger, images=refs)
+                    item = add_input(task, "", human=True, full=request, trigger=trigger, images=refs)
                     item["text"] = self._dispatch_text(item, mandate)
                     assignment = new_assignment(task, sid)
                     self.tasks.save(task)
-                    self.registry.queue_launch(task, assignment, human=not inferred and target is not None)
+                    self.registry.queue_launch(task, assignment, human=target is not None)
 
-                    if inferred:
-                        self.decisions.record(
-                            kind="reopen" if target is not None else "accept", strength=strength, reason="",
-                            task_id=task["taskId"], trigger=trigger, form=parsed, matched=admission.matched,
-                        )
-                    elif target is None:
-                        self.decisions.record(kind="accept", strength=strength, reason="explicitRouted", task_id=task["taskId"], trigger=trigger)
+                    self.decisions.record(
+                        kind="reopen" if target is not None else "accept", reason="",
+                        task_id=task["taskId"], trigger=trigger, form=parsed, matched=admission.matched,
+                    )
                     if not working and not batch:
                         state["defaultBranch"] = selected_branch
                     results.append({**self.tasks.card(task), "status": "dispatched"})
@@ -255,13 +237,10 @@ class ChatRuntime:
             return outcome
 
     async def send(self, event, task_id: str, message: str, form: dict | None = None) -> dict:
-        inferred = isinstance(event, CronMessageEvent)
         async with self.chats.lock(event.unified_msg_origin):
             state = await self.state(event)
             if not isinstance(message, str) or not message.strip():
                 return self.error(state, "message 必须是非空字符串。")
-            if inferred and not self.plugin.maid_mode_config.inferred_dispatch:
-                return self.error(state, "自我唤醒时不允许派发（inferred_dispatch 已关闭）。")
             try:
                 if not task_id:
                     candidates = self.chats.open(state)
@@ -274,21 +253,20 @@ class ChatRuntime:
             if task.get("ended"):
                 return self.error(state, "任务已结束。继续请使用 maid_agent(task_id)，不会自动转换操作。")
 
-            if inferred:
-                try:
-                    admission, parsed = self._admit(form or {})
-                except AdmissionError as exc:
-                    return self.error(state, str(exc))
-                if not admission.accepted:
-                    self.decisions.record(
-                        kind="ignore", strength="inferred", reason=admission.reason, task_id=task_id,
-                        trigger=str(event.message_str or ""), form=parsed, matched=admission.matched,
-                    )
-                    return {**self.tasks.card(task), "status": "ignored", "reason": admission.reason}
+            try:
+                admission, parsed = self._admit(form or {})
+            except AdmissionError as exc:
+                return self.error(state, str(exc))
+            if not admission.accepted:
+                self.decisions.record(
+                    kind="ignore", reason=admission.reason, task_id=task_id,
+                    trigger=str(event.message_str or ""), form=parsed, matched=admission.matched,
+                )
+                return {**self.tasks.card(task), "status": "ignored", "reason": admission.reason}
 
             text = message.strip()
             with self.registry.db.transaction():
-                item = add_input(task, "", human=not inferred, full=text)
+                item = add_input(task, "", human=True, full=text)
                 item["text"] = "【补充要求】\n" + _truncate(text, INPUT_PREVIEW_CHARS, f"input/{item['id']}")
                 self.tasks.save(task)
                 # 排队中的执行启动时会一并带上；进行中的执行由 delivery 送达。
@@ -326,8 +304,7 @@ class ChatRuntime:
                 task = self.chats.target(state, task_id)
             except ValueError as exc:
                 return self.error(state, str(exc))
-            strength = "inferred" if isinstance(event, CronMessageEvent) else "explicit"
-            return {**self.registry.stop_task(task, strength=strength), "status": "stopped"}
+            return {**self.registry.stop_task(task), "status": "stopped"}
 
     async def read(self, driver, resource: str, offset: int, limit: int) -> dict:
         """管家按需分页读取本任务的资源：主对话（读取时的最新内容）、请求原文与触发消息原文。"""

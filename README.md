@@ -162,10 +162,10 @@
 每次调用 `maid_agent` 或 `maid_send_message` 都必须填写评估表单，用户消息、定时任务、心跳或其他触发方式使用同一套校验。停止、列出任务和读取结果不填此表：
 
 - `rule_assessments`：对每条启用的规则各给一条判断（`rule_id`、`matched`、`reason`）；没有启用的规则时传空数组。
-- `direction`：`implementation_requested`、`target_basis`（`specified` / `existing-standard` / `undetermined`）、`requires_design_decision`、`evidence`。
+- `direction`：`target_basis`（`specified` / `existing-standard` / `undetermined`）、`requires_design_decision`、`evidence`；可选附带 `implementation_requested` 作审计记录（只读排查无需为真）。
 - `intent_evidence`：确立请求的原文证据；`scope`：管家可以做什么。
 
-插件依次检查：规则覆盖是否完整（不完整报错让她重填）→ 方向是否已定（要求动手、目标有依据、不需要设计决定，否则放弃）→ 规则不为空时是否至少命中一条（否则放弃）→ 是否给了 `intent_evidence`（否则报错）。是否满足规则由她自己判断，插件检查结构及上述条件，不证明语义判断属实。没有启用规则时跳过规则覆盖和命中两步，方向和证据照常校验。启用规则及评估说明会随派发工具提供给主模型，命中规则的说明与任务范围会附在派发内容里。
+插件依次检查：规则覆盖是否完整（不完整报错让她重填）→ 方向是否已定（目标有依据、不需要设计决定，否则放弃）→ 规则不为空时是否至少命中一条（否则放弃）→ 是否给了 `intent_evidence`（否则报错）。是否满足规则由她自己判断，插件检查结构及上述条件，不证明语义判断属实。没有启用规则时跳过规则覆盖和命中两步，方向和证据照常校验。启用规则及评估说明会随派发工具提供给主模型，命中规则的说明与任务范围会附在派发内容里。
 
 派发、恢复、停止和被忽略的评估会写判断记录，在控制台「判断记录」里查看；接受的追加消息沿用任务输入记录。
 

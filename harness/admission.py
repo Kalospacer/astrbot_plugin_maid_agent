@@ -53,8 +53,8 @@ class Direction:
 
     @property
     def settled(self) -> bool:
-        """方向已定：要求动手、目标有依据、不需要设计决定。"""
-        return self.implementation_requested and self.target_basis != "undetermined" and not self.requires_design_decision
+        """方向已定：目标有依据、不需要设计决定。"""
+        return self.target_basis != "undetermined" and not self.requires_design_decision
 
 
 @dataclass(frozen=True, slots=True)
@@ -87,8 +87,10 @@ def _text(raw: Mapping, key: str, *, maximum: int, required: bool) -> str:
     return value
 
 
-def _flag(raw: Mapping, key: str) -> bool:
+def _flag(raw: Mapping, key: str, *, required: bool = True) -> bool:
     value = raw.get(key)
+    if value is None and not required:
+        return False
     if not isinstance(value, bool):
         raise AdmissionError(f"direction.{key} 必须是布尔值。")
     return value
@@ -121,7 +123,7 @@ def parse_form(raw: Mapping) -> AdmissionForm:
     return AdmissionForm(
         rule_assessments=tuple(parsed),
         direction=Direction(
-            implementation_requested=_flag(direction, "implementation_requested"),
+            implementation_requested=_flag(direction, "implementation_requested", required=False),
             target_basis=target_basis,
             requires_design_decision=_flag(direction, "requires_design_decision"),
             evidence=_text(direction, "evidence", maximum=EVIDENCE_MAX_CHARS, required=True),

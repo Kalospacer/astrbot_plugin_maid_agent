@@ -95,12 +95,15 @@ _ADMISSION_FORM_PROPERTIES = {
         "description": f"{_DISPATCH_FORM_NOTE} Whether the work is settled enough to start.",
         "additionalProperties": False,
         "properties": {
-            "implementation_requested": {"type": "boolean"},
+            "implementation_requested": {
+                "type": "boolean",
+                "description": "Optional note of whether code or file changes are requested; read-only checks do not require this to be true.",
+            },
             "target_basis": {"type": "string", "enum": list(TARGET_BASES)},
             "requires_design_decision": {"type": "boolean"},
             "evidence": {"type": "string", "minLength": 1, "maxLength": EVIDENCE_MAX_CHARS},
         },
-        "required": ["implementation_requested", "target_basis", "requires_design_decision", "evidence"],
+        "required": ["target_basis", "requires_design_decision", "evidence"],
     },
     "intent_evidence": {"type": "string", "maxLength": EVIDENCE_MAX_CHARS, "description": f"{_DISPATCH_FORM_NOTE} Source quotes that establish the request."},
     "scope": {"type": "string", "maxLength": SCOPE_MAX_CHARS, "description": f"{_DISPATCH_FORM_NOTE} What exactly the maid may do."},

@@ -12,12 +12,38 @@ import re
 import shutil
 import sys
 from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Set as AbstractSet
 from logging import getLogger
 from pathlib import Path
 
 logger = getLogger("maid_agent")
 
 _HASHED_RE = re.compile(r"^(KaTeX_[A-Za-z0-9]+(?:-[A-Za-z]+)*?)-[A-Za-z0-9_-]{8}\.woff2$")
+
+EXPECTED_KATEX_FONTS: frozenset[str] = frozenset(
+    {
+        "KaTeX_AMS-Regular",
+        "KaTeX_Caligraphic-Bold",
+        "KaTeX_Caligraphic-Regular",
+        "KaTeX_Fraktur-Bold",
+        "KaTeX_Fraktur-Regular",
+        "KaTeX_Main-Bold",
+        "KaTeX_Main-BoldItalic",
+        "KaTeX_Main-Italic",
+        "KaTeX_Main-Regular",
+        "KaTeX_Math-BoldItalic",
+        "KaTeX_Math-Italic",
+        "KaTeX_SansSerif-Bold",
+        "KaTeX_SansSerif-Italic",
+        "KaTeX_SansSerif-Regular",
+        "KaTeX_Script-Regular",
+        "KaTeX_Size1-Regular",
+        "KaTeX_Size2-Regular",
+        "KaTeX_Size3-Regular",
+        "KaTeX_Size4-Regular",
+        "KaTeX_Typewriter-Regular",
+    }
+)
 
 
 def parse_webui_dir_arg(argv: Sequence[str] | None = None) -> str | None:
@@ -127,7 +153,41 @@ def _collect_katex_font_sources(dist_dir: Path) -> dict[str, Path]:
     return sources
 
 
-def materialize_katex_fonts(dist_dir: Path, target_dir: Path, *, warn_if_missing: bool = True) -> int:
+def _copy_katex_font_sources(
+    sources: Mapping[str, Path],
+    target_dir: Path,
+    *,
+    skip_names: AbstractSet[str] = frozenset(),
+) -> tuple[set[str], set[str]]:
+    """把 sources 中的字体剥 hash 物化到 target_dir（跳过 skip_names）。
+
+    返回 ``(succeeded, failed)`` 两个字体名集合；已存在且体积一致的文件跳过。
+    """
+    pending = {name: src for name, src in sources.items() if name not in skip_names}
+    if not pending:
+        return set(), set()
+    try:
+        target_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        logger.warning("[maid] 创建 KaTeX 字体目录失败: %s err=%s", target_dir, exc)
+        return set(), set(pending)
+    succeeded: set[str] = set()
+    failed: set[str] = set()
+    for name, src in pending.items():
+        dst = target_dir / f"{name}.woff2"
+        try:
+            if not dst.exists() or dst.stat().st_size != src.stat().st_size:
+                shutil.copyfile(src, dst)
+            succeeded.add(name)
+        except OSError as exc:
+            logger.warning("[maid] 复制 KaTeX 字体失败: %s err=%s", src, exc)
+            failed.add(name)
+    return succeeded, failed
+
+
+def materialize_katex_fonts(
+    dist_dir: Path, target_dir: Path, *, warn_if_missing: bool = True
+) -> int:
     """把 dist_dir 里的 KaTeX_*.woff2 剥 hash 复制到 target_dir。
 
     返回物化的字体种数；找不到返回 0（前端数学公式将退回系统字体渲染）。
@@ -138,29 +198,43 @@ def materialize_katex_fonts(dist_dir: Path, target_dir: Path, *, warn_if_missing
         if warn_if_missing:
             logger.info("[maid] dashboard dist 中未找到 KaTeX 字体: %s", dist_dir)
         return 0
-    try:
-        target_dir.mkdir(parents=True, exist_ok=True)
-    except OSError as exc:
-        logger.warning("[maid] 创建 KaTeX 字体目录失败: %s err=%s", target_dir, exc)
-        return 0
-    materialized = 0
-    for name, src in sources.items():
-        dst = target_dir / f"{name}.woff2"
-        try:
-            if not dst.exists() or dst.stat().st_size != src.stat().st_size:
-                shutil.copyfile(src, dst)
-            materialized += 1
-        except OSError as exc:
-            logger.warning("[maid] 复制 KaTeX 字体失败: %s err=%s", src, exc)
-    return materialized
+    succeeded, _ = _copy_katex_font_sources(sources, target_dir)
+    return len(succeeded)
 
 
 def materialize_katex_fonts_from_candidates(
-    candidates: Sequence[Path], target_dir: Path
+    candidates: Sequence[Path],
+    target_dir: Path,
+    *,
+    expected_fonts: AbstractSet[str] | None = EXPECTED_KATEX_FONTS,
 ) -> tuple[int, Path | None]:
-    """按优先级依次探测候选目录，在首个包含 KaTeX 字体的目录完成物化。"""
+    """按优先级依次探测候选目录，补齐所有期望的 KaTeX 字体。
+
+    若高优先级目录仅包含部分字体或部分字体复制失败，会继续向后续候选目录
+    回退并仅补齐尚未物化的字体，不覆盖已成功物化的字体。
+    """
+    materialized: set[str] = set()
+    failed: set[str] = set()
+    chosen: Path | None = None
+
     for candidate in candidates:
-        count = materialize_katex_fonts(candidate, target_dir, warn_if_missing=False)
-        if count:
-            return count, Path(candidate)
-    return 0, None
+        sources = _collect_katex_font_sources(Path(candidate))
+        if not sources:
+            continue
+        succeeded, step_failed = _copy_katex_font_sources(
+            sources,
+            target_dir,
+            skip_names=materialized,
+        )
+        if succeeded and chosen is None:
+            chosen = Path(candidate)
+        materialized.update(succeeded)
+        failed = (failed - succeeded) | step_failed
+        if (
+            materialized
+            and not failed
+            and (expected_fonts is None or expected_fonts.issubset(materialized))
+        ):
+            break
+
+    return len(materialized), chosen

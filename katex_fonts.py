@@ -138,15 +138,21 @@ def materialize_katex_fonts(dist_dir: Path, target_dir: Path, *, warn_if_missing
         if warn_if_missing:
             logger.info("[maid] dashboard dist 中未找到 KaTeX 字体: %s", dist_dir)
         return 0
-    target_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        target_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        logger.warning("[maid] 创建 KaTeX 字体目录失败: %s err=%s", target_dir, exc)
+        return 0
+    materialized = 0
     for name, src in sources.items():
         dst = target_dir / f"{name}.woff2"
         try:
             if not dst.exists() or dst.stat().st_size != src.stat().st_size:
                 shutil.copyfile(src, dst)
+            materialized += 1
         except OSError as exc:
             logger.warning("[maid] 复制 KaTeX 字体失败: %s err=%s", src, exc)
-    return len(sources)
+    return materialized
 
 
 def materialize_katex_fonts_from_candidates(

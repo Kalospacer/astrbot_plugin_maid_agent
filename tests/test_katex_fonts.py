@@ -116,3 +116,35 @@ def test_materialize_skips_same_size_and_handles_missing_dir_without_warning(tmp
     with caplog.at_level(logging.WARNING, logger="maid_agent"):
         assert materialize_katex_fonts(tmp_path / "does-not-exist", target) == 0
     assert caplog.records == []
+
+
+def test_materialize_falls_back_when_first_candidate_copy_fails(tmp_path: Path, monkeypatch):
+    bad_dist = _seed_katex_dist(
+        tmp_path / "bad_dist",
+        {"KaTeX_Main-Regular-Ab12Cd34.woff2": b"unreadable-src"},
+    )
+    good_dist = _seed_katex_dist(
+        tmp_path / "good_dist",
+        {
+            "KaTeX_Main-Regular-Ab12Cd34.woff2": b"good-main",
+            "KaTeX_Math-Italic-Xy98Zw76.woff2": b"good-math",
+        },
+    )
+    target = tmp_path / "fonts"
+
+    import shutil
+    real_copyfile = shutil.copyfile
+
+    def flaky_copyfile(src, dst, *args, **kwargs):
+        if Path(src).is_relative_to(bad_dist):
+            raise PermissionError("access denied")
+        return real_copyfile(src, dst, *args, **kwargs)
+
+    monkeypatch.setattr("astrbot_plugin_maid_agent.katex_fonts.shutil.copyfile", flaky_copyfile)
+
+    assert materialize_katex_fonts(bad_dist, target, warn_if_missing=False) == 0
+    count, chosen = materialize_katex_fonts_from_candidates([bad_dist, good_dist], target)
+    assert count == 2
+    assert chosen == good_dist
+    assert (target / "KaTeX_Main-Regular.woff2").read_bytes() == b"good-main"
+    assert (target / "KaTeX_Math-Italic.woff2").read_bytes() == b"good-math"

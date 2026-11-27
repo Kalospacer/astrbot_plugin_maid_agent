@@ -65,7 +65,10 @@ from .harness.rpc import (
 )
 from .harness.store import SessionStore
 from .harness.tasks import HUMAN_ACTION_MAX_CHARS, MAID_REPORT_STATES
-from .katex_fonts import materialize_katex_fonts
+from .katex_fonts import (
+    discover_dashboard_dist_candidates,
+    materialize_katex_fonts_from_candidates,
+)
 from .maid_dispatcher import ensure_default_subagent
 from .toolset_adapter import apply_main_tool_policy
 
@@ -233,20 +236,39 @@ class MaidAgent(Star):
 
     def _materialize_katex_fonts(self) -> None:
         """从 dashboard dist 物化 KaTeX 字体到插件页 assets/fonts/（失败不阻塞加载）。"""
+        resolver = None
         try:
             from astrbot.core.dashboard_assets import resolve_dashboard_dist
 
-            dist = resolve_dashboard_dist()
+            resolver = resolve_dashboard_dist
         except Exception as exc:  # noqa: BLE001
-            logger.warning("[maid] 解析 dashboard dist 失败，KaTeX 字体未物化: %s", exc)
-            return
-        if not dist:
-            logger.warning("[maid] dashboard 静态资源不可用，KaTeX 字体未物化（公式退回系统字体）")
-            return
+            logger.debug("[maid] 未导入 resolve_dashboard_dist，将仅探测环境与桌面目录: %s", exc)
+
+        app_static_folder = None
+        try:
+            from astrbot.dashboard import server as dashboard_server
+
+            app = getattr(dashboard_server, "APP", None)
+            app_static_folder = getattr(app, "static_folder", None)
+        except Exception:  # noqa: BLE001
+            app_static_folder = None
+
+        candidates = discover_dashboard_dist_candidates(
+            resolver=resolver,
+            app_static_folder=app_static_folder,
+        )
         target = Path(__file__).parent / "pages" / "console" / "assets" / "fonts"
-        count = materialize_katex_fonts(Path(dist), target)
+        count, chosen = materialize_katex_fonts_from_candidates(candidates, target)
         if count:
-            logger.info("[maid] KaTeX 字体已物化 %d 个（复用 dashboard dist）", count)
+            logger.info("[maid] KaTeX 字体已物化 %d 个（来源: %s）", count, chosen)
+            return
+        if target.is_dir() and any(target.glob("KaTeX_*.woff2")):
+            logger.debug("[maid] 未探测到新的 dashboard dist，沿用已物化的 KaTeX 字体")
+            return
+        logger.info(
+            "[maid] 未在 dashboard 静态资源中找到 KaTeX 字体，数学公式将退回系统字体（已探测 %d 个路径）",
+            len(candidates),
+        )
 
     def _schedule_retention_cleanup(self) -> None:
         async def _loop() -> None:
